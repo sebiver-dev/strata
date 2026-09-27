@@ -22,6 +22,14 @@ pub const PATH: Block = 11;
 pub const LANTERN: Block = 12;
 /// Tall grass blades standing in the air voxel above a grass block.
 pub const TALL_GRASS: Block = 13;
+/// Dressed stone laid in courses: bridges, towers, castle walls, plinths.
+pub const MASONRY: Block = 14;
+/// Lime plaster between the timbers of a cottage wall.
+pub const PLASTER: Block = 15;
+/// Slate and shingle roofing.
+pub const ROOF: Block = 16;
+/// A lit window; glows warm from dusk on.
+pub const WINDOW: Block = 17;
 
 /// Materials the player can place, in hotbar order (keys 1..).
 pub const PLACEABLE: [Block; 8] = [STONE, DIRT, GRASS, SAND, GRAVEL, WOOD, PLANKS, SNOW];
@@ -42,6 +50,10 @@ pub fn name(b: Block) -> &'static str {
         PATH => "path",
         LANTERN => "lantern",
         TALL_GRASS => "tall grass",
+        MASONRY => "masonry",
+        PLASTER => "plaster",
+        ROOF => "roof",
+        WINDOW => "window",
         _ => "unknown",
     }
 }

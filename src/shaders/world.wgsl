@@ -523,6 +523,73 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.sss = 0.75;
             wettable = false;
         }
+        case 14u: { // masonry: dressed stone blocks in courses with sunken mortar
+            // Lay the courses on whichever wall plane the surface mostly faces.
+            let an = abs(n);
+            var u = select(p.x, p.z, an.x > an.z);
+            var v = p.y;
+            if (an.y > 0.7) { u = p.x; v = p.z; }
+            let row = floor(v / 0.42);
+            let col = floor(u / 0.7 + row * 0.5);
+            let fu = fract(u / 0.7 + row * 0.5);
+            let fv = fract(v / 0.42);
+            let joint = min(min(fu, 1.0 - fu) * 0.7, min(fv, 1.0 - fv) * 0.42);
+            let mortar = (1.0 - smoothstep(0.015, 0.035, joint)) * d_dm;
+            let tint = hash2(vec2(col, row));
+            var c = mix(vec3(0.52, 0.49, 0.45), vec3(0.66, 0.62, 0.55), tint) * (0.85 + 0.25 * fine);
+            // Moss creeps into the lower courses and the tops of walls.
+            let moss = smoothstep(0.55, 0.75, fbm(q * 0.9)) * (select(0.35, 0.9, top));
+            c = mix(c, vec3(0.34, 0.40, 0.20), moss * 0.6);
+            c = mix(c, vec3(0.30, 0.28, 0.25), mortar * 0.8);
+            s.albedo = c;
+            s.rough = 0.8;
+            s.f0 = 0.04;
+            s.height = (1.0 - mortar) * 0.02 + fine * 0.01 + vnoise(q * 19.0) * 0.004 * d_cm;
+        }
+        case 15u: { // lime plaster: warm, blotchy, weathered darker near the ground
+            var c = vec3(0.86, 0.80, 0.67) * (0.9 + 0.12 * broad + 0.08 * fine);
+            let stain = smoothstep(0.5, 0.8, vnoise(q * vec3(1.5, 0.6, 1.5)));
+            c *= 1.0 - 0.12 * stain;
+            s.albedo = c;
+            s.rough = 0.9;
+            s.height = fine * 0.008 + vnoise(q * 29.0) * 0.003 * d_cm;
+        }
+        case 16u: { // roof: overlapping rows of blue-grey slate
+            let row = floor(p.y / 0.28);
+            let along = p.x + p.z;
+            let tile = floor(along / 0.4 + row * 0.5);
+            let fv = fract(p.y / 0.28);
+            let fu = fract(along / 0.4 + row * 0.5);
+            let edge = (1.0 - smoothstep(0.0, 0.12, fv)) * d_dm;
+            let gap = (1.0 - smoothstep(0.0, 0.06, min(fu, 1.0 - fu))) * d_dm;
+            var base = mix(vec3(0.24, 0.29, 0.39), vec3(0.33, 0.36, 0.42), broad);
+            base *= 0.8 + 0.35 * hash2(vec2(tile, row)) * (1.0 - calm);
+            base *= 0.9 + 0.15 * broad;
+            let moss = smoothstep(0.6, 0.8, fbm(q * 1.3)) * 0.35;
+            var c = mix(base, vec3(0.35, 0.40, 0.22), moss);
+            c *= 1.0 - 0.45 * max(edge, gap);
+            s.albedo = c;
+            s.rough = 0.55;
+            s.f0 = 0.05;
+            s.height = fv * 0.02 * d_dm - gap * 0.01;
+            wettable = false;
+        }
+        case 17u: { // window: warm lamplight behind small panes in a dark frame
+            let f = fract(p / VOXEL);
+            let a = select(select(f.xy, f.zy, abs(n.x) > 0.5), f.xz, abs(n.y) > 0.5);
+            let edge = min(min(a.x, 1.0 - a.x), min(a.y, 1.0 - a.y));
+            let glass = smoothstep(0.08, 0.12, edge);
+            let bars = 1.0 - smoothstep(0.02, 0.04, min(abs(a.x - 0.5), abs(a.y - 0.5)));
+            let pane = glass * (1.0 - bars) * step(abs(n.y), 0.5);
+            s.albedo = mix(vec3(0.16, 0.11, 0.07), vec3(0.95, 0.72, 0.42), pane);
+            s.rough = mix(0.7, 0.1, pane);
+            s.f0 = 0.04;
+            // Lit all day but only bright once the light goes; each room its own warmth.
+            let room = 0.75 + 0.5 * hash3(floor(p / 2.0));
+            let flicker = 0.93 + 0.07 * vnoise(vec3(g.sun_dir.w * 3.0, floor(p.x / 2.0), floor(p.z / 2.0)));
+            s.emit = LAMP_COLOR * pane * (0.6 + 3.4 * lamp_on()) * room * flicker;
+            wettable = false;
+        }
         default: {}
     }
 

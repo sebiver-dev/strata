@@ -12,6 +12,7 @@ pub mod mesh;
 pub mod noise;
 pub mod player;
 pub mod renderer;
+pub mod structures;
 pub mod terrain;
 #[cfg(target_arch = "wasm32")]
 pub mod web;

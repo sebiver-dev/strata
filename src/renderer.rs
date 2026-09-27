@@ -994,11 +994,11 @@ impl Renderer {
         if t.state.load(Ordering::Acquire) != 2 {
             return;
         }
-        let ticks: Option<Vec<u64>> = t.readback.get_mapped_range(..).ok().map(|data| {
-            data.chunks_exact(8)
-                .map(|b| u64::from_le_bytes(b.try_into().unwrap_or_default()))
-                .collect()
-        });
+        let ticks: Option<Vec<u64>> = t
+            .readback
+            .get_mapped_range(..)
+            .ok()
+            .map(|data| data.as_chunks::<8>().0.iter().map(|b| u64::from_le_bytes(*b)).collect());
         let ms: [f32; 4] = match &ticks {
             Some(ticks) if ticks.len() >= TIMED_PASSES as usize * 2 => std::array::from_fn(|i| {
                 let (a, b) = (ticks[i * 2], ticks[i * 2 + 1]);

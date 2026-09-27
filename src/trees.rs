@@ -628,12 +628,12 @@ fn clump(out: &mut MeshData, all: &[Clump], index: usize, canopy: Vec3, mesh: &I
         .map(|&d| {
             let mut s = 0.9;
             for &(l, amp) in &lobes {
-                let t = ((d.dot(l) - 0.7) / 0.3).max(0.0);
+                let t = ((d.dot(l) - 0.6) / 0.4).max(0.0);
                 s += amp * t * t * (3.0 - 2.0 * t);
             }
             let w = c.centre + d * c.radii;
             s += 0.14 * (value3(seed, w.x * 0.9, w.y * 0.9, w.z * 0.9) - 0.5);
-            s += 0.07 * (value3(seed ^ 0x55, w.x * 2.3, w.y * 2.3, w.z * 2.3) - 0.5);
+            s += 0.03 * (value3(seed ^ 0x55, w.x * 2.3, w.y * 2.3, w.z * 2.3) - 0.5);
             let mut q = d * c.radii * s;
             if q.y < 0.0 {
                 q.y *= 0.9;

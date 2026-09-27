@@ -175,11 +175,11 @@ pub fn build(world: &World, cpos: IVec3) -> MeshData {
                     continue;
                 }
                 if b == POST {
-                    post(&mut out, origin, p, pad.get(p + IVec3::Y));
+                    post(&mut out, &pad, origin, p);
                     continue;
                 }
                 if b == LANTERN {
-                    lantern(&mut out, origin, p);
+                    lantern(&mut out, origin, p, pad.get(p - IVec3::Y) == POST);
                     continue;
                 }
                 if is_smooth(b) {
@@ -570,44 +570,114 @@ fn cuboid(out: &mut MeshData, lo: Vec3, hi: Vec3, mat: Block) {
     }
 }
 
-/// Radius of a lantern post in metres.
-const POST_RADIUS: f32 = 0.075;
+/// Half the thickness of a lantern post in metres.
+const POST_RADIUS: f32 = 0.08;
 
-/// One voxel's length of a lantern post: an octagonal wooden pole through the
-/// middle of the voxel, capped when nothing post-like sits on it.
-fn post(out: &mut MeshData, origin: IVec3, p: IVec3, above: Block) {
-    let lo = (origin + p).as_vec3() * VOXEL_SIZE + Vec3::new(VOXEL_SIZE * 0.5, 0.0, VOXEL_SIZE * 0.5);
-    let hi = lo + Vec3::Y * VOXEL_SIZE;
-    let ring = |k: usize, y: Vec3| {
-        let a = (k as f32 + 0.5) * std::f32::consts::TAU / 8.0;
-        y + Vec3::new(a.cos(), 0.0, a.sin()) * POST_RADIUS
+/// A straight timber of square section `half` from `a` to `b`.
+fn beam(out: &mut MeshData, a: Vec3, b: Vec3, half: f32, mat: Block) {
+    let dir = (b - a).normalize_or_zero();
+    let side = if dir.y.abs() > 0.99 {
+        Vec3::X
+    } else {
+        dir.cross(Vec3::Y).normalize()
     };
-    let axis = (lo + hi) * 0.5;
-    for k in 0..8 {
+    let up = side.cross(dir);
+    let (s, u) = (side * half, up * half);
+    let corner = |e: Vec3, k: usize| e + [s + u, -s + u, -s - u, s - u][k];
+    let centre = (a + b) * 0.5;
+    for k in 0..4 {
+        let j = (k + 1) % 4;
         flat(
             out,
-            &[ring(k, lo), ring(k + 1, lo), ring(k + 1, hi), ring(k, hi)],
-            axis,
-            WOOD,
+            &[corner(a, k), corner(a, j), corner(b, j), corner(b, k)],
+            centre,
+            mat,
         );
     }
-    if above != POST && above != LANTERN {
-        let cap: Vec<Vec3> = (0..8).map(|k| ring(k, hi)).collect();
-        flat(out, &cap, axis, WOOD);
+    flat(
+        out,
+        &[corner(a, 0), corner(a, 1), corner(a, 2), corner(a, 3)],
+        centre,
+        mat,
+    );
+    flat(
+        out,
+        &[corner(b, 0), corner(b, 1), corner(b, 2), corner(b, 3)],
+        centre,
+        mat,
+    );
+}
+
+/// One voxel's length of a square wooden lantern post. The top voxel gets a
+/// cap, and when a lantern hangs beside the voxel below it, an arm reaching
+/// out over it with a diagonal brace.
+fn post(out: &mut MeshData, pad: &Padded, origin: IVec3, p: IVec3) {
+    let centre = (origin + p).as_vec3() * VOXEL_SIZE + Vec3::new(VOXEL_SIZE * 0.5, 0.0, VOXEL_SIZE * 0.5);
+    let r = POST_RADIUS;
+    let above = pad.get(p + IVec3::Y);
+    let top = above != POST && above != LANTERN;
+    let height = if top { ARM_HEIGHT + 0.08 } else { VOXEL_SIZE };
+    cuboid(
+        out,
+        centre + Vec3::new(-r, 0.0, -r),
+        centre + Vec3::new(r, height, r),
+        WOOD,
+    );
+    if !top {
+        return;
+    }
+    let cap = r + 0.025;
+    cuboid(
+        out,
+        centre + Vec3::new(-cap, height, -cap),
+        centre + Vec3::new(cap, height + 0.04, cap),
+        WOOD,
+    );
+    for d in [IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z] {
+        if pad.get(p + d - IVec3::Y) != LANTERN {
+            continue;
+        }
+        let out_dir = d.as_vec3();
+        let arm_y = centre + Vec3::Y * ARM_HEIGHT;
+        let end = arm_y + out_dir * (VOXEL_SIZE + 0.1);
+        beam(out, arm_y - out_dir * r, end, 0.045, WOOD);
+        // Brace from lower on the post up to the middle of the arm.
+        let low = centre + Vec3::Y * (ARM_HEIGHT - 0.42) + out_dir * r * 0.5;
+        beam(out, low, arm_y + out_dir * 0.36 - Vec3::Y * 0.03, 0.03, WOOD);
     }
 }
 
-/// A lantern sitting on the post below: a collar that grips the post, a
-/// glass body with an iron frame (drawn by the shader), and a little pointed
-/// wooden roof.
-fn lantern(out: &mut MeshData, origin: IVec3, p: IVec3) {
+/// Height above the top post voxel's floor at which the lantern arm runs.
+const ARM_HEIGHT: f32 = 0.2;
+
+/// A lantern: a glass body with an iron frame (drawn by the shader) under a
+/// small pointed iron roof. Standing on a post it gets a collar that grips
+/// the post; otherwise it hangs by a hook from the arm above.
+fn lantern(out: &mut MeshData, origin: IVec3, p: IVec3, on_post: bool) {
     let floor = (origin + p).as_vec3() * VOXEL_SIZE + Vec3::new(VOXEL_SIZE * 0.5, 0.0, VOXEL_SIZE * 0.5);
     let at = |dx: f32, y: f32, dz: f32| floor + Vec3::new(dx, y, dz);
-    // Collar: slightly wider than the post and overlapping its top.
-    let r = POST_RADIUS + 0.03;
-    cuboid(out, at(-r, -0.04, -r), at(r, LANTERN_BODY.0, r), WOOD);
     let (b0, b1) = LANTERN_BODY;
     let hw = LANTERN_HALF_WIDTH;
+    if on_post {
+        // Collar: slightly wider than the post and overlapping its top.
+        let r = POST_RADIUS + 0.03;
+        cuboid(out, at(-r, -0.04, -r), at(r, b0, r), WOOD);
+    } else {
+        // Base plate, then the hook up to the arm in the voxel above.
+        cuboid(
+            out,
+            at(-hw - 0.015, b0 - 0.025, -hw - 0.015),
+            at(hw + 0.015, b0, hw + 0.015),
+            LANTERN,
+        );
+        beam(
+            out,
+            at(0.0, b1 + 0.15, 0.0),
+            at(0.0, VOXEL_SIZE + ARM_HEIGHT, 0.0),
+            0.012,
+            LANTERN,
+        );
+    }
     cuboid(out, at(-hw, b0, -hw), at(hw, b1, hw), LANTERN);
     // Roof: a low pyramid with an overhang.
     let o = hw + 0.05;
@@ -616,9 +686,9 @@ fn lantern(out: &mut MeshData, origin: IVec3, p: IVec3) {
     let corners = [at(-o, eave, -o), at(o, eave, -o), at(o, eave, o), at(-o, eave, o)];
     let centre = at(0.0, eave + 0.04, 0.0);
     for k in 0..4 {
-        flat(out, &[corners[k], corners[(k + 1) % 4], apex], centre, WOOD);
+        flat(out, &[corners[k], corners[(k + 1) % 4], apex], centre, LANTERN);
     }
-    flat(out, &corners, centre, WOOD);
+    flat(out, &corners, centre, LANTERN);
     // Thin iron plate joining the body to the roof.
     cuboid(
         out,
@@ -805,9 +875,41 @@ mod tests {
             .iter()
             .filter(|v| mat(v) == WOOD as u32 && v.pos[1] < floor - 0.05)
         {
-            let r = ((v.pos[0] - centre).powi(2) + (v.pos[2] - centre).powi(2)).sqrt();
+            let r = (v.pos[0] - centre).abs().max((v.pos[2] - centre).abs());
             assert!(r <= POST_RADIUS + 1e-4, "{r}");
         }
+    }
+
+    #[test]
+    fn hanging_lantern_hooks_onto_the_arm() {
+        let mut w = World::new(1, 1);
+        let mut c = Chunk::default();
+        c.set(5, 4, 5, STONE);
+        for y in 5..=10 {
+            c.set(5, y, 5, POST);
+        }
+        c.set(6, 9, 5, LANTERN);
+        w.chunks.insert(IVec3::ZERO, c);
+        let m = build(&w, IVec3::ZERO);
+        let mat = |v: &Vertex| (v.data >> 3) & 255;
+        let arm_y = 10.0 * VOXEL_SIZE + ARM_HEIGHT;
+        let lamp_x = 6.5 * VOXEL_SIZE;
+        // The arm reaches past the lantern's centre at arm height.
+        let reach = m
+            .vertices
+            .iter()
+            .filter(|v| mat(v) == WOOD as u32 && (v.pos[1] - arm_y).abs() < 0.06)
+            .map(|v| v.pos[0])
+            .fold(f32::MIN, f32::max);
+        assert!(reach > lamp_x, "arm ends at {reach}");
+        // The hook climbs from the lantern roof to the arm.
+        let hook_top = m
+            .vertices
+            .iter()
+            .filter(|v| mat(v) == LANTERN as u32)
+            .map(|v| v.pos[1])
+            .fold(f32::MIN, f32::max);
+        assert!((hook_top - arm_y).abs() < 1e-3, "hook reaches {hook_top}");
     }
 
     #[test]

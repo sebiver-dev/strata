@@ -140,6 +140,7 @@ pub fn build(world: &World, cpos: IVec3) -> MeshData {
     let mut out = build_voxels(world, cpos);
     // Buildings and fences are authored models; their voxels only give collision.
     world.terrain.structures.append_models(cpos, &mut out);
+    crate::trees::append(&world.terrain, cpos, &mut out);
     out
 }
 
@@ -185,15 +186,6 @@ fn build_voxels(world: &World, cpos: IVec3) -> MeshData {
                 if b == POST {
                     post(&mut out, &pad, origin, p);
                     continue;
-                }
-                if b == LEAVES {
-                    // Tufts on the crown's outside, facing the open air.
-                    for f in FACES.iter() {
-                        if pad.get(p + f.n) == AIR {
-                            leaf_tuft(&mut out, origin, p, f.n.as_vec3());
-                            break;
-                        }
-                    }
                 }
                 if b == LANTERN {
                     lantern(&mut out, origin, p, pad.get(p - IVec3::Y) == POST);
@@ -571,33 +563,6 @@ fn lupin(out: &mut MeshData, at: Vec3, angle: f32, r: &dyn Fn(u32) -> f32) {
                 mat,
             );
         }
-    }
-}
-
-/// A small tuft of leaves on the outside of a crown, standing out from its
-/// surface in the direction `out_dir`, so the crown's edge reads as foliage.
-fn leaf_tuft(out: &mut MeshData, origin: IVec3, p: IVec3, out_dir: Vec3) {
-    let w = origin + p;
-    let h = crate::noise::hash3(0x1eaf, w.x, w.y, w.z);
-    let r = |shift: u32| crate::noise::unit(h.rotate_left(shift));
-    if r(0) > 0.45 {
-        return;
-    }
-    let centre = (w.as_vec3() + 0.5) * VOXEL_SIZE + out_dir * 0.1;
-    let up = if out_dir.y.abs() > 0.9 { Vec3::X } else { Vec3::Y };
-    let t1 = out_dir.cross(up).normalize();
-    let t2 = out_dir.cross(t1);
-    for k in 0..3 {
-        let a = (k as f32 + r(3)) * std::f32::consts::TAU / 3.0;
-        let spread = t1 * a.cos() + t2 * a.sin();
-        let d = (out_dir + spread * 0.9 + Vec3::Y * 0.2).normalize();
-        let side = d.cross(out_dir + Vec3::Y * 0.01).normalize_or_zero() * (0.07 + 0.03 * r(7 + k));
-        let len = 0.22 + 0.12 * r(11 + k);
-        let base = centre + spread * 0.05;
-        let mid = base + d * len * 0.5;
-        let tip = base + d * len;
-        plant_tri(out, [(base, 3), (mid + side, 3), (tip, 3)], LEAVES);
-        plant_tri(out, [(base, 3), (tip, 3), (mid - side, 3)], LEAVES);
     }
 }
 

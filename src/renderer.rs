@@ -892,8 +892,15 @@ impl Renderer {
             return;
         }
         let size = crate::chunk::CHUNK as f32 * crate::block::VOXEL_SIZE;
-        let min = cpos.as_vec3() * size;
-        let gpu = make_mesh(&self.device, mesh, min, min + Vec3::splat(size));
+        let mut min = cpos.as_vec3() * size;
+        let mut max = min + Vec3::splat(size);
+        // Models (trees, buildings) can reach past their chunk; cull by what is really there.
+        for v in mesh.vertices.iter().chain(&mesh.water_vertices) {
+            let p = Vec3::from(v.pos);
+            min = min.min(p);
+            max = max.max(p);
+        }
+        let gpu = make_mesh(&self.device, mesh, min, max);
         self.meshes.insert(cpos, gpu);
     }
 

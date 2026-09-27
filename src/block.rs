@@ -56,6 +56,14 @@ pub const IRON: Block = 26;
 pub const LUPIN_PINK: Block = 40;
 pub const LUPIN_WHITE: Block = 41;
 
+// Tree models (mesh only; trunks collide through hidden BUILT voxels).
+/// Bark on trunks and boughs.
+pub const BARK: Block = 27;
+/// Broadleaf foliage clumps.
+pub const FOLIAGE: Block = 28;
+/// Conifer needles.
+pub const NEEDLES: Block = 29;
+
 /// Materials the player can place, in hotbar order (keys 1..).
 pub const PLACEABLE: [Block; 8] = [STONE, DIRT, GRASS, SAND, GRAVEL, WOOD, PLANKS, SNOW];
 
@@ -85,6 +93,9 @@ pub fn name(b: Block) -> &'static str {
         BUILT => "building",
         POST => "post",
         IRON => "iron",
+        BARK => "bark",
+        FOLIAGE => "foliage",
+        NEEDLES => "needles",
         _ => "unknown",
     }
 }

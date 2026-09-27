@@ -5,7 +5,8 @@ use crate::block::*;
 use crate::chunk::{local_index, Chunk, CHUNK, CHUNK_VOLUME};
 use crate::noise::{fbm2, hash2, ridged2, unit, value3};
 use crate::structures::Structures;
-use glam::{IVec2, IVec3, Vec3};
+use crate::trees::{Kind as TreeKind, Tree};
+use glam::{IVec2, IVec3, Vec2, Vec3};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -42,7 +43,8 @@ pub const FALLS: [(f32, f32, f32); 10] = [
 // so a 1.75 m player reads at the right scale against them.
 /// Trees sit on a jittered grid with this spacing in metres.
 pub const TREE_CELL_M: f32 = 9.0;
-const TREE_REACH_M: f32 = 9.5;
+/// How far a trunk can lean away from its foot, in metres.
+const TREE_REACH_M: f32 = 2.5;
 /// Grid cell (metres) that holds at most one boulder.
 const BOULDER_CELL_M: f32 = 6.0;
 /// Largest boulder radius in metres.
@@ -119,17 +121,12 @@ pub struct ColumnInfo {
     pub subsurface: Block,
 }
 
-struct Tree {
-    base: IVec3,
-    trunk_voxels: i32,
-    canopy_r: f32,
-    conifer: bool,
-}
-
 pub struct Terrain {
     pub seed: u32,
     /// Bridge, cottages, fences, watchtower and castle.
     pub structures: Structures,
+    /// The great oak that frames the view from the start.
+    pub hero_tree: Option<Tree>,
     columns: HashMap<IVec2, Arc<Vec<ColumnInfo>>>,
 }
 
@@ -138,9 +135,11 @@ impl Terrain {
         let mut t = Self {
             seed,
             structures: Structures::default(),
+            hero_tree: None,
             columns: HashMap::new(),
         };
         t.structures = Structures::plan(&t);
+        t.hero_tree = t.plan_hero_tree();
         t
     }
 
@@ -328,7 +327,8 @@ impl Terrain {
         arc
     }
 
-    fn tree_in_cell(&self, gx: i32, gz: i32) -> Option<Tree> {
+    /// The tree standing in a cell of the tree grid, if any.
+    pub fn tree_in_cell(&self, gx: i32, gz: i32) -> Option<Tree> {
         let h = hash2(self.seed.wrapping_add(20), gx, gz);
         let xm = (gx as f32 + 0.15 + 0.7 * unit(h)) * TREE_CELL_M;
         let zm = (gz as f32 + 0.15 + 0.7 * unit(h.rotate_left(11))) * TREE_CELL_M;
@@ -341,27 +341,87 @@ impl Terrain {
         if info.surface != GRASS || info.height_m < water_level(xm, zm) + 1.5 || info.height_m > 104.0 {
             return None;
         }
-        // Keep roads and buildings clear of trunks.
+        // Keep roads and buildings clear of trunks, and room around the great oak.
         if self.road_distance(xm, zm) < 5.0 || self.structures.blocks_tree(xm, zm) {
             return None;
         }
-        let conifer = info.height_m > 56.0 || unit(h.rotate_left(5)) < 0.25;
-        let base = IVec3::new(
-            (xm / VOXEL_SIZE) as i32,
-            (info.height_m / VOXEL_SIZE).floor() as i32,
-            (zm / VOXEL_SIZE) as i32,
-        );
+        if let Some(hero) = &self.hero_tree {
+            if Vec2::new(xm - hero.base.x, zm - hero.base.z).length() < 12.0 {
+                return None;
+            }
+        }
+        // Broadleaf trees fill the valley; conifers take over up the slopes
+        // and gather round the watchtower.
+        let slope_line = 50.0 + 14.0 * fbm2(self.seed.wrapping_add(25), xm / 90.0, zm / 90.0, 2);
+        let by_tower = self.structures.iter().any(|st| match st {
+            crate::structures::Structure::Tower(t) => t.c.distance(Vec2::new(xm, zm)) < 70.0,
+            _ => false,
+        });
+        let conifer =
+            info.height_m > slope_line || (by_tower && unit(h.rotate_left(5)) < 0.7) || unit(h.rotate_left(5)) < 0.1;
         let size = unit(h.rotate_left(17));
         Some(Tree {
-            base,
-            trunk_voxels: if conifer {
-                30 + (size * 14.0) as i32
+            base: Vec3::new(xm, info.height_m, zm),
+            height: if conifer { 14.0 + size * 9.0 } else { 9.0 + size * 5.5 },
+            kind: if conifer {
+                TreeKind::Conifer
             } else {
-                14 + (size * 8.0) as i32
+                TreeKind::Broadleaf
             },
-            canopy_r: if conifer { 3.0 + size * 1.2 } else { 4.4 + size * 2.2 },
-            conifer,
+            seed: h,
+            hero: None,
         })
+    }
+
+    /// Every tree whose trunk stands inside a box of metres (x and z).
+    pub fn trees_in(&self, lo: Vec2, hi: Vec2) -> Vec<Tree> {
+        let first = (lo / TREE_CELL_M).floor().as_ivec2();
+        let last = (hi / TREE_CELL_M).floor().as_ivec2();
+        let mut out = Vec::new();
+        for gz in first.y..=last.y {
+            for gx in first.x..=last.x {
+                if let Some(t) = self.tree_in_cell(gx, gz) {
+                    if t.base.x >= lo.x && t.base.x < hi.x && t.base.z >= lo.y && t.base.z < hi.y {
+                        out.push(t);
+                    }
+                }
+            }
+        }
+        if let Some(t) = self.hero_tree {
+            if t.base.x >= lo.x && t.base.x < hi.x && t.base.z >= lo.y && t.base.z < hi.y {
+                out.push(t);
+            }
+        }
+        out
+    }
+
+    /// A great oak just left of the start, reaching a bough out over the
+    /// player's head so it frames the first view down the valley.
+    fn plan_hero_tree(&self) -> Option<Tree> {
+        let spawn = self.spawn_point();
+        let yaw = crate::structures::SPAWN_YAW;
+        let fwd = Vec2::new(yaw.cos(), yaw.sin());
+        let right = Vec2::new(-fwd.y, fwd.x);
+        for (ahead, left) in [(4.0, 4.5), (3.0, 5.5), (5.0, 6.0), (2.0, 6.5), (4.0, 8.0), (6.0, 9.0)] {
+            let p = Vec2::new(spawn.x, spawn.z) + fwd * ahead - right * left;
+            let info = self.column_info(p.x, p.y);
+            if info.surface != GRASS
+                || info.height_m < water_level(p.x, p.y) + 1.0
+                || self.road_distance(p.x, p.y) < 3.0
+                || self.structures.blocks_tree(p.x, p.y)
+            {
+                continue;
+            }
+            return Some(Tree {
+                base: Vec3::new(p.x, info.height_m, p.y),
+                height: 15.0,
+                kind: TreeKind::Broadleaf,
+                seed: self.seed ^ 0x0a4_7ee,
+                // The long bough reaches across the top of the first view.
+                hero: Some((right + fwd * 0.6).normalize()),
+            });
+        }
+        None
     }
 
     /// A rounded, half-buried boulder: common along the river banks and in the
@@ -393,138 +453,6 @@ impl Terrain {
             radii: Vec3::new(r * (0.95 + 0.3 * unit(h.rotate_left(13))), r * squash, r),
             seed: h,
         })
-    }
-
-    fn stamp_tree(&self, tree: &Tree, origin: IVec3, data: &mut [Block; CHUNK_VOLUME]) {
-        let mut put = |p: IVec3, b: Block, replace_solid: bool| {
-            let l = p - origin;
-            if l.cmplt(IVec3::ZERO).any() || l.cmpge(IVec3::splat(CHUNK)).any() {
-                return;
-            }
-            let i = local_index(l.x, l.y, l.z);
-            if replace_solid || data[i] == AIR {
-                data[i] = b;
-            }
-        };
-        let r_vox = tree.canopy_r / VOXEL_SIZE;
-        let top = tree.base.y + tree.trunk_voxels;
-        let ri = (r_vox * 1.35).ceil() as i32 + 1;
-        // Broadleaf crowns sit well down around the upper trunk, like real ones.
-        let crown = top - (r_vox * 0.45) as i32;
-        let (y0, y1) = if tree.conifer {
-            (tree.base.y + tree.trunk_voxels / 3, top + 3)
-        } else {
-            (crown - ri + 1, crown + ri)
-        };
-        // Broadleaf crowns: clump centres (voxels, relative to the trunk at crown
-        // height) and radii.
-        let h = crate::noise::hash3(self.seed.wrapping_add(24), tree.base.x, tree.base.y, tree.base.z);
-        let hr = |k: u32| unit(h.rotate_left(k));
-        // The central clump always closes over the top of the trunk.
-        let trunk_top = (top - crown) as f32;
-        let mut clumps = vec![
-            (Vec3::new(0.0, r_vox * 0.2, 0.0), r_vox * 0.7),
-            (Vec3::new(0.0, trunk_top + 0.5, 0.0), (r_vox * 0.45).max(3.0)),
-        ];
-        let n = 6 + (hr(1) * 3.0) as u32;
-        for k in 0..n {
-            let a = (k as f32 + 0.35 * hr(3 + k)) * std::f32::consts::TAU / n as f32;
-            let out = r_vox * (0.52 + 0.18 * hr(9 + k));
-            let lift = r_vox * (-0.3 + 0.55 * hr(17 + k));
-            clumps.push((
-                Vec3::new(a.cos() * out, lift, a.sin() * out),
-                r_vox * (0.42 + 0.14 * hr(25 + k)),
-            ));
-        }
-        // Only visit the part of the crown that falls inside this chunk.
-        let lo = origin - IVec3::new(tree.base.x, 0, tree.base.z);
-        let hi = lo + IVec3::splat(CHUNK - 1);
-        let (dx0, dx1) = ((-ri).max(lo.x), ri.min(hi.x));
-        let (dz0, dz1) = ((-ri).max(lo.z), ri.min(hi.z));
-        for y in y0.max(origin.y)..=y1.min(origin.y + CHUNK - 1) {
-            for dz in dz0..=dz1 {
-                for dx in dx0..=dx1 {
-                    let p = IVec3::new(tree.base.x + dx, y, tree.base.z + dz);
-                    let (fx, fz) = (dx as f32 + 0.5, dz as f32 + 0.5);
-                    let inside = if tree.conifer {
-                        let t = (y - y0) as f32 / (y1 - y0) as f32;
-                        // At least a voxel and a half of needles all round the trunk's tip.
-                        (fx * fx + fz * fz).sqrt() < r_vox * (1.0 - t) + 1.9
-                    } else {
-                        // A cloud of rounded clumps around a central one, each a
-                        // little lumpy, so the crown reads as masses of foliage.
-                        let q = Vec3::new(fx, (y - crown) as f32 + 0.5, fz);
-                        let lump = value3(
-                            self.seed.wrapping_add(23),
-                            p.x as f32 * 0.3,
-                            p.y as f32 * 0.3,
-                            p.z as f32 * 0.3,
-                        ) - 0.5;
-                        clumps
-                            .iter()
-                            .enumerate()
-                            .any(|(k, (c, r))| q.distance(*c) < r * (1.0 + if k == 1 { 0.0 } else { 0.3 * lump }))
-                    };
-                    if inside {
-                        put(p, LEAVES, false);
-                    }
-                }
-            }
-        }
-        if !tree.conifer {
-            // Boughs from the upper trunk out into the outer clumps.
-            for (c, _) in clumps.iter().skip(1) {
-                let from = Vec3::new(0.0, (top - 3 - crown) as f32, 0.0);
-                let to = *c * 0.8;
-                let steps = (to - from).length().ceil() as i32 * 2;
-                for k in 0..=steps {
-                    let v = from.lerp(to, k as f32 / steps as f32);
-                    let cell = IVec3::new(tree.base.x, crown, tree.base.z) + v.floor().as_ivec3();
-                    put(cell, WOOD, true);
-                }
-            }
-        }
-        for y in tree.base.y..top {
-            for (dx, dz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                put(IVec3::new(tree.base.x + dx - 1, y, tree.base.z + dz - 1), WOOD, true);
-            }
-        }
-        if !tree.conifer {
-            // Roots flare out around the foot of the trunk.
-            for (dx, dz) in [(-2, -1), (-2, 0), (1, -1), (1, 0), (-1, -2), (0, -2), (-1, 1), (0, 1)] {
-                if hr((dx * 7 + dz * 3 + 40) as u32) < 0.7 {
-                    put(IVec3::new(tree.base.x + dx, tree.base.y, tree.base.z + dz), WOOD, true);
-                }
-            }
-        }
-    }
-
-    /// Rough boxes (min, max in metres) around the canopy and trunk of the tree in a
-    /// tree-grid cell, if it has one. Used to draw forests far away.
-    pub fn tree_boxes(&self, gx: i32, gz: i32) -> Option<[(Vec3, Vec3); 2]> {
-        let t = self.tree_in_cell(gx, gz)?;
-        let r = t.canopy_r / VOXEL_SIZE;
-        let top = (t.base.y + t.trunk_voxels) as f32;
-        let (cx, cz) = (t.base.x as f32, t.base.z as f32);
-        let (canopy_lo, canopy_hi) = if t.conifer {
-            let y0 = (t.base.y + t.trunk_voxels / 3) as f32;
-            let h = r * 0.62;
-            (Vec3::new(cx - h, y0, cz - h), Vec3::new(cx + h, top + 4.0, cz + h))
-        } else {
-            // Matches the crown in `stamp_tree`: centred below the trunk top.
-            let crown = top - (r * 0.45).floor();
-            let (h, v) = (r * 0.95, r * 0.8);
-            (
-                Vec3::new(cx - h, crown + 0.5 - v, cz - h),
-                Vec3::new(cx + h, crown + 0.5 + v, cz + h),
-            )
-        };
-        let trunk_lo = Vec3::new(cx - 1.0, t.base.y as f32, cz - 1.0);
-        let trunk_hi = Vec3::new(cx + 1.0, canopy_lo.y, cz + 1.0);
-        Some([
-            (canopy_lo * VOXEL_SIZE, canopy_hi * VOXEL_SIZE),
-            (trunk_lo * VOXEL_SIZE, trunk_hi * VOXEL_SIZE),
-        ])
     }
 
     /// Generates the voxels of one chunk.
@@ -603,17 +531,19 @@ impl Terrain {
         }
 
         if chunk_top_m >= min_h && chunk_bottom_m <= tree_top {
+            // Trees are models; their trunks collide through hidden voxels.
             let reach = TREE_REACH_M;
-            let x0 = ((origin.x as f32 * VOXEL_SIZE - reach) / TREE_CELL_M).floor() as i32;
-            let x1 = (((origin.x + CHUNK) as f32 * VOXEL_SIZE + reach) / TREE_CELL_M).floor() as i32;
-            let z0 = ((origin.z as f32 * VOXEL_SIZE - reach) / TREE_CELL_M).floor() as i32;
-            let z1 = (((origin.z + CHUNK) as f32 * VOXEL_SIZE + reach) / TREE_CELL_M).floor() as i32;
-            for gz in z0..=z1 {
-                for gx in x0..=x1 {
-                    if let Some(tree) = self.tree_in_cell(gx, gz) {
-                        self.stamp_tree(&tree, origin, &mut data);
+            let lo = Vec2::new(ox - reach, oz - reach);
+            for tree in self.trees_in(lo, lo + Vec2::splat(side + 2.0 * reach)) {
+                tree.trunk_cells(|p| {
+                    let l = p - origin;
+                    if l.cmpge(IVec3::ZERO).all() && l.cmplt(IVec3::splat(CHUNK)).all() {
+                        let i = local_index(l.x, l.y, l.z);
+                        if data[i] == AIR || data[i] == TALL_GRASS {
+                            data[i] = BUILT;
+                        }
                     }
-                }
+                });
             }
             let reach = BOULDER_MAX_R_M * 1.3;
             let cell = |m: f32| (m / BOULDER_CELL_M).floor() as i32;
@@ -835,34 +765,6 @@ mod tests {
         }
         // The home reach, where the village stands, is at the base level.
         assert_eq!(water_level(t.river_x(HOME_Z_M), HOME_Z_M), WATER_LEVEL_M);
-    }
-
-    #[test]
-    fn crowns_enclose_the_trunk_tops() {
-        let mut t = Terrain::new(20260927);
-        let mut checked = 0;
-        for gz in 100..130 {
-            for gx in 95..125 {
-                let Some(tree) = t.tree_in_cell(gx, gz) else { continue };
-                let top = tree.base.y + tree.trunk_voxels;
-                for (dx, dz) in [(-1, -1), (0, -1), (-1, 0), (0, 0)] {
-                    // The trunk's top voxel is covered by foliage above and around it.
-                    let k = if tree.conifer { 1 } else { 2 };
-                    for d in [IVec3::Y, IVec3::X * k, IVec3::NEG_X * k, IVec3::Z * k, IVec3::NEG_Z * k] {
-                        let v = IVec3::new(tree.base.x + dx, top - 1, tree.base.z + dz) + d;
-                        let l = crate::chunk::local_of(v);
-                        let b = t.generate(crate::chunk::chunk_of(v)).get(l.x, l.y, l.z);
-                        assert!(
-                            b == LEAVES || b == WOOD,
-                            "tree at {:?}: {b} beside the trunk top",
-                            tree.base
-                        );
-                    }
-                }
-                checked += 1;
-            }
-        }
-        assert!(checked > 20, "{checked} trees");
     }
 
     #[test]

@@ -838,7 +838,7 @@ impl Structures {
 }
 
 /// Which way the player faces on arrival (`Player::new`), as a yaw in radians.
-const SPAWN_YAW: f32 = -1.2;
+pub const SPAWN_YAW: f32 = -1.2;
 
 /// The highest, most level site (centre in metres) within a wedge seen from
 /// `from`: yaws and distances as ranges, a square of half-size `half` whose

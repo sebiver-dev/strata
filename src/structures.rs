@@ -9,10 +9,11 @@
 //! where there are no voxels, each is drawn as a few simple shapes.
 
 use crate::block::*;
+use crate::castle::Castle;
 use crate::chunk::{chunk_of, local_index, CHUNK, CHUNK_VOLUME};
 use crate::cottage::Cottage;
 use crate::far::{face, revolve};
-use crate::mesh::{smooth_data, MeshData, Vertex};
+use crate::mesh::MeshData;
 use crate::model;
 use crate::noise::{hash2, unit};
 use crate::terrain::{Terrain, WATER_LEVEL_M};
@@ -184,8 +185,7 @@ impl Bridge {
     }
 }
 
-/// A round stone tower with a timber lookout room and a pointed roof, or with
-/// just a spire when it is part of the castle.
+/// A round stone tower with a timber lookout room and a pointed roof.
 #[derive(Clone, Debug)]
 pub struct Tower {
     pub c: Vec2,
@@ -270,179 +270,6 @@ impl Tower {
             cone.push((room_top + t * self.cone_h, self.cone_r * (1.0 - t).powf(1.4)));
         }
         revolve(out, self.c, &cone, 10, ROOF, 0);
-    }
-}
-
-/// A castle on the heights: a walled bailey on a masonry terrace, a keep,
-/// and round towers crowned with slate spires.
-#[derive(Clone, Debug)]
-pub struct Castle {
-    pub c: Vec2,
-    /// Height of the terrace the castle stands on.
-    pub floor: f32,
-    /// Lowest ground under the terrace.
-    pub base: f32,
-    pub towers: Vec<Tower>,
-}
-
-const BAILEY: Vec2 = Vec2::new(22.0, 15.0);
-const KEEP_LO: Vec2 = Vec2::new(-12.0, -7.0);
-const KEEP_HI: Vec2 = Vec2::new(4.0, 7.0);
-const CURTAIN_H: f32 = 8.0;
-const KEEP_H: f32 = 16.0;
-
-impl Castle {
-    fn plan(t: &Terrain, x: f32, z: f32, seed: u32) -> Self {
-        let c = Vec2::new(snap(x, 0.5), snap(z, 0.5));
-        let (lo, hi) = ground_range(t, c - BAILEY, c + BAILEY);
-        let floor = (hi / VOXEL_SIZE).round() * VOXEL_SIZE + 1.0;
-        let tower = |dx: f32, dz: f32, r: f32, h: f32, cone: f32, s: u32| Tower {
-            c: c + Vec2::new(dx, dz),
-            r,
-            base: lo - 1.0,
-            top: floor + h,
-            room: 0.0,
-            cone_r: r + 0.7,
-            cone_h: cone,
-            seed: seed.wrapping_add(s),
-        };
-        let (bx, bz) = (BAILEY.x, BAILEY.y);
-        let towers = vec![
-            tower(-bx, -bz, 3.5, 13.0, 8.0, 1),
-            tower(bx, -bz, 3.5, 13.0, 8.0, 2),
-            tower(-bx, bz, 3.5, 13.0, 8.0, 3),
-            tower(bx, bz, 3.5, 13.0, 8.0, 4),
-            // The great tower and two slender ones rising from the bailey.
-            tower(10.0, -3.0, 4.5, 24.0, 11.0, 5),
-            tower(-12.0, 7.0, 2.5, 24.0, 9.0, 6),
-            tower(3.0, 8.0, 2.5, 21.0, 8.0, 7),
-            tower(-4.0, -7.0, 2.2, 26.0, 9.0, 8),
-        ];
-        Castle {
-            c,
-            floor,
-            base: lo - 1.0,
-            towers,
-        }
-    }
-
-    fn bounds(&self) -> (Vec3, Vec3) {
-        let mut lo = Vec3::new(self.c.x - BAILEY.x - 1.0, self.base, self.c.y - BAILEY.y - 1.0);
-        let mut hi = Vec3::new(
-            self.c.x + BAILEY.x + 1.0,
-            self.floor + KEEP_H + 8.0,
-            self.c.y + BAILEY.y + 1.0,
-        );
-        for t in &self.towers {
-            let (a, b) = t.bounds();
-            lo = lo.min(a);
-            hi = hi.max(b);
-        }
-        (lo, hi)
-    }
-
-    fn block(&self, p: Vec3) -> Option<Block> {
-        for t in &self.towers {
-            if let Some(b) = t.block(p) {
-                return Some(b);
-            }
-        }
-        let q = Vec2::new(p.x, p.z) - self.c;
-        let inside = q.x.abs() <= BAILEY.x && q.y.abs() <= BAILEY.y;
-        if !inside {
-            return None;
-        }
-        if p.y < self.floor {
-            return (p.y >= self.base).then_some(MASONRY);
-        }
-        let dy = p.y - self.floor;
-        // Curtain wall with crenellations.
-        let wall = q.x.abs() > BAILEY.x - 1.5 || q.y.abs() > BAILEY.y - 1.5;
-        if wall {
-            if dy < CURTAIN_H {
-                return Some(MASONRY);
-            }
-            let merlon = ((q.x + q.y) / 1.0).floor() as i32 % 2 == 0;
-            let outer = q.x.abs() > BAILEY.x - 0.5 || q.y.abs() > BAILEY.y - 0.5;
-            return (dy < CURTAIN_H + 1.0 && outer && merlon).then_some(MASONRY);
-        }
-        // The keep: a tall hall with lit windows and a steep slate roof.
-        if q.x >= KEEP_LO.x && q.x <= KEEP_HI.x && q.y >= KEEP_LO.y && q.y <= KEEP_HI.y {
-            let half = (KEEP_HI.y - KEEP_LO.y) * 0.5;
-            let across = (q.y - (KEEP_LO.y + KEEP_HI.y) * 0.5).abs();
-            if dy < KEEP_H {
-                let shell = q.x < KEEP_LO.x + 0.5 || q.x > KEEP_HI.x - 0.5 || across > half - 0.5;
-                let along = if across > half - 0.5 { q.x } else { q.y };
-                if shell && dy > 3.0 && dy % 4.0 < 1.5 && along.rem_euclid(3.0) < 1.0 {
-                    return Some(WINDOW);
-                }
-                return Some(MASONRY);
-            }
-            let rt = (half - across) * 1.4;
-            if dy - KEEP_H < rt {
-                return Some(if dy - KEEP_H > rt - 1.0 { ROOF } else { MASONRY });
-            }
-        }
-        None
-    }
-
-    fn far(&self, out: &mut MeshData) {
-        let (lo, hi) = (self.c - BAILEY, self.c + BAILEY);
-        boxed(
-            out,
-            Vec3::new(lo.x, self.base, lo.y),
-            Vec3::new(hi.x, self.floor + CURTAIN_H, hi.y),
-            MASONRY,
-        );
-        let (klo, khi) = (self.c + KEEP_LO, self.c + KEEP_HI);
-        let top = self.floor + KEEP_H;
-        boxed(
-            out,
-            Vec3::new(klo.x, self.floor, klo.y),
-            Vec3::new(khi.x, top, khi.y),
-            MASONRY,
-        );
-        let mid = (klo.y + khi.y) * 0.5;
-        let ridge = top + (khi.y - klo.y) * 0.5 * 1.4;
-        for (a, b) in [(klo.y, mid), (khi.y, mid)] {
-            polygon(
-                out,
-                &[
-                    Vec3::new(klo.x, top, a),
-                    Vec3::new(khi.x, top, a),
-                    Vec3::new(khi.x, ridge, b),
-                    Vec3::new(klo.x, ridge, b),
-                ],
-                ROOF,
-            );
-        }
-        for t in &self.towers {
-            t.far(out);
-        }
-        // Rows of lit windows on the keep, where the voxel keep has them.
-        let mut dy = 4.0;
-        while dy + 1.5 < KEEP_H {
-            let y = self.floor + dy + 0.75;
-            let v = Vec3::Y * 0.75;
-            // Window columns sit where the keep's local coordinate is a multiple of 3 m.
-            let mut x = self.c.x + (KEEP_LO.x / 3.0).ceil() * 3.0 + 0.5;
-            while x < khi.x - 0.5 {
-                for z in [klo.y - 0.03, khi.y + 0.03] {
-                    let (c, u) = (Vec3::new(x, y, z), Vec3::X * 0.5);
-                    polygon(out, &[c - u - v, c + u - v, c + u + v, c - u + v], WINDOW);
-                }
-                x += 3.0;
-            }
-            let mut z = self.c.y + (KEEP_LO.y / 3.0).ceil() * 3.0 + 0.5;
-            while z < khi.y - 0.5 {
-                for x in [klo.x - 0.03, khi.x + 0.03] {
-                    let (c, u) = (Vec3::new(x, y, z), Vec3::Z * 0.5);
-                    polygon(out, &[c - u - v, c + u - v, c + u + v, c - u + v], WINDOW);
-                }
-                z += 3.0;
-            }
-            dy += 4.0;
-        }
     }
 }
 
@@ -653,17 +480,9 @@ impl Structures {
                 seed: seed ^ 20,
             }));
         }
-        if let Some(c) = best_site(
-            t,
-            spawn,
-            (SPAWN_YAW - 0.65, SPAWN_YAW + 0.35),
-            (380.0, 700.0),
-            20.0,
-            82.0,
-            16.0,
-            0.03,
-        ) {
-            s.add(Structure::Castle(Castle::plan(t, c.x, c.y, seed ^ 40)));
+        // The castle crowns the cliff above the falls up the valley.
+        if let Some(c) = Castle::plan(t, spawn) {
+            s.add(Structure::Castle(c));
         }
         s.build_models(t);
         s
@@ -677,6 +496,7 @@ impl Structures {
             match st {
                 Structure::Cottage(c) => c.model(t, &mut all),
                 Structure::Fence(f) => f.model(t, &mut all),
+                Structure::Castle(c) => c.model(&mut all),
                 _ => {}
             }
         }
@@ -774,7 +594,7 @@ impl Structures {
                             Structure::Bridge(b) => b.block(p, g),
                             Structure::Cottage(c) => c.block(p, g),
                             Structure::Tower(t) => t.block(p),
-                            Structure::Castle(c) => c.block(p),
+                            Structure::Castle(c) => c.block(p, g),
                             Structure::Fence(f) => f.block(p, g),
                         };
                         let Some(b) = b else { continue };
@@ -883,28 +703,6 @@ fn cottage_door_near(s: &Structures, x: f32, z: f32) -> bool {
         }
         _ => false,
     })
-}
-
-/// A flat, convex polygon given counter-clockwise from outside; drawn from both
-/// sides so its winding never hides it.
-fn polygon(out: &mut MeshData, pts: &[Vec3], mat: Block) {
-    let n = (pts[1] - pts[0]).cross(pts[2] - pts[0]).normalize_or_zero();
-    for normal in [n, -n] {
-        let start = out.vertices.len() as u32;
-        for q in pts {
-            out.vertices.push(Vertex {
-                pos: q.to_array(),
-                data: smooth_data(mat, 3, normal),
-            });
-        }
-        for k in 1..pts.len() as u32 - 1 {
-            if normal == n {
-                out.indices.extend_from_slice(&[start, start + k, start + k + 1]);
-            } else {
-                out.indices.extend_from_slice(&[start, start + k + 1, start + k]);
-            }
-        }
-    }
 }
 
 /// All six faces of an axis-aligned box.

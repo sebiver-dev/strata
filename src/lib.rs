@@ -14,6 +14,7 @@ pub mod model;
 pub mod noise;
 pub mod player;
 pub mod renderer;
+pub mod rocks;
 pub mod structures;
 pub mod terrain;
 pub mod trees;

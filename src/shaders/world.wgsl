@@ -808,6 +808,32 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.sss = 0.2;
             wettable = false;
         }
+        case 35u: { // boulder: speckled grey granite with hairline cracks under a thick cap of moss
+            let tone = vnoise(q * 0.35);
+            var c = mix(vec3(0.42, 0.42, 0.43), vec3(0.57, 0.55, 0.51), tone) * (0.85 + 0.25 * fine);
+            // Dark mica and pale feldspar grains.
+            let grain = hash3(floor(q * 38.0));
+            c *= 1.0 + (0.28 * step(0.9, grain) - 0.3 * step(grain, 0.08)) * d_cm;
+            // Hairline cracks and pale lichen rosettes.
+            let cr = 1.0 - abs(2.0 * vnoise(q * vec3(2.2, 3.1, 2.2)) - 1.0);
+            let crack = smoothstep(0.955, 0.99, cr) * smoothstep(0.45, 0.6, vnoise(q * 0.8 + 3.0)) * d_dm;
+            c *= 1.0 - 0.5 * crack;
+            let lichen = smoothstep(0.72, 0.8, vnoise(q * 4.0 + 7.0)) * d_dm;
+            c = mix(c, vec3(0.70, 0.70, 0.60), lichen * 0.35);
+            // Moss grows on whatever faces the sky, with a fuzzy, ragged edge,
+            // but not below the waterline.
+            let ragged = fbm(q * 1.7) - 0.5 + (vnoise(q * 11.0) - 0.5) * 0.35;
+            let dry = smoothstep(water_level_at(p.xz), water_level_at(p.xz) + 0.3, p.y);
+            let moss_m = smoothstep(0.42, 0.7, n.y + ragged * 0.8) * dry;
+            let tuft = vnoise(q * 23.0);
+            let moss = mix(vec3(0.20, 0.33, 0.08), vec3(0.42, 0.52, 0.16), vnoise(q * 5.0)) * (0.85 + 0.3 * tuft);
+            c = mix(c, moss, moss_m);
+            s.albedo = c;
+            s.sss = moss_m * 0.3;
+            s.rough = mix(0.7, 0.95, moss_m);
+            s.f0 = 0.04;
+            s.height = (1.0 - moss_m) * (fine * 0.03 - crack * 0.02) + moss_m * (0.03 + tuft * 0.012 * d_cm);
+        }
         case 27u: { // bark: deep vertical fissures between plated ridges, moss on top
             let ridge = vnoise(vec3(q.x * 11.0, q.y * 1.4, q.z * 11.0)) * 0.6 + vnoise(vec3(q.x * 27.0, q.y * 3.5, q.z * 27.0)) * 0.4;
             // Narrow dark fissures between broad plates of bark.

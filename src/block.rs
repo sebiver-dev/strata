@@ -52,6 +52,10 @@ pub const CLOTH: Block = 24;
 pub const BUILT: Block = 25;
 /// Wrought iron: lantern frames, arms and chains (mesh only).
 pub const IRON: Block = 26;
+/// Deep blue-violet woollen banner with a gold trim; sways in the wind (mesh only).
+pub const BANNER: Block = 53;
+/// Rough bridge stone: mottled, mossy on top, dark and damp near the water (mesh only).
+pub const BRIDGE_STONE: Block = 54;
 
 /// Materials the player can place, in hotbar order (keys 1..).
 pub const PLACEABLE: [Block; 8] = [STONE, DIRT, GRASS, SAND, GRAVEL, WOOD, PLANKS, SNOW];
@@ -82,6 +86,8 @@ pub fn name(b: Block) -> &'static str {
         BUILT => "building",
         POST => "post",
         IRON => "iron",
+        BANNER => "banner",
+        BRIDGE_STONE => "bridge stone",
         _ => "unknown",
     }
 }

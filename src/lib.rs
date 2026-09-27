@@ -4,6 +4,7 @@
 pub mod app;
 pub mod avatar;
 pub mod block;
+pub mod bridge;
 pub mod budget;
 pub mod chunk;
 pub mod cottage;

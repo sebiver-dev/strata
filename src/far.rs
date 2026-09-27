@@ -8,7 +8,7 @@
 use crate::block::*;
 use crate::budget::{Cost, Deadline};
 use crate::mesh::{smooth_data, MeshData, Vertex, FACES};
-use crate::terrain::{Terrain, TREE_CELL_M, WATER_LEVEL_M, WORLD_SIZE_M};
+use crate::terrain::{water_level, Terrain, TREE_CELL_M, WORLD_SIZE_M};
 use glam::{IVec2, Vec2, Vec3};
 use std::collections::HashMap;
 
@@ -279,10 +279,18 @@ pub fn build_tile(terrain: &Terrain, tile: IVec2, level: u8) -> MeshData {
             // Counter-clockwise seen from above.
             out.indices.extend_from_slice(&[a, c, b, a, d, c]);
             let top = h(i, j).min(h(i + 1, j)).min(h(i, j + 1)).min(h(i + 1, j + 1));
-            if top < WATER_LEVEL_M {
+            let (cx, cz) = (origin.x + (i as f32 + 0.5) * cell, origin.y + (j as f32 + 0.5) * cell);
+            let level = water_level(cx, cz);
+            if top < level {
                 let lo = Vec3::new(origin.x + i as f32 * cell, top - 1.0, origin.y + j as f32 * cell);
-                let hi = Vec3::new(lo.x + cell, WATER_LEVEL_M - 0.06, lo.z + cell);
+                let hi = Vec3::new(lo.x + cell, level - 0.06, lo.z + cell);
                 face(&mut out.water_vertices, &mut out.water_indices, lo, hi, 2, WATER);
+                // Where the next cell downstream sits a fall lower, the water pours over.
+                let below = water_level(cx, cz + cell);
+                if below < level && h(i, j + 1).min(h(i + 1, j + 1)) < below {
+                    let lo = Vec3::new(lo.x, below - 0.06, hi.z);
+                    face(&mut out.water_vertices, &mut out.water_indices, lo, hi, 4, WATER);
+                }
             }
         }
     }

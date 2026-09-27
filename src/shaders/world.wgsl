@@ -47,8 +47,53 @@ struct Globals {
 
 const VOXEL: f32 = 0.5;
 const CHUNK_M: f32 = 16.0;
-// Matches terrain::WATER_LEVEL_M.
+// Matches terrain::WATER_LEVEL_M: the water level along the home reach,
+// between the falls either side of HOME_Z (terrain::HOME_Z_M).
 const WATER_LEVEL: f32 = 24.5;
+const HOME_Z: f32 = 1024.0;
+const FALL_COUNT: u32 = 10u;
+
+// Matches terrain::FALLS: the Z of each fall's lip and its drop in metres.
+fn fall(k: u32) -> vec2<f32> {
+    var falls = array<vec2<f32>, 10>(
+        vec2(380.0, 1.0), vec2(388.0, 1.0), vec2(396.0, 1.5), vec2(690.0, 8.0),
+        vec2(1290.0, 1.0), vec2(1297.0, 1.0), vec2(1304.0, 1.0), vec2(1540.0, 4.0),
+        vec2(1790.0, 1.5), vec2(1798.0, 1.5),
+    );
+    return falls[k];
+}
+
+// Matches terrain::fall_z: the lip bows a little across the river.
+fn fall_z(z0: f32, x: f32) -> f32 {
+    return z0 + 3.0 * sin(x * 0.21 + z0 * 0.01);
+}
+
+// Height of still water at a point, stepping down at each fall.
+fn water_level_at(xz: vec2<f32>) -> f32 {
+    var level = WATER_LEVEL;
+    for (var k = 0u; k < FALL_COUNT; k++) {
+        let f = fall(k);
+        if (xz.y < fall_z(f.x, xz.x)) {
+            level += f.y;
+        }
+        if (f.x > HOME_Z) {
+            level -= f.y;
+        }
+    }
+    return level;
+}
+
+// Metres downstream of the nearest fall's lip (large when none is near).
+fn below_fall(xz: vec2<f32>) -> f32 {
+    var best = 1e4;
+    for (var k = 0u; k < FALL_COUNT; k++) {
+        let d = xz.y - fall_z(fall(k).x, xz.x);
+        if (d >= -2.0) {
+            best = min(best, d);
+        }
+    }
+    return best;
+}
 const PI: f32 = 3.14159265;
 
 fn hash3(p: vec3<f32>) -> f32 {
@@ -349,7 +394,8 @@ fn apply_fog(c: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
     }
     // Density falls off exponentially above the water line; integrate it along the ray.
     let falloff = 1.0 / 38.0;
-    let h0 = g.camera_pos.y - WATER_LEVEL;
+    let cam_water = water_level_at(g.camera_pos.xz);
+    let h0 = g.camera_pos.y - cam_water;
     let dy = to.y * falloff;
     let base = mix(0.0016, 0.0011, golden_hour()) * exp(-max(h0, -20.0) * falloff);
     let integral = select((1.0 - exp(-dy)) / dy, 1.0 - 0.5 * dy, abs(dy) < 1e-3);
@@ -369,7 +415,7 @@ fn apply_fog(c: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
     // Valley mist: a thin, patchy layer lying on the river and the low
     // meadows, thickest in the evening, lit warm on the side towards the sun.
     let mist_fall = 1.0 / 6.0;
-    let hm = g.camera_pos.y - (WATER_LEVEL + 1.5);
+    let hm = g.camera_pos.y - (cam_water + 1.5);
     let dym = to.y * mist_fall;
     let mist_integral = select((1.0 - exp(-dym)) / dym, 1.0 - 0.5 * dym, abs(dym) < 1e-3);
     let patchy = 0.3 + 1.4 * vnoise2((g.camera_pos.xz + to.xz * 0.6) / 70.0);
@@ -736,7 +782,8 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
 
     // Ground just above the waterline is darker and glossier.
     if (wettable) {
-        let wet = 1.0 - smoothstep(WATER_LEVEL - 0.1, WATER_LEVEL + 0.5, p.y);
+        let level = water_level_at(p.xz);
+        let wet = 1.0 - smoothstep(level - 0.1, level + 0.5, p.y);
         s.albedo *= mix(1.0, 0.55, wet);
         s.rough = mix(s.rough, 0.2, wet);
     }
@@ -1117,7 +1164,19 @@ fn shade_water(i: VOut) -> vec4<f32> {
     // Around rocks in the current the white water is broken into streaks.
     let streak = vnoise2(vec2(p.x * 7.0, p.z * 1.5 - t * 1.4));
     let foam = (1.0 - smoothstep(0.0, 0.45, depth_below)) * smoothstep(0.35, 0.65, foam_n * 0.7 + streak * 0.3);
-    body = mix(body, lin(vec3(0.92, 0.95, 0.95)) * (0.5 + 0.8 * sh), foam * 0.7);
+    // The pool at the foot of a fall churns white, calming downstream.
+    let fall_d = below_fall(p.xz);
+    let churn = (1.0 - smoothstep(0.0, 9.0, fall_d)) * smoothstep(-2.0, 0.0, fall_d);
+    let churn_n = vnoise2(vec2(p.x * 3.0, p.z * 2.0 - t * 2.2)) * 0.5 + vnoise2(p.xz * 7.0 + t * 0.7) * 0.5;
+    var white = max(foam, churn * smoothstep(0.2, 0.55, churn_n * (0.6 + 0.5 * churn)));
+    if (face_n.y < 0.5) {
+        // A falling sheet: white streaks pouring down over a thin green body.
+        let along = dot(p.xz, vec2(face_n.z, -face_n.x));
+        let pour = vnoise2(vec2(along * 5.0, p.y * 0.8 + t * 2.6)) * 0.6
+            + vnoise2(vec2(along * 13.0, p.y * 1.7 + t * 4.1)) * 0.4;
+        white = 0.2 + 0.7 * smoothstep(0.35, 0.75, pour);
+    }
+    body = mix(body, lin(vec3(0.92, 0.95, 0.95)) * (0.5 + 0.8 * sh), white * 0.8);
 
     // Reflection: screen-space first, the sky where the screen has no answer.
     let r = reflect(-v, n);
@@ -1126,8 +1185,8 @@ fn shade_water(i: VOut) -> vec4<f32> {
     let refl = mix(sky_refl, ssr.rgb, ssr.w);
 
     let fresnel = 0.02 + 0.98 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
-    var c = mix(body, refl, fresnel * (1.0 - foam * 0.7));
-    c += sun_light() * 1.15 * sh * ggx_spec(n, v, sun, 0.07, 0.02) * (1.0 - foam);
+    var c = mix(body, refl, fresnel * (1.0 - white * 0.8));
+    c += sun_light() * 1.15 * sh * ggx_spec(n, v, sun, 0.07, 0.02) * (1.0 - white);
     return vec4(apply_fog(c, p), 1.0);
 }
 

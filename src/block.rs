@@ -52,6 +52,9 @@ pub const CLOTH: Block = 24;
 pub const BUILT: Block = 25;
 /// Wrought iron: lantern frames, arms and chains (mesh only).
 pub const IRON: Block = 26;
+/// Pink and white lupin florets (mesh only); LUPIN is the purple kind.
+pub const LUPIN_PINK: Block = 40;
+pub const LUPIN_WHITE: Block = 41;
 
 /// Materials the player can place, in hotbar order (keys 1..).
 pub const PLACEABLE: [Block; 8] = [STONE, DIRT, GRASS, SAND, GRAVEL, WOOD, PLANKS, SNOW];

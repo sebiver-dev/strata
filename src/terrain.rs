@@ -42,7 +42,7 @@ pub const FALLS: [(f32, f32, f32); 10] = [
 // so a 1.75 m player reads at the right scale against them.
 /// Trees sit on a jittered grid with this spacing in metres.
 pub const TREE_CELL_M: f32 = 9.0;
-const TREE_REACH_M: f32 = 7.5;
+const TREE_REACH_M: f32 = 9.5;
 /// Grid cell (metres) that holds at most one boulder.
 const BOULDER_CELL_M: f32 = 6.0;
 /// Largest boulder radius in metres.
@@ -264,7 +264,9 @@ impl Terrain {
         let (hx, _) = self.height_at(x_m + 1.0, z_m);
         let (hz, _) = self.height_at(x_m, z_m + 1.0);
         let slope = (hx - h).abs().max((hz - h).abs());
-        let snow_line = 112.0 + 10.0 * fbm2(self.seed.wrapping_add(7), x_m / 40.0, z_m / 40.0, 2);
+        // Snow lies above a ragged snowline, lower on flat ledges, never on steep rock.
+        let snow_line = 104.0 + 22.0 * fbm2(self.seed.wrapping_add(7), x_m / 60.0, z_m / 60.0, 3)
+            - 14.0 * (1.0 - smoothstep(0.3, 0.9, slope));
 
         let water = water_level(x_m, z_m);
         let (surface, subsurface) = if slope > 1.3 && h > water - 1.0 {
@@ -276,7 +278,7 @@ impl Terrain {
             } else {
                 (SAND, SAND)
             }
-        } else if h > snow_line && slope < 1.4 {
+        } else if h > snow_line && slope < 1.0 {
             (SNOW, STONE)
         } else if slope > 1.05 {
             (STONE, STONE)
@@ -357,7 +359,7 @@ impl Terrain {
             } else {
                 14 + (size * 8.0) as i32
             },
-            canopy_r: if conifer { 3.0 + size * 1.2 } else { 3.8 + size * 2.0 },
+            canopy_r: if conifer { 3.0 + size * 1.2 } else { 4.4 + size * 2.2 },
             conifer,
         })
     }
@@ -406,9 +408,9 @@ impl Terrain {
         };
         let r_vox = tree.canopy_r / VOXEL_SIZE;
         let top = tree.base.y + tree.trunk_voxels;
-        let ri = (r_vox * 1.2).ceil() as i32 + 1;
-        // Broadleaf crowns sit partly around the upper trunk, like real ones.
-        let crown = top - (r_vox * 0.35) as i32;
+        let ri = (r_vox * 1.35).ceil() as i32 + 1;
+        // Broadleaf crowns sit well down around the upper trunk, like real ones.
+        let crown = top - (r_vox * 0.45) as i32;
         let (y0, y1) = if tree.conifer {
             (tree.base.y + tree.trunk_voxels / 3, top + 3)
         } else {
@@ -418,15 +420,20 @@ impl Terrain {
         // height) and radii.
         let h = crate::noise::hash3(self.seed.wrapping_add(24), tree.base.x, tree.base.y, tree.base.z);
         let hr = |k: u32| unit(h.rotate_left(k));
-        let mut clumps = vec![(Vec3::new(0.0, r_vox * 0.2, 0.0), r_vox * 0.66)];
-        let n = 5 + (hr(1) * 3.0) as u32;
+        // The central clump always closes over the top of the trunk.
+        let trunk_top = (top - crown) as f32;
+        let mut clumps = vec![
+            (Vec3::new(0.0, r_vox * 0.2, 0.0), r_vox * 0.7),
+            (Vec3::new(0.0, trunk_top + 0.5, 0.0), (r_vox * 0.45).max(3.0)),
+        ];
+        let n = 6 + (hr(1) * 3.0) as u32;
         for k in 0..n {
             let a = (k as f32 + 0.35 * hr(3 + k)) * std::f32::consts::TAU / n as f32;
-            let out = r_vox * (0.5 + 0.15 * hr(9 + k));
-            let lift = r_vox * (-0.2 + 0.5 * hr(17 + k));
+            let out = r_vox * (0.52 + 0.18 * hr(9 + k));
+            let lift = r_vox * (-0.3 + 0.55 * hr(17 + k));
             clumps.push((
                 Vec3::new(a.cos() * out, lift, a.sin() * out),
-                r_vox * (0.4 + 0.14 * hr(25 + k)),
+                r_vox * (0.42 + 0.14 * hr(25 + k)),
             ));
         }
         // Only visit the part of the crown that falls inside this chunk.
@@ -441,7 +448,8 @@ impl Terrain {
                     let (fx, fz) = (dx as f32 + 0.5, dz as f32 + 0.5);
                     let inside = if tree.conifer {
                         let t = (y - y0) as f32 / (y1 - y0) as f32;
-                        (fx * fx + fz * fz).sqrt() < r_vox * (1.0 - t) + 0.6
+                        // At least a voxel and a half of needles all round the trunk's tip.
+                        (fx * fx + fz * fz).sqrt() < r_vox * (1.0 - t) + 1.9
                     } else {
                         // A cloud of rounded clumps around a central one, each a
                         // little lumpy, so the crown reads as masses of foliage.
@@ -452,7 +460,10 @@ impl Terrain {
                             p.y as f32 * 0.3,
                             p.z as f32 * 0.3,
                         ) - 0.5;
-                        clumps.iter().any(|(c, r)| q.distance(*c) < r * (1.0 + 0.3 * lump))
+                        clumps
+                            .iter()
+                            .enumerate()
+                            .any(|(k, (c, r))| q.distance(*c) < r * (1.0 + if k == 1 { 0.0 } else { 0.3 * lump }))
                     };
                     if inside {
                         put(p, LEAVES, false);
@@ -501,8 +512,8 @@ impl Terrain {
             (Vec3::new(cx - h, y0, cz - h), Vec3::new(cx + h, top + 4.0, cz + h))
         } else {
             // Matches the crown in `stamp_tree`: centred below the trunk top.
-            let crown = top - (r * 0.35).floor();
-            let (h, v) = (r * 0.86, r / 1.15 * 0.86);
+            let crown = top - (r * 0.45).floor();
+            let (h, v) = (r * 0.95, r * 0.8);
             (
                 Vec3::new(cx - h, crown + 0.5 - v, cz - h),
                 Vec3::new(cx + h, crown + 0.5 + v, cz + h),
@@ -824,6 +835,34 @@ mod tests {
         }
         // The home reach, where the village stands, is at the base level.
         assert_eq!(water_level(t.river_x(HOME_Z_M), HOME_Z_M), WATER_LEVEL_M);
+    }
+
+    #[test]
+    fn crowns_enclose_the_trunk_tops() {
+        let mut t = Terrain::new(20260927);
+        let mut checked = 0;
+        for gz in 100..130 {
+            for gx in 95..125 {
+                let Some(tree) = t.tree_in_cell(gx, gz) else { continue };
+                let top = tree.base.y + tree.trunk_voxels;
+                for (dx, dz) in [(-1, -1), (0, -1), (-1, 0), (0, 0)] {
+                    // The trunk's top voxel is covered by foliage above and around it.
+                    let k = if tree.conifer { 1 } else { 2 };
+                    for d in [IVec3::Y, IVec3::X * k, IVec3::NEG_X * k, IVec3::Z * k, IVec3::NEG_Z * k] {
+                        let v = IVec3::new(tree.base.x + dx, top - 1, tree.base.z + dz) + d;
+                        let l = crate::chunk::local_of(v);
+                        let b = t.generate(crate::chunk::chunk_of(v)).get(l.x, l.y, l.z);
+                        assert!(
+                            b == LEAVES || b == WOOD,
+                            "tree at {:?}: {b} beside the trunk top",
+                            tree.base
+                        );
+                    }
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked > 20, "{checked} trees");
     }
 
     #[test]

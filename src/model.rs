@@ -12,6 +12,11 @@ use glam::Vec3;
 /// values read as a rounder edge.
 const EDGE_SOFTNESS: f32 = 0.45;
 
+/// How far corner normals lean for a face this many metres from centre to edge.
+fn lean(half: f32) -> f32 {
+    EDGE_SOFTNESS * (0.15 / half.max(1e-3)).min(1.0)
+}
+
 /// An oriented box. `axes` are three unit vectors (right-handed), `half` the
 /// half extents along them.
 pub fn soft_box(out: &mut MeshData, centre: Vec3, axes: [Vec3; 3], half: Vec3, mat: Block) {
@@ -24,7 +29,9 @@ pub fn soft_box(out: &mut MeshData, centre: Vec3, axes: [Vec3; 3], half: Vec3, m
             let start = out.vertices.len() as u32;
             for (cu, cv) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
                 let pos = face_c + u * hu * cu + v * hv * cv;
-                let normal = (n * s + (u * cu + v * cv) * EDGE_SOFTNESS).normalize();
+                // Thin parts round off fully; broad faces stay nearly flat.
+                let (ku, kv) = (lean(hu), lean(hv));
+                let normal = (n * s + u * cu * ku + v * cv * kv).normalize();
                 out.vertices.push(Vertex {
                     pos: pos.to_array(),
                     data: smooth_data(mat, 3, normal),

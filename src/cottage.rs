@@ -590,7 +590,7 @@ impl Cottage {
                 at(0.0, y),
                 t_dir,
                 n_dir,
-                Vec3::new(half + 0.12, TIMBER, depth),
+                Vec3::new(half + 0.12, depth, TIMBER),
                 OAK,
             );
         }
@@ -607,7 +607,7 @@ impl Cottage {
                     at(t, f + h * 0.5),
                     Vec3::Y,
                     n_dir,
-                    Vec3::new(h * 0.5, TIMBER, depth),
+                    Vec3::new(h * 0.5, depth, TIMBER),
                     OAK,
                 );
             }
@@ -638,7 +638,7 @@ impl Cottage {
                             at((ta + tb) * 0.5, (ya + yb) * 0.5),
                             t_dir,
                             n_dir,
-                            Vec3::new((tb - ta) * 0.5, (yb - ya) * 0.5, WALL * 0.5),
+                            Vec3::new((tb - ta) * 0.5, WALL * 0.5, (yb - ya) * 0.5),
                             PLASTER,
                         );
                     }
@@ -704,7 +704,7 @@ impl Cottage {
             } else {
                 (yb - ya) * 0.5
             };
-            board(out, c, along, n_dir, Vec3::new(len, 0.06, depth), OAK);
+            board(out, c, along, n_dir, Vec3::new(len, depth, 0.06), OAK);
         }
         let tm = (w0 + w1) * 0.5;
         let ym = (y0 + y1) * 0.5;
@@ -713,7 +713,7 @@ impl Cottage {
             at(tm, ym),
             Vec3::Y,
             n_dir,
-            Vec3::new((y1 - y0) * 0.5, 0.025, 0.04),
+            Vec3::new((y1 - y0) * 0.5, 0.04, 0.025),
             OAK,
         );
         board(
@@ -721,7 +721,7 @@ impl Cottage {
             at(tm, ym),
             t_dir,
             n_dir,
-            Vec3::new((w1 - w0) * 0.5, 0.025, 0.04),
+            Vec3::new((w1 - w0) * 0.5, 0.04, 0.025),
             OAK,
         );
         // Sill board jutting out, and shutters swung open against the wall.
@@ -742,7 +742,7 @@ impl Cottage {
                     c,
                     Vec3::Y,
                     n_dir,
-                    Vec3::new((y1 - y0) * 0.5, sw * 0.5, 0.025),
+                    Vec3::new((y1 - y0) * 0.5, 0.025, sw * 0.5),
                     BOARDS,
                 );
             }
@@ -760,7 +760,7 @@ impl Cottage {
                 at(t, f + DOOR_H * 0.5),
                 Vec3::Y,
                 n_dir,
-                Vec3::new(DOOR_H * 0.5, 0.07, depth),
+                Vec3::new(DOOR_H * 0.5, depth, 0.07),
                 OAK,
             );
         }
@@ -769,7 +769,7 @@ impl Cottage {
             at(da, f + DOOR_H + 0.08),
             t_dir,
             n_dir,
-            Vec3::new(DOOR_HALF_W + 0.2, 0.1, depth),
+            Vec3::new(DOOR_HALF_W + 0.2, depth, 0.1),
             OAK,
         );
         // The leaf, hinged at d0 and swung about 100 degrees into the room.
@@ -781,7 +781,7 @@ impl Cottage {
             leaf_c,
             open,
             open.cross(Vec3::Y),
-            Vec3::new(DOOR_HALF_W - 0.03, (DOOR_H - 0.1) * 0.5, 0.035),
+            Vec3::new(DOOR_HALF_W - 0.03, 0.035, (DOOR_H - 0.1) * 0.5),
             BOARDS,
         );
         // Ledges across the back of the leaf.

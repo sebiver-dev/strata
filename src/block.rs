@@ -52,6 +52,9 @@ pub const CLOTH: Block = 24;
 pub const BUILT: Block = 25;
 /// Wrought iron: lantern frames, arms and chains (mesh only).
 pub const IRON: Block = 26;
+/// Pink and white lupin florets (mesh only); LUPIN is the purple kind.
+pub const LUPIN_PINK: Block = 40;
+pub const LUPIN_WHITE: Block = 41;
 
 // Tree models (mesh only; trunks collide through hidden BUILT voxels).
 /// Bark on trunks and boughs.

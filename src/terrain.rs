@@ -263,7 +263,9 @@ impl Terrain {
         let (hx, _) = self.height_at(x_m + 1.0, z_m);
         let (hz, _) = self.height_at(x_m, z_m + 1.0);
         let slope = (hx - h).abs().max((hz - h).abs());
-        let snow_line = 112.0 + 10.0 * fbm2(self.seed.wrapping_add(7), x_m / 40.0, z_m / 40.0, 2);
+        // Snow lies above a ragged snowline, lower on flat ledges, never on steep rock.
+        let snow_line = 104.0 + 22.0 * fbm2(self.seed.wrapping_add(7), x_m / 60.0, z_m / 60.0, 3)
+            - 14.0 * (1.0 - smoothstep(0.3, 0.9, slope));
 
         let water = water_level(x_m, z_m);
         let (surface, subsurface) = if slope > 1.3 && h > water - 1.0 {
@@ -275,7 +277,7 @@ impl Terrain {
             } else {
                 (SAND, SAND)
             }
-        } else if h > snow_line && slope < 1.4 {
+        } else if h > snow_line && slope < 1.0 {
             (SNOW, STONE)
         } else if slope > 1.05 {
             (STONE, STONE)

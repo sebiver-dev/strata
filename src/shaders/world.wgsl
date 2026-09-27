@@ -606,20 +606,23 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.rough = 0.9;
             wettable = false;
         }
-        case 8u: { // leaves: clumps of leaves, waxy and translucent
-            let clump = vnoise(q * 4.0);
-            let leaf = vnoise(q * 11.0 + 0.5);
-            let shape = smoothstep(0.25, 0.6, clump * 0.6 + leaf * 0.4);
-            let hue = vnoise(q * 1.7 + 3.0);
-            var c = mix(vec3(0.11, 0.26, 0.08), vec3(0.25, 0.40, 0.12), hue);
-            c = mix(c, vec3(0.36, 0.42, 0.12), smoothstep(0.6, 0.8, broad) * 0.5);
-            // Dark gaps between clumps read as depth inside the crown.
-            c *= mix(0.85, mix(0.68, 1.02, shape), d_dm);
+        case 8u: { // leaves: overlapping leaves in soft clumps, waxy and translucent
+            let clump = vnoise(q * 2.2);
+            let leaf = vnoise(q * 9.0 + 0.5);
+            let fine_leaf = vnoise(q * 23.0 + 1.7);
+            let shape = smoothstep(0.3, 0.7, clump * 0.5 + leaf * 0.35 + fine_leaf * 0.15);
+            let hue = vnoise(q * 0.9 + 3.0);
+            var c = mix(vec3(0.10, 0.25, 0.07), vec3(0.24, 0.42, 0.11), hue);
+            c = mix(c, vec3(0.38, 0.46, 0.13), smoothstep(0.6, 0.8, broad) * 0.5);
+            // Leaves facing up catch the sky; the undersides and the gaps
+            // between clumps fall into shade, so the crown reads as masses.
+            c *= mix(0.7, 1.08, smoothstep(-0.4, 0.8, n.y));
+            c *= mix(0.85, mix(0.6, 1.06, shape), d_dm);
             s.albedo = c;
-            s.rough = 0.5;
+            s.rough = 0.55;
             s.f0 = 0.04;
-            s.sss = 0.7;
-            s.height = shape * 0.015 * d_dm;
+            s.sss = 0.75;
+            s.height = (shape * 0.03 + fine_leaf * 0.008) * d_dm;
             wettable = false;
         }
         case 10u: { // planks
@@ -681,10 +684,14 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.f0 = 0.25;
             wettable = false;
         }
-        case 15u: { // lupin spike: packed purple florets, paler towards the tip
+        case 15u, 40u, 41u: { // lupin florets: purple, pink or white, paler towards the tip
             let florets = vnoise(q * 60.0);
             let up = fract(p.y * 1.3);
-            var c = mix(vec3(0.30, 0.16, 0.56), vec3(0.55, 0.40, 0.82), florets * 0.7 + up * 0.3);
+            var lo = vec3(0.30, 0.16, 0.56);
+            var hi = vec3(0.55, 0.40, 0.82);
+            if (mat == 40u) { lo = vec3(0.62, 0.22, 0.42); hi = vec3(0.90, 0.56, 0.70); }
+            if (mat == 41u) { lo = vec3(0.78, 0.76, 0.80); hi = vec3(0.95, 0.94, 0.92); }
+            var c = mix(lo, hi, florets * 0.7 + up * 0.3);
             s.albedo = c * (0.85 + 0.3 * step(0.55, vnoise(q * 140.0)) * d_cm);
             s.rough = 0.7;
             s.sss = 0.5;
@@ -847,6 +854,18 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
         default: {}
     }
 
+    // High up, snow settles on whatever faces the sky and slides off steep
+    // rock, with a soft, ragged snowline (the voxels carry the coarse cover).
+    if (mat == 1u || mat == 2u || mat == 3u || mat == 5u || mat == 6u) {
+        let ragged = vnoise(p * 0.08) * 16.0 + vnoise(p * 0.6) * 3.0;
+        let line = 100.0 + ragged - 10.0 * smoothstep(0.75, 0.95, n.y);
+        let cover = smoothstep(line - 3.0, line + 3.0, p.y) * smoothstep(0.5, 0.8, n.y);
+        let snow = vec3(0.86, 0.89, 0.94) * (0.92 + 0.1 * vnoise(q * 3.0));
+        s.albedo = mix(s.albedo, snow, cover);
+        s.rough = mix(s.rough, 0.7, cover);
+        s.sss = mix(s.sss, 0.4, cover);
+    }
+
     // Ground just above the waterline is darker and glossier.
     if (wettable) {
         let level = water_level_at(p.xz);
@@ -918,7 +937,7 @@ const PLANT_RANGE: f32 = 70.0;
 
 // Grass blades and wildflowers: thin, wind-bent, left out of the shadow map.
 fn is_plant(mat: u32) -> bool {
-    return mat == 13u || (mat >= 15u && mat <= 17u);
+    return mat == 13u || (mat >= 15u && mat <= 17u) || mat == 40u || mat == 41u;
 }
 
 // Leaves sway a few centimetres in the wind. The offset depends only on the

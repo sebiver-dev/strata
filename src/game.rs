@@ -8,7 +8,7 @@ use crate::far::FarField;
 use crate::mesh;
 use crate::player::{MoveInput, Player};
 use crate::renderer::{sun_view_proj, Globals, Renderer, MAX_LIGHTS, SHADOW_SIZE};
-use crate::terrain::{WATER_LEVEL_M, WORLD_CHUNKS_XZ, WORLD_CHUNKS_Y};
+use crate::terrain::{water_level, WORLD_CHUNKS_XZ, WORLD_CHUNKS_Y};
 use crate::world::World;
 use glam::{IVec3, Mat4, Vec3};
 use std::collections::HashSet;
@@ -519,7 +519,8 @@ impl Game {
             if block == AIR {
                 if is_solid(current) {
                     // Dug holes below the river line fill with water.
-                    let wet = (v.y as f32 + 0.5) * VOXEL_SIZE < WATER_LEVEL_M && self.touches_water(v);
+                    let c = (v.as_vec3() + 0.5) * VOXEL_SIZE;
+                    let wet = c.y < water_level(c.x, c.z) && self.touches_water(v);
                     self.world.set(v, if wet { WATER } else { AIR });
                 }
             } else if !is_solid(current) && !self.player.intersects_voxel(v) {

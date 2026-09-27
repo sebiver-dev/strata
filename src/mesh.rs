@@ -731,6 +731,13 @@ fn emit(
         let mut pos = (origin + corner).as_vec3() * VOXEL_SIZE;
         if water && f.n == IVec3::Y {
             pos.y -= 0.06;
+        } else if water && f.n.y == 0 {
+            // A falling sheet meets the surfaces above and below it, which sit
+            // a little under the voxel tops.
+            let top = corner.y > p.y;
+            if (top && pad.get(p + IVec3::Y) != WATER) || (!top && pad.get(front - IVec3::Y) == WATER) {
+                pos.y -= 0.06;
+            }
         }
         let data = fi as u32 | ((b as u32) << 3) | (ao[i] << 11);
         verts.push(Vertex {

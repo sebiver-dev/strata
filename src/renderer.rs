@@ -16,6 +16,8 @@ use winit::window::Window;
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// Levels in the bloom chain, each half the size of the one before (1/2 to 1/32).
+const BLOOM_LEVELS: usize = 5;
 /// Shadow map resolution in texels per side.
 pub const SHADOW_SIZE: u32 = 2048;
 /// Half the width of the square area around the player that casts sun shadows.
@@ -72,6 +74,16 @@ struct Targets {
     depth_copy: wgpu::Texture,
     scene_bind: wgpu::BindGroup,
     post_bind: wgpu::BindGroup,
+    /// Bloom chain: each level's view, the bind group that reads the level
+    /// above it (the scene for level 0) when downsampling into it, and the
+    /// bind group that reads the level below it when blurring back up.
+    bloom: Vec<BloomLevel>,
+}
+
+struct BloomLevel {
+    view: wgpu::TextureView,
+    down: wgpu::BindGroup,
+    up: Option<wgpu::BindGroup>,
 }
 
 pub struct Renderer {
@@ -91,6 +103,9 @@ pub struct Renderer {
     terrain: wgpu::RenderPipeline,
     water: wgpu::RenderPipeline,
     post: wgpu::RenderPipeline,
+    bloom_first: wgpu::RenderPipeline,
+    bloom_down: wgpu::RenderPipeline,
+    bloom_up: wgpu::RenderPipeline,
     far_terrain: wgpu::RenderPipeline,
     far_water: wgpu::RenderPipeline,
     overlay: wgpu::RenderPipeline,
@@ -393,6 +408,7 @@ impl Renderer {
             entries: &[
                 texture_entry(5, wgpu::TextureSampleType::Float { filterable: true }),
                 sampler_entry(6, wgpu::SamplerBindingType::Filtering),
+                texture_entry(7, wgpu::TextureSampleType::Float { filterable: true }),
             ],
         });
         let shadow_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -558,6 +574,32 @@ impl Renderer {
             bias: Default::default(),
             cull: None,
         });
+        let bloom_pipe = |label, fs, blend| {
+            pipeline(Desc {
+                label,
+                layout: &post_pipeline_layout,
+                vs: "vs_fullscreen",
+                fs: Some(fs),
+                buffers: &[],
+                target: Some(HDR_FORMAT),
+                blend,
+                depth: None,
+                bias: Default::default(),
+                cull: None,
+            })
+        };
+        let bloom_first = bloom_pipe("bloom first", "fs_bloom_first", None);
+        let bloom_down = bloom_pipe("bloom down", "fs_bloom_down", None);
+        let add = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        };
+        let bloom_up = bloom_pipe(
+            "bloom up",
+            "fs_bloom_up",
+            Some(wgpu::BlendState { color: add, alpha: add }),
+        );
         let actor_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<ActorVertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -658,6 +700,9 @@ impl Renderer {
             terrain,
             water,
             post,
+            bloom_first,
+            bloom_down,
+            bloom_up,
             far_terrain,
             far_water,
             overlay,
@@ -736,20 +781,50 @@ impl Renderer {
                 },
             ],
         });
-        let post_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("post inputs"),
-            layout: post_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::TextureView(&hdr_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::Sampler(linear_sampler),
-                },
-            ],
-        });
+        // Reads `src` in a post-style pass; `extra` fills the bloom slot.
+        let bind = |label: &str, src: &wgpu::TextureView, extra: &wgpu::TextureView| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(label),
+                layout: post_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::TextureView(src),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::Sampler(linear_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: wgpu::BindingResource::TextureView(extra),
+                    },
+                ],
+            })
+        };
+        // A bind group must fill every slot; passes that do not read bloom get this.
+        let dummy = view(&texture(device, "no bloom", 1, 1, HDR_FORMAT, U::TEXTURE_BINDING));
+        let views: Vec<wgpu::TextureView> = (0..BLOOM_LEVELS)
+            .map(|k| {
+                let (bw, bh) = ((w >> (k + 1)).max(1), (h >> (k + 1)).max(1));
+                view(&texture(
+                    device,
+                    "bloom",
+                    bw,
+                    bh,
+                    HDR_FORMAT,
+                    U::RENDER_ATTACHMENT | U::TEXTURE_BINDING,
+                ))
+            })
+            .collect();
+        let bloom = (0..BLOOM_LEVELS)
+            .map(|k| BloomLevel {
+                view: views[k].clone(),
+                down: bind("bloom down", if k == 0 { &hdr_view } else { &views[k - 1] }, &dummy),
+                up: (k + 1 < BLOOM_LEVELS).then(|| bind("bloom up", &views[k + 1], &dummy)),
+            })
+            .collect();
+        let post_bind = bind("post inputs", &hdr_view, &views[0]);
         Targets {
             hdr,
             hdr_view,
@@ -759,6 +834,7 @@ impl Renderer {
             depth_copy,
             scene_bind,
             post_bind,
+            bloom,
         }
     }
 
@@ -1059,7 +1135,42 @@ impl Renderer {
             }
         }
 
-        // 4. Tone mapping and the crosshair onto the screen.
+        // 4. Bloom: halve the scene down a chain of smaller targets, then
+        // blur back up, adding each level onto the next larger one.
+        {
+            let level_pass = |encoder: &mut wgpu::CommandEncoder,
+                              target: &wgpu::TextureView,
+                              load: wgpu::LoadOp<wgpu::Color>,
+                              pipe: &wgpu::RenderPipeline,
+                              group: &wgpu::BindGroup| {
+                let color = [Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })];
+                let mut pass = encoder.begin_render_pass(&pass_desc("bloom", &color, None, None));
+                pass.set_bind_group(0, &self.bind_group, &[]);
+                pass.set_bind_group(1, group, &[]);
+                pass.set_pipeline(pipe);
+                pass.draw(0..3, 0..1);
+            };
+            let clear = wgpu::LoadOp::Clear(wgpu::Color::BLACK);
+            for (k, level) in t.bloom.iter().enumerate() {
+                let pipe = if k == 0 { &self.bloom_first } else { &self.bloom_down };
+                level_pass(&mut encoder, &level.view, clear, pipe, &level.down);
+            }
+            for level in t.bloom.iter().rev() {
+                if let Some(up) = &level.up {
+                    level_pass(&mut encoder, &level.view, wgpu::LoadOp::Load, &self.bloom_up, up);
+                }
+            }
+        }
+
+        // 5. Tone mapping and the crosshair onto the screen.
         {
             let color = color_attachment(&view, wgpu::LoadOp::Clear(wgpu::Color::BLACK));
             let mut pass = encoder.begin_render_pass(&pass_desc("post", &color, None, timer.and_then(|t| t.writes(3))));

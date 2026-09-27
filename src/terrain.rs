@@ -13,8 +13,8 @@ use std::sync::Arc;
 pub const WORLD_SIZE_M: f32 = 2048.0;
 /// Horizontal extent in chunks (each chunk is 16 m wide).
 pub const WORLD_CHUNKS_XZ: i32 = (WORLD_SIZE_M / VOXEL_SIZE) as i32 / CHUNK;
-/// Vertical extent in chunks (128 m of height).
-pub const WORLD_CHUNKS_Y: i32 = 8;
+/// Vertical extent in chunks (192 m of height).
+pub const WORLD_CHUNKS_Y: i32 = 12;
 /// Height of the river and lake surfaces in metres along the home reach,
 /// the calm stretch around spawn where the village stands. Upstream the
 /// river sits higher, one step per fall, and downstream lower.
@@ -48,6 +48,8 @@ const BOULDER_CELL_M: f32 = 6.0;
 /// Largest boulder radius in metres.
 const BOULDER_MAX_R_M: f32 = 2.4;
 const TREE_MAX_HEIGHT_M: f32 = 26.0;
+/// Height of the rock bands where mountain slopes break into cliffs.
+const CLIFF_STEP_M: f32 = 10.0;
 
 /// Half the width of a road's packed surface in metres.
 const ROAD_HALF_WIDTH_M: f32 = 1.6;
@@ -223,17 +225,26 @@ impl Terrain {
     pub fn height_at(&self, x_m: f32, z_m: f32) -> (f32, f32) {
         let s = self.seed;
         let d = (x_m - self.river_x(z_m)).abs();
-        let valley = smoothstep(28.0, 460.0, d);
+        // Steep valley walls rise to tall peaks within a few hundred metres.
+        let valley = smoothstep(30.0, 280.0, d);
 
         let floor = 26.0 + 2.5 * fbm2(s.wrapping_add(2), x_m / 70.0, z_m / 70.0, 3);
         let hills = 14.0 * fbm2(s.wrapping_add(5), x_m / 110.0, z_m / 110.0, 4);
-        let mountains = 88.0 * ridged2(s.wrapping_add(3), x_m / 420.0, z_m / 420.0, 5)
-            + 16.0 * fbm2(s.wrapping_add(4), x_m / 90.0, z_m / 90.0, 4);
+        let ridge = ridged2(s.wrapping_add(3), x_m / 420.0, z_m / 420.0, 5);
+        let mountains = 38.0 + 115.0 * ridge * ridge + 22.0 * fbm2(s.wrapping_add(4), x_m / 90.0, z_m / 90.0, 4);
 
         let edge = x_m.min(z_m).min(WORLD_SIZE_M - x_m).min(WORLD_SIZE_M - z_m);
-        let edge_rise = (1.0 - smoothstep(0.0, 260.0, edge)) * 55.0;
+        let edge_rise = (1.0 - smoothstep(0.0, 260.0, edge)) * 70.0;
 
-        let mut h = floor + hills * valley.sqrt() + mountains * valley.powf(1.5) + edge_rise;
+        // In places the slopes break into ledges and sheer rock bands.
+        let mut rise = mountains * valley.powf(1.2);
+        let band = CLIFF_STEP_M * (0.7 + 0.8 * fbm2(s.wrapping_add(9), x_m / 180.0, z_m / 180.0, 2));
+        let k = rise / band;
+        let ledges = (k.floor() + smoothstep(0.45, 0.9, k.fract())) * band;
+        let cliffy = smoothstep(0.4, 0.65, fbm2(s.wrapping_add(8), x_m / 260.0, z_m / 260.0, 2));
+        rise += (ledges - rise) * cliffy * 0.7;
+
+        let mut h = floor + hills * valley.sqrt() + rise + edge_rise;
         // The valley floor climbs with the river's steps; the mountains far from
         // it barely need to, and must stay under the sky limit.
         h += floor_rise(z_m, self.road_distance(x_m, z_m)) * (1.0 - 0.85 * valley);
@@ -253,7 +264,7 @@ impl Terrain {
         let (hx, _) = self.height_at(x_m + 1.0, z_m);
         let (hz, _) = self.height_at(x_m, z_m + 1.0);
         let slope = (hx - h).abs().max((hz - h).abs());
-        let snow_line = 84.0 + 8.0 * fbm2(self.seed.wrapping_add(7), x_m / 40.0, z_m / 40.0, 2);
+        let snow_line = 112.0 + 10.0 * fbm2(self.seed.wrapping_add(7), x_m / 40.0, z_m / 40.0, 2);
 
         let water = water_level(x_m, z_m);
         let (surface, subsurface) = if slope > 1.3 && h > water - 1.0 {
@@ -325,14 +336,14 @@ impl Terrain {
             return None;
         }
         let info = self.column_info(xm, zm);
-        if info.surface != GRASS || info.height_m < water_level(xm, zm) + 1.5 || info.height_m > 78.0 {
+        if info.surface != GRASS || info.height_m < water_level(xm, zm) + 1.5 || info.height_m > 104.0 {
             return None;
         }
         // Keep roads and buildings clear of trunks.
         if self.road_distance(xm, zm) < 5.0 || self.structures.blocks_tree(xm, zm) {
             return None;
         }
-        let conifer = info.height_m > 44.0 || unit(h.rotate_left(5)) < 0.25;
+        let conifer = info.height_m > 56.0 || unit(h.rotate_left(5)) < 0.25;
         let base = IVec3::new(
             (xm / VOXEL_SIZE) as i32,
             (info.height_m / VOXEL_SIZE).floor() as i32,

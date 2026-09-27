@@ -42,6 +42,8 @@ pub const PLASTER: Block = 19;
 pub const ROOF: Block = 20;
 /// A lit window; glows warm from dusk on.
 pub const WINDOW: Block = 21;
+/// Wrought iron: lantern frames, arms and chains (mesh only).
+pub const IRON: Block = 26;
 
 /// Materials the player can place, in hotbar order (keys 1..).
 pub const PLACEABLE: [Block; 8] = [STONE, DIRT, GRASS, SAND, GRAVEL, WOOD, PLANKS, SNOW];
@@ -67,6 +69,7 @@ pub fn name(b: Block) -> &'static str {
         ROOF => "roof",
         WINDOW => "window",
         POST => "post",
+        IRON => "iron",
         _ => "unknown",
     }
 }

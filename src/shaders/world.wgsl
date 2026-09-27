@@ -665,21 +665,20 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.rough = mix(0.95, 0.7, stone);
             s.height = stone * smoothstep(0.0, 0.3, gap) * 0.03 * d_dm + fine * 0.008;
         }
-        case 12u: { // lantern: dark iron frame around warm glass
-            // Coordinates across the lantern body (0..1), which sits centred in its voxel
-            // 0.04..0.32 m above the floor and 0.26 m wide (see mesh.rs).
-            let m = fract(p / VOXEL) * VOXEL;
-            let f = vec3((m.x - 0.12) / 0.26, (m.y - 0.04) / 0.28, (m.z - 0.12) / 0.26);
-            let a = select(select(f.xy, f.zy, abs(n.x) > 0.5), f.xz, abs(n.y) > 0.5);
-            let edge = min(min(a.x, 1.0 - a.x), min(a.y, 1.0 - a.y));
-            let glass = smoothstep(0.08, 0.12, edge);
-            let bar = 1.0 - smoothstep(0.02, 0.04, abs(a.x - 0.5));
-            let pane = glass * (1.0 - bar) * step(abs(n.y), 0.5);
-            s.albedo = mix(vec3(0.10, 0.09, 0.08), vec3(0.9, 0.7, 0.4), pane);
-            s.rough = mix(0.5, 0.15, pane);
+        case 12u: { // lantern glass: warm light through faintly rippled panes
+            let ripple = vnoise(q * 30.0);
+            s.albedo = vec3(0.9, 0.7, 0.4);
+            s.rough = 0.15;
             s.f0 = 0.04;
             let flicker = 0.9 + 0.1 * vnoise(vec3(g.sun_dir.w * 6.0, floor(p.x), floor(p.z)));
-            s.emit = LAMP_COLOR * pane * 4.5 * flicker;
+            s.emit = LAMP_COLOR * 4.5 * flicker * (0.85 + 0.3 * ripple);
+            wettable = false;
+        }
+        case 26u: { // wrought iron: dark, a little glossy, rusty in places
+            let rust = smoothstep(0.55, 0.8, vnoise(q * 9.0));
+            s.albedo = mix(vec3(0.07, 0.065, 0.06), vec3(0.22, 0.12, 0.07), rust * 0.6);
+            s.rough = mix(0.4, 0.8, rust);
+            s.f0 = 0.25;
             wettable = false;
         }
         case 15u: { // lupin spike: packed purple florets, paler towards the tip
@@ -1206,12 +1205,65 @@ fn vs_fullscreen(@builtin(vertex_index) vi: u32) -> SkyOut {
     return o;
 }
 
+// Ridge height (radians above the horizon) of a far mountain range at a
+// compass direction, sampled on a circle so it wraps without a seam.
+fn range_height(flat: vec2<f32>, scale: f32, seed: f32, base: f32, top: f32) -> f32 {
+    let q = flat * scale + vec2(seed, seed * 1.7);
+    let r = 1.0 - abs(fbm2(q) * 2.0 - 1.0);
+    return base + top * r * r;
+}
+
+// Snowy peaks beyond the edge of the world: two ranges of painted
+// silhouettes, hazy blue with sunlit snow on their crests. rgb, coverage.
+fn far_peaks(dir: vec3<f32>) -> vec4<f32> {
+    let flat = normalize(dir.xz + vec2(1e-5, 0.0));
+    let e = asin(clamp(dir.y, -1.0, 1.0));
+    let sun = normalize(g.sun_dir.xyz);
+    let sun_flat = normalize(sun.xz + vec2(1e-5, 0.0));
+    let light = sun_light();
+    let haze = sky_dome(normalize(vec3(dir.x, 0.03, dir.z)));
+    var col = vec3(0.0);
+    var cover = 0.0;
+    // Far range first, then the nearer, bolder one over it.
+    for (var k = 0; k < 2; k++) {
+        let near = f32(k);
+        let scale = mix(2.2, 3.4, near);
+        let h = range_height(flat, scale, 11.0 + near * 7.0, mix(0.035, 0.02, near), mix(0.16, 0.12, near));
+        if (e < h) {
+            // Slope along the ridge tells which side faces the sun.
+            let side = vec2(-flat.y, flat.x);
+            let dh = range_height(normalize(flat + side * 0.01), scale, 11.0 + near * 7.0, mix(0.035, 0.02, near), mix(0.16, 0.12, near)) - h;
+            let facing = clamp(0.5 - dh * 60.0 * dot(side, sun_flat), 0.0, 1.0);
+            // Gullies run down the faces, so light and snow come in streaks.
+            let az = atan2(flat.y, flat.x);
+            let gully = vnoise2(vec2(az * 90.0 + near * 13.0, e * 25.0)) * 0.6 + vnoise2(vec2(az * 260.0, e * 60.0)) * 0.4;
+            let lit = clamp(facing * 0.8 + (gully - 0.5) * 0.6, 0.0, 1.0);
+            let rock = lin(vec3(0.26, 0.30, 0.42)) * (0.2 + 0.6 * lit) * light * 0.3;
+            // Snow caps the high crests and reaches down the gullies.
+            let base = mix(0.035, 0.02, near);
+            let snow_top = base + mix(0.16, 0.12, near) * 0.35;
+            let snow_depth = (h - snow_top) * 0.8 + 0.012;
+            let snow_line = h - snow_depth * (0.4 + 0.9 * gully);
+            let snow = smoothstep(snow_line - 0.003, snow_line + 0.003, e) * step(snow_top, h);
+            let snow_col = lin(vec3(0.95, 0.93, 0.98)) * (0.3 + 0.8 * lit) * light * 0.5;
+            let body = mix(rock, snow_col, snow);
+            // The far range sinks further into the haze, and both fade towards their feet.
+            let fade = mix(0.5, 0.3, near) * (1.0 - smoothstep(0.0, 0.08, e - base) * 0.4);
+            col = mix(body, haze, fade);
+            cover = 1.0;
+        }
+    }
+    return vec4(col, cover);
+}
+
 @fragment
 fn fs_sky(i: SkyOut) -> @location(0) vec4<f32> {
     let far = g.inv_view_proj * vec4(i.ndc, 0.5, 1.0);
     let dir = normalize(far.xyz / far.w - g.camera_pos.xyz);
     let cl = clouds(dir);
-    var c = mix(sky_color(dir) + sun_disc(dir) + stars(dir), cl.rgb, cl.a) + lamp_glow(dir, 400.0);
+    var c = mix(sky_color(dir) + sun_disc(dir) + stars(dir), cl.rgb, cl.a);
+    let peaks = far_peaks(dir);
+    c = mix(c, peaks.rgb, peaks.a) + lamp_glow(dir, 400.0);
     if (g.params.z > 0.5) {
         c = underwater_color();
     }

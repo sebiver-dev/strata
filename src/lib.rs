@@ -16,6 +16,7 @@ pub mod player;
 pub mod renderer;
 pub mod structures;
 pub mod terrain;
+pub mod trees;
 #[cfg(target_arch = "wasm32")]
 pub mod web;
 pub mod world;

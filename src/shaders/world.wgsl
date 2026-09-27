@@ -801,6 +801,49 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.sss = 0.2;
             wettable = false;
         }
+        case 27u: { // bark: deep vertical fissures between plated ridges, moss on top
+            let ridge = vnoise(vec3(q.x * 6.0, q.y * 0.8, q.z * 6.0)) * 0.65 + vnoise(vec3(q.x * 15.0, q.y * 2.2, q.z * 15.0)) * 0.35;
+            let plate = smoothstep(0.38, 0.62, ridge);
+            let crack = smoothstep(0.52, 0.6, vnoise(vec3(q.x * 4.0, q.y * 5.0, q.z * 4.0))) * plate;
+            var c = mix(vec3(0.11, 0.085, 0.065), vec3(0.40, 0.32, 0.24), plate);
+            c = mix(c, c * 0.65, crack * d_dm);
+            c *= 0.85 + 0.3 * fine;
+            // Moss settles on the upper sides of roots and boughs.
+            let moss_m = smoothstep(0.35, 0.85, n.y + (vnoise(q * 2.3) - 0.5) * 0.8);
+            c = mix(c, mix(vec3(0.17, 0.27, 0.08), vec3(0.30, 0.38, 0.12), vnoise(q * 7.0)), moss_m * 0.85);
+            s.albedo = c;
+            s.rough = 0.9;
+            s.sss = moss_m * 0.15;
+            s.height = (plate * 0.03 - crack * 0.01) * d_dm + fine * 0.01;
+            wettable = false;
+        }
+        case 28u: { // broadleaf foliage: masses of small leaves, sunlit tips, dark gaps
+            let leaves = vnoise(q * 5.0) * 0.55 + vnoise(q * 13.0 + 0.5) * 0.45;
+            let shape = smoothstep(0.3, 0.7, leaves);
+            let hue = vnoise(p * 0.11 + 3.0) * 0.7 + vnoise(q * 1.3) * 0.3;
+            var c = mix(vec3(0.09, 0.22, 0.06), vec3(0.24, 0.40, 0.10), hue);
+            c = mix(c, vec3(0.38, 0.46, 0.14), smoothstep(0.62, 0.85, broad) * 0.45);
+            c *= mix(0.9, mix(0.62, 1.08, shape), d_dm);
+            s.albedo = c;
+            s.rough = 0.55;
+            s.f0 = 0.04;
+            s.sss = 0.65;
+            s.height = shape * 0.05 * d_dm + leaves * 0.02;
+            wettable = false;
+        }
+        case 29u: { // conifer needles: dark blue-green sprays
+            let spray = vnoise(vec3(q.x * 9.0, q.y * 3.0, q.z * 9.0)) * 0.6 + vnoise(q * 23.0) * 0.4;
+            let shape = smoothstep(0.3, 0.7, spray);
+            let hue = vnoise(p * 0.09 + 7.0);
+            var c = mix(vec3(0.05, 0.14, 0.09), vec3(0.13, 0.25, 0.12), hue);
+            c *= mix(0.9, mix(0.65, 1.08, shape), d_dm);
+            s.albedo = c;
+            s.rough = 0.6;
+            s.f0 = 0.04;
+            s.sss = 0.45;
+            s.height = shape * 0.04 * d_dm;
+            wettable = false;
+        }
         default: {}
     }
 
@@ -894,7 +937,7 @@ fn sway(pos: vec3<f32>, data: u32) -> vec3<f32> {
         let bend = (0.12 + 0.35 * gust * wave + flutter * 0.1) * tip;
         return pos + vec3(wind.x * bend, -abs(bend) * 0.25, wind.y * bend);
     }
-    if (mat != 8u) {
+    if (mat != 8u && mat != 28u && mat != 29u) {
         return pos;
     }
     let ph = dot(pos, vec3(0.7, 0.3, 0.5));

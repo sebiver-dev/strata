@@ -16,13 +16,13 @@ struct Globals {
     // xyz: direction towards the sun, w: time in seconds
     sun_dir: vec4<f32>,
     // x: fog distance, y: 1.0 if the output needs manual sRGB encoding,
-    // z: 1.0 if the camera is under water, w: unused
+    // z: 1.0 if the camera is under water, w: brush shape (0 sphere, 1 cube)
     params: vec4<f32>,
     // xyz: targeted voxel min corner in metres, w: 0 when nothing is targeted,
     // otherwise 1 + the brush radius in voxels
     highlight: vec4<f32>,
-    // xy: framebuffer size in pixels, z: shadow map size in texels,
-    // w: brush shape (0 sphere, 1 cube)
+    // xy: scene render size in pixels, z: shadow map size in texels,
+    // w: scene render size / window size
     screen: vec4<f32>,
 };
 
@@ -35,6 +35,7 @@ struct Globals {
 @group(1) @binding(3) var scene_depth: texture_depth_2d;
 @group(1) @binding(4) var lin_sampler: sampler;
 @group(1) @binding(5) var hdr_input: texture_2d<f32>;
+@group(1) @binding(6) var post_sampler: sampler;
 
 const VOXEL: f32 = 0.5;
 const CHUNK_M: f32 = 16.0;
@@ -141,14 +142,13 @@ fn sun_shadow(world: vec3<f32>, n: vec3<f32>) -> f32 {
     }
     let uv = vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
     let texel = 1.0 / g.screen.z;
+    // Four bilinear comparison taps give a 3x3 texel soft edge.
     var s = 0.0;
-    for (var y = -1; y <= 1; y++) {
-        for (var x = -1; x <= 1; x++) {
-            let o = vec2(f32(x), f32(y)) * texel * 1.2;
-            s += textureSampleCompareLevel(shadow_map, shadow_sampler, uv + o, ndc.z - 0.0004);
-        }
+    for (var k = 0; k < 4; k++) {
+        let o = (vec2(f32(k & 1), f32(k >> 1u)) - 0.5) * texel * 1.5;
+        s += textureSampleCompareLevel(shadow_map, shadow_sampler, uv + o, ndc.z - 0.0004);
     }
-    return mix(s / 9.0, 1.0, smoothstep(0.85, 1.0, edge));
+    return mix(s / 4.0, 1.0, smoothstep(0.85, 1.0, edge));
 }
 
 // ---------------------------------------------------------------- materials
@@ -174,8 +174,11 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
     // Per-voxel and fine detail shimmer at a distance, so it fades out there.
     let calm = smoothstep(120.0, 500.0, distance(p, g.camera_pos.xyz));
     let jitter = (hash3(cell) - 0.5) * (1.0 - calm);
-    let fine = mix(fbm(p * 3.1), 0.5, calm);
-    let broad = fbm(p * 0.21);
+    var fine = 0.5;
+    if (calm < 1.0) {
+        fine = mix(fbm(p * 3.1), 0.5, calm);
+    }
+    let broad = 0.65 * vnoise(p * 0.21) + 0.35 * vnoise(p * 0.57);
     let d_cm = 1.0 - smoothstep(0.006, 0.02, pix);   // centimetre detail
     let d_dm = 1.0 - smoothstep(0.02, 0.08, pix);    // decimetre detail
     let top = n.y > 0.5;
@@ -216,7 +219,7 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.height = fine * 0.02 + pebble * 0.012 + vnoise(q * 23.0) * 0.004 * d_cm;
         }
         case 3u: { // grass: meadow tints, blade speckle and tiny flowers
-            let meadow = fbm(p * 0.045);
+            let meadow = vnoise(p * 0.045);
             var green = mix(vec3(0.24, 0.42, 0.14), vec3(0.46, 0.55, 0.22), broad);
             green = mix(green, vec3(0.50, 0.52, 0.24), smoothstep(0.55, 0.75, meadow) * 0.6);
             let blades = vnoise2(q.xz * 41.0) * 0.6 + vnoise2(q.xz * 97.0) * 0.4;
@@ -298,12 +301,12 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             var c = mix(vec3(0.11, 0.26, 0.08), vec3(0.25, 0.40, 0.12), hue);
             c = mix(c, vec3(0.36, 0.42, 0.12), smoothstep(0.6, 0.8, broad) * 0.5);
             // Dark gaps between clumps read as depth inside the crown.
-            c *= mix(0.8, mix(0.45, 1.05, shape), d_dm);
+            c *= mix(0.85, mix(0.68, 1.02, shape), d_dm);
             s.albedo = c;
             s.rough = 0.5;
             s.f0 = 0.04;
             s.sss = 0.7;
-            s.height = shape * 0.04 * d_dm;
+            s.height = shape * 0.015 * d_dm;
             wettable = false;
         }
         case 10u: { // planks
@@ -402,8 +405,45 @@ fn under_near(p: vec3<f32>, n: vec3<f32>) -> bool {
     return textureLoad(near_mask, c, 0).r != 0u;
 }
 
+// The in-plane axes of each face direction, matching `FACES` in mesh.rs.
+const FACE_U = array<vec3<f32>, 6>(
+    vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0), vec3(0.0, 0.0, 1.0),
+    vec3(1.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0),
+);
+const FACE_V = array<vec3<f32>, 6>(
+    vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0),
+    vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0),
+);
+
+// Leaf faces on the outline of a crown lose a ragged band along their open
+// edges, so crowns read as foliage rather than as solid cubes.
+fn frayed(i: VOut, pix: f32) -> bool {
+    let edges = (i.info >> 13u) & 15u;
+    if (edges == 0u || pix > 0.06) {
+        return false;
+    }
+    let fi = i.info & 7u;
+    let f = fract(i.world / VOXEL);
+    let fu = dot(f, FACE_U[fi]);
+    let fv = dot(f, FACE_V[fi]);
+    var d = 1.0;
+    if ((edges & 1u) != 0u) { d = min(d, 1.0 - fu); }
+    if ((edges & 2u) != 0u) { d = min(d, fu); }
+    if ((edges & 4u) != 0u) { d = min(d, 1.0 - fv); }
+    if ((edges & 8u) != 0u) { d = min(d, fv); }
+    let q = i.world - floor(i.world / 64.0) * 64.0;
+    let ragged = vnoise(q * 14.0) * 0.7 + vnoise(q * 31.0) * 0.3;
+    // Narrower with distance, so far crowns do not sparkle.
+    let width = 0.42 * (1.0 - smoothstep(0.02, 0.06, pix));
+    return d < width * ragged;
+}
+
 @fragment
 fn fs_terrain(i: VOut) -> @location(0) vec4<f32> {
+    let pix = length(fwidth(i.world)) * 0.7;
+    if (frayed(i, pix)) {
+        discard;
+    }
     return shade_terrain(i);
 }
 
@@ -419,7 +459,7 @@ fn fs_far_terrain(i: VOut) -> @location(0) vec4<f32> {
 // Must match `Brush::contains` in game.rs.
 fn in_brush(d: vec3<f32>) -> bool {
     let r = g.highlight.w - 1.0;
-    if (g.screen.w > 0.5) {
+    if (g.params.w > 0.5) {
         return all(abs(d) <= vec3(r));
     }
     return dot(d, d) <= (r + 0.35) * (r + 0.35);
@@ -435,13 +475,19 @@ fn shade_terrain(i: VOut) -> vec4<f32> {
     let sun = normalize(g.sun_dir.xyz);
     let to_cam = g.camera_pos.xyz - i.world;
     let v = normalize(to_cam);
-    let ao = mix(0.35, 1.0, i.ao);
+    // Translucent materials (leaves most of all) get softer occlusion and a
+    // light that wraps past the terminator instead of cutting off hard.
+    let ao = mix(mix(0.35, 0.6, surf.sss), 1.0, i.ao);
     let facing = step(0.0, dot(n, sun));
     let sh = sun_shadow(i.world, n) * facing;
-    let ndl = max(dot(nb, sun), 0.0);
+    let wrap = surf.sss * 0.6;
+    let ndl = max((dot(nb, sun) + wrap) / (1.0 + wrap), 0.0);
 
     let sky = 0.5 + 0.5 * nb.y;
-    let ambient = (lin(vec3(0.62, 0.74, 0.90)) * sky * 0.75 + lin(vec3(0.45, 0.40, 0.33)) * (1.0 - sky) * 0.35) * ao;
+    // Skylight also reaches the undersides of thin layers through them.
+    let under = 0.35 + 0.4 * surf.sss;
+    let skylight = lin(vec3(0.62, 0.74, 0.90)) * 0.75;
+    let ambient = (skylight * (sky + (1.0 - sky) * surf.sss * 0.6) + lin(vec3(0.50, 0.52, 0.40)) * (1.0 - sky) * under) * ao;
     // Sunlight scattered through leaves and grass, strongest when looking towards the sun.
     let through = pow(max(dot(-v, sun), 0.0), 4.0) * 1.6 + 0.35 * max(dot(-n, sun), 0.0) + 0.06;
     let trans = surf.sss * through * mix(0.25, 1.0, sh) * lin(vec3(0.85, 0.95, 0.45));
@@ -531,7 +577,7 @@ fn trace_reflection(origin: vec3<f32>, dir: vec3<f32>, dist: f32) -> vec4<f32> {
     var step_len = 0.3 + dist * 0.012;
     var prev = origin;
     var pos = origin;
-    for (var s = 0; s < 40; s++) {
+    for (var s = 0; s < 28; s++) {
         pos += dir * step_len;
         let c = g.view_proj * vec4(pos, 1.0);
         if (c.w <= 0.0) {
@@ -547,7 +593,7 @@ fn trace_reflection(origin: vec3<f32>, dir: vec3<f32>, dist: f32) -> vec4<f32> {
         if (sd > ndc.z) {
             var lo = prev;
             var hi = pos;
-            for (var b = 0; b < 6; b++) {
+            for (var b = 0; b < 5; b++) {
                 let mid = (lo + hi) * 0.5;
                 let mc = g.view_proj * vec4(mid, 1.0);
                 let mn = mc.xyz / mc.w;
@@ -564,11 +610,11 @@ fn trace_reflection(origin: vec3<f32>, dir: vec3<f32>, dist: f32) -> vec4<f32> {
                 break;
             }
             let border = min(min(huv.x, 1.0 - huv.x), min(huv.y, 1.0 - huv.y));
-            let conf = smoothstep(0.0, 0.08, border) * (1.0 - f32(s) / 40.0);
+            let conf = smoothstep(0.0, 0.08, border) * (1.0 - f32(s) / 28.0);
             return vec4(textureSampleLevel(scene_color, lin_sampler, huv, 0.0).rgb, conf);
         }
         prev = pos;
-        step_len *= 1.1;
+        step_len *= 1.14;
     }
     return vec4(0.0);
 }
@@ -675,8 +721,8 @@ fn fs_sky(i: SkyOut) -> @location(0) vec4<f32> {
 // Tone maps the HDR scene onto the screen.
 @fragment
 fn fs_post(i: SkyOut) -> @location(0) vec4<f32> {
-    let px = vec2<i32>(i.clip.xy);
-    var c = textureLoad(hdr_input, px, 0).rgb;
+    let uv = vec2(i.ndc.x * 0.5 + 0.5, 0.5 - i.ndc.y * 0.5);
+    var c = textureSampleLevel(hdr_input, post_sampler, uv, 0.0).rgb;
     let q = i.ndc * 0.75;
     c *= 1.0 - 0.22 * dot(q, q);
     var m = finish(c);
@@ -688,7 +734,7 @@ fn fs_post(i: SkyOut) -> @location(0) vec4<f32> {
 // Crosshair drawn over the finished frame.
 @fragment
 fn fs_overlay(i: SkyOut) -> @location(0) vec4<f32> {
-    let px = (i.ndc * 0.5) * g.screen.xy;
+    let px = (i.ndc * 0.5) * g.screen.xy / g.screen.w;
     let d = abs(px);
     let arm = (d.x < 1.0 && d.y < 9.0 && d.y > 3.0) || (d.y < 1.0 && d.x < 9.0 && d.x > 3.0);
     let centre = length(px) < 1.5;

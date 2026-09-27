@@ -95,7 +95,14 @@ impl ApplicationHandler<UserEvent> for App {
         match event {
             UserEvent::Ready(r) => {
                 log::info!("GPU: {}", r.adapter_name);
-                self.renderer = Some(*r);
+                #[allow(unused_mut)]
+                let mut r = *r;
+                // `?scale=0.5` renders the scene at half resolution, for comparing costs.
+                #[cfg(target_arch = "wasm32")]
+                {
+                    r.scale_override = crate::web::url_param("scale").and_then(|v| v.parse().ok());
+                }
+                self.renderer = Some(r);
                 if let Some(w) = &self.window {
                     let s = w.inner_size();
                     if let Some(r) = &mut self.renderer {
@@ -166,9 +173,11 @@ impl ApplicationHandler<UserEvent> for App {
                 self.last_frame = now;
                 if let (Some(r), Some(w)) = (&mut self.renderer, &self.window) {
                     self.game.update(dt, r);
-                    let (width, height) = r.size();
-                    let globals = self.game.globals(width, height, r.manual_srgb());
+                    let (width, height) = r.render_size();
+                    let globals = self.game.globals(width, height, r.manual_srgb(), r.render_scale());
+                    let t = web_time::Instant::now();
                     r.render(&globals);
+                    self.game.note_render_time(t.elapsed().as_secs_f32() * 1000.0);
                     let hud = self.game.hud();
                     if self.last_hud.as_ref() != Some(&hud) {
                         #[cfg(target_arch = "wasm32")]

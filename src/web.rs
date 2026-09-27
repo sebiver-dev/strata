@@ -36,15 +36,19 @@ pub fn pointer_locked() -> bool {
         .is_some()
 }
 
+/// The value of `name` in the page URL's query string, if present.
+pub fn url_param(name: &str) -> Option<String> {
+    let search = web_sys::window()?.location().search().ok()?;
+    search
+        .trim_start_matches('?')
+        .split('&')
+        .find_map(|kv| kv.strip_prefix(name)?.strip_prefix('=').map(str::to_owned))
+}
+
 /// A fixed starting camera from the page URL, `?cam=x,y,z,yaw,pitch` (metres
 /// and radians). Used to take the same screenshot before and after a change.
 pub fn camera_from_url() -> Option<[f32; 5]> {
-    let search = web_sys::window()?.location().search().ok()?;
-    let value = search
-        .trim_start_matches('?')
-        .split('&')
-        .find_map(|kv| kv.strip_prefix("cam="))?;
-    let v: Vec<f32> = value.split(',').filter_map(|x| x.parse().ok()).collect();
+    let v: Vec<f32> = url_param("cam")?.split(',').filter_map(|x| x.parse().ok()).collect();
     v.try_into().ok()
 }
 

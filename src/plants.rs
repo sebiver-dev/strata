@@ -423,13 +423,14 @@ pub fn tuft(out: &mut MeshData, seed: u32, w: IVec3, spot: &Spot) {
 
     // Lupins grow in patches, most of all along verges; daisies in drifts
     // through meadows and along the paths.
-    let lupins = fbm2(seed.wrapping_add(50), xm / 14.0, zm / 14.0, 2) + 0.1 * spot.verge;
+    let lupins = fbm2(seed.wrapping_add(50), xm / 14.0, zm / 14.0, 2) + 0.2 * spot.verge;
     let drifts = fbm2(seed.wrapping_add(51), xm / 6.0, zm / 6.0, 2);
     let daisies = (0.03 + 0.12 * spot.meadow + 0.35 * spot.verge) * smoothstep(0.42, 0.62, drifts) * (1.0 - spot.field);
     let roll = rng.f();
     let spot_at = |rng: &mut Rng| floor + Vec3::new(rng.range(0.08, 0.42), 0.02, rng.range(0.08, 0.42));
     let mut crowded = false;
-    if lupins > 0.6 && roll < 0.1 + 1.2 * (lupins - 0.6) {
+    // Drifts: sparse at their edges, crowded in the middle.
+    if lupins > 0.58 && roll < 0.1 + 1.6 * (lupins - 0.58) {
         let at = spot_at(&mut rng);
         // Mostly violet, with pink and white spires mixed in; some drifts
         // run pinker or paler than others.
@@ -538,7 +539,8 @@ mod tests {
             tuft(&mut out, 3, IVec3::new(x, 10, 0), &spot);
         }
         let per_voxel = out.indices.len() / 3 / 32;
-        assert!((10..=60).contains(&per_voxel), "{per_voxel}");
+        // The worst case: a verge in a lupin drift.
+        assert!((10..=100).contains(&per_voxel), "{per_voxel}");
         assert!(out.vertices.iter().all(|v| v.pos[1] > 4.8 && v.pos[1] < 5.0 + 2.2));
     }
 }

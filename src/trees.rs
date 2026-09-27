@@ -656,7 +656,7 @@ fn clump(out: &mut MeshData, all: &[Clump], index: usize, canopy: Vec3, mesh: &I
         let global = (p - canopy).normalize_or_zero();
         // A lift towards the sky lets undersides catch skylight instead of
         // going black, as in painted foliage.
-        let n = (own * 0.7 + global * 0.3 + Vec3::Y * 0.35).normalize_or_zero();
+        let n = (own * 0.7 + global * 0.3 + Vec3::Y * 0.5).normalize_or_zero();
         // Occlusion: undersides and the parts facing into the canopy are darker.
         let depth = ((p - canopy).length() / (size * 1.6)).min(1.0);
         let light = 0.5 + 0.5 * n.y;

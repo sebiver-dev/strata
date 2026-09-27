@@ -133,10 +133,17 @@ impl Padded {
 /// crisp so their glass reads as glass.
 #[inline]
 fn is_smooth(b: Block) -> bool {
-    is_solid(b) && b != LANTERN && b != POST && b != WINDOW
+    is_solid(b) && b != LANTERN && b != POST && b != WINDOW && b != BUILT
 }
 
 pub fn build(world: &World, cpos: IVec3) -> MeshData {
+    let mut out = build_voxels(world, cpos);
+    // Buildings and fences are authored models; their voxels only give collision.
+    world.terrain.structures.append_models(cpos, &mut out);
+    out
+}
+
+fn build_voxels(world: &World, cpos: IVec3) -> MeshData {
     let air_beyond = |d: IVec3| world.chunks.get(&(cpos + d)).is_none_or(|n| n.is_uniform(AIR));
     match world.chunks.get(&cpos) {
         None => return MeshData::default(),
@@ -168,7 +175,7 @@ pub fn build(world: &World, cpos: IVec3) -> MeshData {
             for x in 0..CHUNK {
                 let p = IVec3::new(x, y, z);
                 let b = pad.get(p);
-                if b == AIR {
+                if b == AIR || b == BUILT {
                     continue;
                 }
                 if b == TALL_GRASS {

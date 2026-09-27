@@ -145,7 +145,12 @@ impl Tree {
             // Boughs reach a little further on the side the tree leans to.
             let long = 1.0 + 0.25 * out.dot(lean_dir);
             let mut length = h * (0.36 + 0.12 * self.rand(20 + k as u32)) * long;
-            let mut rise = 0.35 + 0.4 * self.rand(30 + k as u32);
+            let mut rise = 0.25 + 0.4 * self.rand(30 + k as u32);
+            if self.hero.is_some() {
+                // The great oak spreads wide and low.
+                length *= 1.3;
+                rise *= 0.6;
+            }
             if hero_bough {
                 length = h * 0.72;
                 rise = 0.3;
@@ -183,7 +188,7 @@ impl Tree {
         for (k, &e) in ends.iter().enumerate() {
             let s = 0.85 + 0.3 * self.rand(60 + k as u32);
             clumps.push(Clump {
-                centre: e + Vec3::Y * cr * 0.1,
+                centre: e - Vec3::Y * cr * 0.15,
                 radii: Vec3::new(1.05, 0.92, 1.05) * cr * s,
                 seed: self.seed.wrapping_add(k as u32),
             });
@@ -196,7 +201,7 @@ impl Tree {
         let mid = ends.iter().copied().sum::<Vec3>() / ends.len() as f32;
         for k in 0..ends.len() {
             let (a, b) = (ends[k], ends[(k + 1) % ends.len()]);
-            if a.distance(b) > cr * 1.2 {
+            if a.distance(b) > cr * 1.5 {
                 let m = (a + b) * 0.5;
                 clumps.push(Clump {
                     centre: m + (m - mid) * 0.1 - Vec3::Y * cr * 0.05,
@@ -215,7 +220,8 @@ impl Tree {
             for k in 0..2u32 {
                 let a = self.rand(200 + i as u32 * 4 + k) * TAU;
                 let side = Vec3::new(a.cos(), 0.0, a.sin());
-                let d = (away * 0.9 + side * 0.8 + Vec3::Y * (0.5 + 0.4 * k as f32)).normalize();
+                // One puff bulges out sideways and a little down, the other up.
+                let d = (away * 0.9 + side * 0.8 + Vec3::Y * (-0.25 + 0.9 * k as f32)).normalize();
                 clumps.push(Clump {
                     centre: c + d * radii * 0.9,
                     radii: radii * (0.46 + 0.1 * self.rand(300 + i as u32 * 4 + k)),
@@ -275,7 +281,7 @@ impl Tree {
         for l in &s.limbs {
             tube(out, l, 7, 3);
         }
-        let big = s.clumps.iter().map(|c| c.radii.x).fold(0.0, f32::max) * 0.6;
+        let big = s.clumps.iter().map(|c| c.radii.x).fold(0.0, f32::max) * 0.75;
         for (i, c) in s.clumps.iter().enumerate() {
             let mesh = if c.radii.x > big { ico(2) } else { ico(1) };
             clump(out, &s.clumps, i, s.canopy, mesh, c.seed);
@@ -306,11 +312,12 @@ impl Tree {
             5,
             2,
         );
-        let mesh = ico(if level == 0 { 1 } else { 0 });
         for (i, c) in s.clumps.iter().enumerate() {
-            if level > 0 && c.radii.x < self.height * 0.2 {
+            let puff = c.radii.x < self.height * 0.2;
+            if level > 0 && puff {
                 continue;
             }
+            let mesh = ico(if level == 0 && !puff { 1 } else { 0 });
             clump(out, &s.clumps, i, s.canopy, mesh, c.seed);
         }
         let step = if level == 0 { 1 } else { 2 };

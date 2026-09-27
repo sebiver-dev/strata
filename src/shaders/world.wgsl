@@ -809,10 +809,11 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             wettable = false;
         }
         case 27u: { // bark: deep vertical fissures between plated ridges, moss on top
-            let ridge = vnoise(vec3(q.x * 6.0, q.y * 0.8, q.z * 6.0)) * 0.65 + vnoise(vec3(q.x * 15.0, q.y * 2.2, q.z * 15.0)) * 0.35;
-            let plate = smoothstep(0.38, 0.62, ridge);
-            let crack = smoothstep(0.52, 0.6, vnoise(vec3(q.x * 4.0, q.y * 5.0, q.z * 4.0))) * plate;
-            var c = mix(vec3(0.11, 0.085, 0.065), vec3(0.40, 0.32, 0.24), plate);
+            let ridge = vnoise(vec3(q.x * 11.0, q.y * 1.4, q.z * 11.0)) * 0.6 + vnoise(vec3(q.x * 27.0, q.y * 3.5, q.z * 27.0)) * 0.4;
+            // Narrow dark fissures between broad plates of bark.
+            let plate = smoothstep(0.3, 0.45, ridge);
+            let crack = smoothstep(0.52, 0.6, vnoise(vec3(q.x * 7.0, q.y * 6.0, q.z * 7.0))) * plate;
+            var c = mix(vec3(0.12, 0.09, 0.07), mix(vec3(0.30, 0.24, 0.18), vec3(0.40, 0.33, 0.25), vnoise(q * 1.7)), plate);
             c = mix(c, c * 0.65, crack * d_dm);
             c *= 0.85 + 0.3 * fine;
             // Moss settles on the upper sides of roots and boughs.
@@ -834,7 +835,7 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.albedo = c;
             s.rough = 0.55;
             s.f0 = 0.04;
-            s.sss = 0.65;
+            s.sss = 0.8;
             s.height = shape * 0.05 * d_dm + leaves * 0.02;
             wettable = false;
         }

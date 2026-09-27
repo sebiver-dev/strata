@@ -819,6 +819,9 @@ impl Structures {
     }
 }
 
+/// Which way the player faces on arrival (`Player::new`), as a yaw in radians.
+pub const SPAWN_YAW: f32 = crate::vista::SPAWN_YAW;
+
 fn cottage_door_near(s: &Structures, x: f32, z: f32) -> bool {
     s.list.iter().any(|(_, _, st)| match st {
         Structure::Cottage(c) => {

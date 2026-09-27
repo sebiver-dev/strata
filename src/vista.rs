@@ -797,7 +797,7 @@ mod tests {
         let mut trees = 0;
         for gz in 95..115 {
             for gx in 90..110 {
-                trees += t.tree_boxes(gx, gz).is_some() as i32;
+                trees += t.tree_in_cell(gx, gz).is_some() as i32;
             }
         }
         assert!(trees > 30, "{trees} trees around the hamlet");

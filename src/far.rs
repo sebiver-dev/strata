@@ -195,14 +195,26 @@ fn crown(out: &mut MeshData, lo: Vec3, hi: Vec3, seed: u32, level: u8) {
         }
         profile.push((y1, 0.0));
     } else {
-        let rings = if level == 0 { 6 } else { 4 };
-        for i in 0..=rings {
-            let t = i as f32 / rings as f32;
-            let a = t * std::f32::consts::PI;
-            // Flatter underneath, fuller on top, like a real crown.
-            let y = y0 + (y1 - y0) * (0.5 - 0.5 * a.cos());
-            profile.push((y, r * a.sin() * if t < 0.5 { 0.92 } else { 1.0 }));
+        // A cloud of rounded clumps: one in the middle, the rest around it.
+        let rings = if level == 0 { 5 } else { 4 };
+        let around = if level == 0 { 5 } else { 3 };
+        let h = y1 - y0;
+        let ball = |out: &mut MeshData, at: Vec3, rad: f32, k: u32| {
+            let mut profile = Vec::new();
+            for i in 0..=rings {
+                let a = i as f32 / rings as f32 * std::f32::consts::PI;
+                profile.push((at.y - rad * 0.85 * a.cos(), rad * a.sin()));
+            }
+            revolve(out, Vec2::new(at.x, at.z), &profile, segs.min(7), LEAVES, (seed | 1).wrapping_add(k));
+        };
+        ball(out, Vec3::new(c.x, y0 + h * 0.58, c.y), r * 0.62, 0);
+        for k in 0..around {
+            let u = crate::noise::unit(crate::noise::hash3(seed, k as i32, 3, 9));
+            let a = (k as f32 + 0.4 * u) * std::f32::consts::TAU / around as f32;
+            let at = Vec3::new(c.x + a.cos() * r * 0.5, y0 + h * (0.4 + 0.25 * u), c.y + a.sin() * r * 0.5);
+            ball(out, at, r * (0.42 + 0.1 * u), k + 1);
         }
+        return;
     }
     revolve(out, c, &profile, segs, LEAVES, seed | 1);
 }
@@ -359,13 +371,27 @@ mod tests {
     #[test]
     fn crowns_are_closed_and_face_outward() {
         let mut out = MeshData::default();
+        // A broadleaf crown of clumps and a conifer spire.
         crown(&mut out, Vec3::new(0.0, 10.0, 0.0), Vec3::new(8.0, 16.0, 8.0), 5, 0);
-        let centre = Vec3::new(4.0, 13.0, 4.0);
+        crown(&mut out, Vec3::new(20.0, 10.0, 0.0), Vec3::new(24.0, 22.0, 4.0), 5, 0);
+        // Every triangle winds the same way as the outward normals its vertices carry.
+        let normal_of = |d: u32| {
+            let q = |s: u32| ((d >> s) & 511) as f32 / 511.0 * 2.0 - 1.0;
+            let (u, v) = (q(13), q(22));
+            let mut m = Vec3::new(u, 1.0 - u.abs() - v.abs(), v);
+            if m.y < 0.0 {
+                let sign = |a: f32| if a >= 0.0 { 1.0 } else { -1.0 };
+                (m.x, m.z) = ((1.0 - v.abs()) * sign(u), (1.0 - u.abs()) * sign(v));
+            }
+            m.normalize()
+        };
         for tri in out.indices.chunks(3) {
-            let [a, b, c] = [0, 1, 2].map(|k| Vec3::from(out.vertices[tri[k] as usize].pos));
+            let verts = [0, 1, 2].map(|k| out.vertices[tri[k] as usize]);
+            let [a, b, c] = verts.map(|v| Vec3::from(v.pos));
             let normal = (b - a).cross(c - a);
             if normal.length() > 1e-5 {
-                assert!(normal.dot((a + b + c) / 3.0 - centre) > 0.0);
+                let n = verts.iter().map(|v| normal_of(v.data)).sum::<Vec3>();
+                assert!(normal.dot(n) > 0.0);
             }
         }
     }

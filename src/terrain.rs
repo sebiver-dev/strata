@@ -37,7 +37,7 @@ const SIDE_ROADS_Z: [f32; 4] = [300.0, 780.0, 1290.0, 1760.0];
 /// How far side roads climb away from the valley road.
 const SIDE_ROAD_LENGTH_M: f32 = 560.0;
 /// Voxels in a lantern post below the lantern itself.
-const LANTERN_POST: i32 = 5;
+const LANTERN_POST: i32 = 6;
 
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
@@ -108,27 +108,30 @@ impl Terrain {
     }
 
     /// Ground positions (voxel coordinates) of the lantern posts whose base lies
-    /// within the given rectangle of metres.
-    fn lanterns_in(&self, x0: f32, x1: f32, z0: f32, z1: f32) -> Vec<IVec3> {
+    /// within the given rectangle of metres, each with the direction (one voxel
+    /// step) towards its road, where its lantern hangs.
+    fn lanterns_in(&self, x0: f32, x1: f32, z0: f32, z1: f32) -> Vec<(IVec3, IVec3)> {
         let mut out = Vec::new();
-        let mut add = |x: f32, z: f32| {
+        let mut add = |x: f32, z: f32, towards: IVec3| {
             if x < x0 || x >= x1 || z < z0 || z >= z1 {
                 return;
             }
             let (h, _) = self.height_at(x, z);
             if h > WATER_LEVEL_M + 0.8 {
-                out.push(IVec3::new(
+                let base = IVec3::new(
                     (x / VOXEL_SIZE).floor() as i32,
                     (h / VOXEL_SIZE).floor() as i32,
                     (z / VOXEL_SIZE).floor() as i32,
-                ));
+                );
+                out.push((base, towards));
             }
         };
         let side = |k: i32| if k % 2 == 0 { 2.6 } else { -2.6 };
+        let towards = |off: f32, axis: IVec3| if off > 0.0 { -axis } else { axis };
         let s = LANTERN_SPACING_M;
         for k in (z0 / s).floor() as i32 - 1..=(z1 / s).ceil() as i32 {
             let z = (k as f32 + 0.5) * s;
-            add(self.road_x(z) + side(k), z);
+            add(self.road_x(z) + side(k), z, towards(side(k), IVec3::X));
         }
         for (r, z0) in SIDE_ROADS_Z.iter().enumerate() {
             let start = self.road_x(*z0);
@@ -139,7 +142,7 @@ impl Terrain {
                     continue;
                 }
                 if let Some(z) = self.side_road_z(r, x) {
-                    add(x, z + side(k));
+                    add(x, z + side(k), towards(side(k), IVec3::Z));
                 }
             }
         }
@@ -475,8 +478,10 @@ impl Terrain {
                     }
                 }
             }
-            for base in self.lanterns_in(ox, ox + side, oz, oz + side) {
-                stamp_lantern(base, origin, &mut data);
+            // A lantern hangs a voxel beside its post, so look a little past the chunk.
+            let m = VOXEL_SIZE * 2.0;
+            for (base, towards) in self.lanterns_in(ox - m, ox + side + m, oz - m, oz + side + m) {
+                stamp_lantern(base, towards, origin, &mut data);
             }
         }
 
@@ -528,18 +533,19 @@ fn stamp_boulder(b: &Boulder, seed: u32, origin: IVec3, data: &mut [Block; CHUNK
     }
 }
 
-/// A wooden post with a lantern on top (the mesher gives the lantern its roof).
-fn stamp_lantern(base: IVec3, origin: IVec3, data: &mut [Block; CHUNK_VOLUME]) {
-    for dy in 0..=LANTERN_POST {
-        let l = base + IVec3::Y * dy - origin;
-        if l.cmplt(IVec3::ZERO).any() || l.cmpge(IVec3::splat(CHUNK)).any() {
-            continue;
+/// A square wooden post with an arm at the top, reaching over the road, and
+/// a lantern hanging from the arm's end (the mesher draws the arm and hook).
+fn stamp_lantern(base: IVec3, towards: IVec3, origin: IVec3, data: &mut [Block; CHUNK_VOLUME]) {
+    let mut put = |p: IVec3, b: Block| {
+        let l = p - origin;
+        if l.cmpge(IVec3::ZERO).all() && l.cmplt(IVec3::splat(CHUNK)).all() {
+            data[local_index(l.x, l.y, l.z)] = b;
         }
-        data[local_index(l.x, l.y, l.z)] = match dy {
-            d if d < LANTERN_POST => POST,
-            _ => LANTERN,
-        };
+    };
+    for dy in 0..=LANTERN_POST {
+        put(base + IVec3::Y * dy, POST);
     }
+    put(base + towards + IVec3::Y * (LANTERN_POST - 1), LANTERN);
 }
 
 /// How much a spot (in metres) is meadow, 0..1: grass grows thick there.
@@ -627,10 +633,15 @@ mod tests {
         let posts = t.lanterns_in(x - 8.0, x + 8.0, z - 40.0, z + 40.0);
         assert!(posts.len() >= 3, "{posts:?}");
         // The lantern sits on top of its post in the generated chunk.
-        let top = posts[0] + IVec3::Y * LANTERN_POST;
-        let c = t.generate(crate::chunk::chunk_of(top));
-        let l = crate::chunk::local_of(top);
+        // The lantern hangs beside the top of its post, towards the road.
+        let (base, towards) = posts[0];
+        let lamp = base + towards + IVec3::Y * (LANTERN_POST - 1);
+        let c = t.generate(crate::chunk::chunk_of(lamp));
+        let l = crate::chunk::local_of(lamp);
         assert_eq!(c.get(l.x, l.y, l.z), LANTERN);
+        let lamp_m = (lamp.as_vec3() + 0.5) * VOXEL_SIZE;
+        let base_m = (base.as_vec3() + 0.5) * VOXEL_SIZE;
+        assert!(t.road_distance(lamp_m.x, lamp_m.z) < t.road_distance(base_m.x, base_m.z));
     }
 
     #[test]

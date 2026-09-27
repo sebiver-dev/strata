@@ -576,17 +576,36 @@ const POST_RADIUS: f32 = 0.08;
 /// A straight timber of square section `half` from `a` to `b`.
 fn beam(out: &mut MeshData, a: Vec3, b: Vec3, half: f32, mat: Block) {
     let dir = (b - a).normalize_or_zero();
-    let side = if dir.y.abs() > 0.99 { Vec3::X } else { dir.cross(Vec3::Y).normalize() };
+    let side = if dir.y.abs() > 0.99 {
+        Vec3::X
+    } else {
+        dir.cross(Vec3::Y).normalize()
+    };
     let up = side.cross(dir);
     let (s, u) = (side * half, up * half);
     let corner = |e: Vec3, k: usize| e + [s + u, -s + u, -s - u, s - u][k];
     let centre = (a + b) * 0.5;
     for k in 0..4 {
         let j = (k + 1) % 4;
-        flat(out, &[corner(a, k), corner(a, j), corner(b, j), corner(b, k)], centre, mat);
+        flat(
+            out,
+            &[corner(a, k), corner(a, j), corner(b, j), corner(b, k)],
+            centre,
+            mat,
+        );
     }
-    flat(out, &[corner(a, 0), corner(a, 1), corner(a, 2), corner(a, 3)], centre, mat);
-    flat(out, &[corner(b, 0), corner(b, 1), corner(b, 2), corner(b, 3)], centre, mat);
+    flat(
+        out,
+        &[corner(a, 0), corner(a, 1), corner(a, 2), corner(a, 3)],
+        centre,
+        mat,
+    );
+    flat(
+        out,
+        &[corner(b, 0), corner(b, 1), corner(b, 2), corner(b, 3)],
+        centre,
+        mat,
+    );
 }
 
 /// One voxel's length of a square wooden lantern post. The top voxel gets a
@@ -598,7 +617,12 @@ fn post(out: &mut MeshData, pad: &Padded, origin: IVec3, p: IVec3) {
     let above = pad.get(p + IVec3::Y);
     let top = above != POST && above != LANTERN;
     let height = if top { ARM_HEIGHT + 0.08 } else { VOXEL_SIZE };
-    cuboid(out, centre + Vec3::new(-r, 0.0, -r), centre + Vec3::new(r, height, r), WOOD);
+    cuboid(
+        out,
+        centre + Vec3::new(-r, 0.0, -r),
+        centre + Vec3::new(r, height, r),
+        WOOD,
+    );
     if !top {
         return;
     }
@@ -640,8 +664,19 @@ fn lantern(out: &mut MeshData, origin: IVec3, p: IVec3, on_post: bool) {
         cuboid(out, at(-r, -0.04, -r), at(r, b0, r), WOOD);
     } else {
         // Base plate, then the hook up to the arm in the voxel above.
-        cuboid(out, at(-hw - 0.015, b0 - 0.025, -hw - 0.015), at(hw + 0.015, b0, hw + 0.015), LANTERN);
-        beam(out, at(0.0, b1 + 0.15, 0.0), at(0.0, VOXEL_SIZE + ARM_HEIGHT, 0.0), 0.012, LANTERN);
+        cuboid(
+            out,
+            at(-hw - 0.015, b0 - 0.025, -hw - 0.015),
+            at(hw + 0.015, b0, hw + 0.015),
+            LANTERN,
+        );
+        beam(
+            out,
+            at(0.0, b1 + 0.15, 0.0),
+            at(0.0, VOXEL_SIZE + ARM_HEIGHT, 0.0),
+            0.012,
+            LANTERN,
+        );
     }
     cuboid(out, at(-hw, b0, -hw), at(hw, b1, hw), LANTERN);
     // Roof: a low pyramid with an overhang.
@@ -655,7 +690,12 @@ fn lantern(out: &mut MeshData, origin: IVec3, p: IVec3, on_post: bool) {
     }
     flat(out, &corners, centre, LANTERN);
     // Thin iron plate joining the body to the roof.
-    cuboid(out, at(-hw - 0.01, b1, -hw - 0.01), at(hw + 0.01, eave, hw + 0.01), LANTERN);
+    cuboid(
+        out,
+        at(-hw - 0.01, b1, -hw - 0.01),
+        at(hw + 0.01, eave, hw + 0.01),
+        LANTERN,
+    );
 }
 
 /// The lantern body's bottom and top above its voxel floor, in metres.

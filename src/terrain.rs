@@ -509,7 +509,10 @@ pub struct Boulder {
 /// Fills a lumpy ellipsoid of stone; the smooth mesher rounds it off.
 fn stamp_boulder(b: &Boulder, seed: u32, origin: IVec3, data: &mut [Block; CHUNK_VOLUME]) {
     let lo = ((b.centre - b.radii * 1.2) / VOXEL_SIZE).floor().as_ivec3().max(origin);
-    let hi = ((b.centre + b.radii * 1.2) / VOXEL_SIZE).ceil().as_ivec3().min(origin + IVec3::splat(CHUNK - 1));
+    let hi = ((b.centre + b.radii * 1.2) / VOXEL_SIZE)
+        .ceil()
+        .as_ivec3()
+        .min(origin + IVec3::splat(CHUNK - 1));
     for y in lo.y..=hi.y {
         for z in lo.z..=hi.z {
             for x in lo.x..=hi.x {

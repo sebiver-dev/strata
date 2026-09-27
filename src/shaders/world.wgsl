@@ -462,11 +462,12 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             let crack = 1.0 - abs(2.0 * vnoise(q * vec3(3.0, 5.0, 3.0)) - 1.0);
             let crack_m = smoothstep(0.90, 0.97, crack) * d_dm;
             c *= 1.0 - 0.55 * crack_m;
-            if (top) {
-                let lichen = smoothstep(0.62, 0.70, fbm(q * 2.0));
-                c = mix(c, vec3(0.55, 0.58, 0.33), lichen * 0.7);
-            }
+            // Moss creeps over the tops of rocks and boulders in soft patches.
+            let moss_m = smoothstep(0.35, 0.8, n.y + (fbm(q * 1.3) - 0.5) * 0.9);
+            let moss = mix(vec3(0.18, 0.30, 0.09), vec3(0.34, 0.42, 0.14), vnoise(q * 9.0)) * (0.8 + 0.4 * fine);
+            c = mix(c, moss, moss_m * 0.9);
             s.albedo = c;
+            s.sss = moss_m * 0.15;
             s.rough = 0.75;
             s.f0 = 0.04;
             s.height = fine * 0.04 - crack_m * 0.02 + vnoise(q * 17.0) * 0.006 * d_cm;
@@ -521,15 +522,18 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.f0 = 0.03 + step(0.985, hash3(floor(q * 60.0))) * 0.4 * d_cm;
             s.height = select(0.0, ripple * 0.006 * d_dm, top) + grain * 0.002 * d_cm;
         }
-        case 5u: { // gravel: rounded stones with gaps
-            let gc = floor(q * 6.0);
-            let gd = length(fract(q * 6.0) - 0.5);
-            let stone = 1.0 - smoothstep(0.3, 0.48, gd);
+        case 5u: { // gravel: river pebbles of mixed size and tone
+            let u = q * 7.0 + vec3(0.0, q.x * 0.37, 0.0);
+            let gc = floor(u);
+            let centre = gc + 0.25 + 0.5 * vec3(hash3(gc), hash3(gc + 3.0), hash3(gc + 7.0));
+            let rad = 0.3 + 0.2 * hash3(gc + 11.0);
+            let stone = 1.0 - smoothstep(rad - 0.12, rad, distance(u, centre));
             let tint = hash3(gc);
-            let c = mix(vec3(0.40, 0.39, 0.37), vec3(0.64, 0.61, 0.56), tint);
-            s.albedo = c * mix(0.45, 1.0, mix(1.0, stone, d_dm));
+            let c = mix(vec3(0.42, 0.41, 0.39), vec3(0.66, 0.63, 0.58), tint);
+            let bed = vec3(0.38, 0.35, 0.31) * (0.85 + 0.3 * fine);
+            s.albedo = mix(bed, c, stone * d_dm + (1.0 - d_dm) * 0.5);
             s.rough = 0.7;
-            s.height = stone * 0.03 * d_dm;
+            s.height = stone * 0.02 * d_dm;
         }
         case 6u: { // snow: soft, bluish in shade, glitters
             s.albedo = vec3(0.93, 0.95, 0.98) * (0.94 + 0.08 * fine);
@@ -581,17 +585,39 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.height = smoothstep(0.0, 0.08, board) * 0.004;
             wettable = false;
         }
-        case 11u: { // road: packed earth with ruts, grit and flat stones
-            let rut = 0.5 + 0.5 * sin(p.x * 3.1 + p.z * 2.3 + broad * 4.0);
-            var c = mix(vec3(0.42, 0.34, 0.25), vec3(0.52, 0.45, 0.35), fine * 0.7 + rut * 0.3);
-            let sc = floor(q.xz * 5.0);
-            let flag = step(0.7, hash2(sc)) * d_dm;
-            let sd = max(abs(fract(q.xz * 5.0) - 0.5).x, abs(fract(q.xz * 5.0) - 0.5).y);
-            let slab = flag * (1.0 - smoothstep(0.34, 0.44, sd));
-            c = mix(c, vec3(0.55, 0.53, 0.49) * (0.85 + 0.3 * hash2(sc + 2.0)), slab);
+        case 11u: { // road: rounded cobblestones bedded in packed earth
+            let earth = mix(vec3(0.36, 0.27, 0.19), vec3(0.46, 0.37, 0.27), fine);
+            // Voronoi cells, about three stones per metre; the gap between the two
+            // nearest centres is the mortar of earth between stones.
+            let uv = q.xz * 2.3;
+            let base = floor(uv);
+            var f1 = 9.0;
+            var f2 = 9.0;
+            var id = vec2(0.0);
+            for (var j = -1; j <= 1; j++) {
+                for (var k = -1; k <= 1; k++) {
+                    let c = base + vec2(f32(j), f32(k));
+                    let o = c + 0.2 + 0.6 * vec2(hash2(c), hash2(c + 17.0));
+                    let d = distance(uv, o);
+                    if (d < f1) {
+                        f2 = f1;
+                        f1 = d;
+                        id = c;
+                    } else if (d < f2) {
+                        f2 = d;
+                    }
+                }
+            }
+            let gap = f2 - f1;
+            // Some stones are missing where the path is worn.
+            let worn = smoothstep(0.35, 0.5, vnoise(p * 0.7) * 0.7 + hash2(id) * 0.3);
+            let stone = smoothstep(0.05, 0.14, gap) * worn;
+            let tone = hash2(id + 5.0);
+            let grey = mix(vec3(0.44, 0.44, 0.45), vec3(0.64, 0.62, 0.60), tone) * (0.9 + 0.2 * fine);
+            let c = mix(earth, grey, stone * mix(0.6, 1.0, d_dm));
             s.albedo = c * (0.92 + 0.12 * vnoise(q * 37.0) * d_cm);
-            s.rough = 0.9;
-            s.height = slab * 0.012 + fine * 0.01;
+            s.rough = mix(0.95, 0.7, stone);
+            s.height = stone * smoothstep(0.0, 0.3, gap) * 0.03 * d_dm + fine * 0.008;
         }
         case 12u: { // lantern: dark iron frame around warm glass
             // Coordinates across the lantern body (0..1), which sits centred in its voxel
@@ -608,6 +634,26 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.f0 = 0.04;
             let flicker = 0.9 + 0.1 * vnoise(vec3(g.sun_dir.w * 6.0, floor(p.x), floor(p.z)));
             s.emit = LAMP_COLOR * pane * 4.5 * flicker;
+            wettable = false;
+        }
+        case 15u: { // lupin spike: packed purple florets, paler towards the tip
+            let florets = vnoise(q * 60.0);
+            let up = fract(p.y * 1.3);
+            var c = mix(vec3(0.30, 0.16, 0.56), vec3(0.55, 0.40, 0.82), florets * 0.7 + up * 0.3);
+            s.albedo = c * (0.85 + 0.3 * step(0.55, vnoise(q * 140.0)) * d_cm);
+            s.rough = 0.7;
+            s.sss = 0.5;
+            wettable = false;
+        }
+        case 16u: { // daisy petals
+            s.albedo = vec3(0.90, 0.90, 0.85);
+            s.rough = 0.6;
+            s.sss = 0.6;
+            wettable = false;
+        }
+        case 17u: { // daisy heart
+            s.albedo = vec3(0.95, 0.70, 0.12);
+            s.rough = 0.7;
             wettable = false;
         }
         case 13u: { // tall grass blades
@@ -686,12 +732,20 @@ fn vertex_normal(info: u32) -> vec3<f32> {
     return normalize(n);
 }
 
+// Distance in metres beyond which grass blades and flowers are not drawn.
+const PLANT_RANGE: f32 = 70.0;
+
+// Grass blades and wildflowers: thin, wind-bent, left out of the shadow map.
+fn is_plant(mat: u32) -> bool {
+    return mat == 13u || (mat >= 15u && mat <= 17u);
+}
+
 // Leaves sway a few centimetres in the wind. The offset depends only on the
 // position, so neighbouring faces move together and no cracks open.
 fn sway(pos: vec3<f32>, data: u32) -> vec3<f32> {
     let mat = (data >> 3u) & 255u;
     let t = g.sun_dir.w;
-    if (mat == 13u) {
+    if (is_plant(mat)) {
         // Grass bends from the root: gusts roll across the meadow as waves,
         // with a quicker flutter on top.
         let tip = f32((data >> 11u) & 3u) / 3.0;
@@ -712,7 +766,15 @@ fn sway(pos: vec3<f32>, data: u32) -> vec3<f32> {
 @vertex
 fn vs_world(@location(0) pos: vec3<f32>, @location(1) data: u32) -> VOut {
     var o: VOut;
-    o.clip = g.view_proj * vec4(sway(pos, data), 1.0);
+    var p = sway(pos, data);
+    // Far grass and flowers are too small to see: their upper vertices sink
+    // into the ground there, so they cost almost no pixels (the ground's own
+    // shading carries the meadow). The fade is continuous, so nothing pops.
+    if (is_plant((data >> 3u) & 255u)) {
+        let tip = f32((data >> 11u) & 3u) / 3.0;
+        p.y -= smoothstep(PLANT_RANGE * 0.75, PLANT_RANGE, distance(pos, g.camera_pos.xyz)) * 2.5 * tip;
+    }
+    o.clip = g.view_proj * vec4(p, 1.0);
     o.world = pos;
     o.info = data;
     o.ao = f32((data >> 11u) & 3u) / 3.0;
@@ -723,7 +785,7 @@ fn vs_world(@location(0) pos: vec3<f32>, @location(1) data: u32) -> VOut {
 @vertex
 fn vs_shadow(@location(0) pos: vec3<f32>, @location(1) data: u32) -> @builtin(position) vec4<f32> {
     // Grass blades are too thin to matter in the shadow map; collapse them.
-    if (((data >> 3u) & 255u) == 13u) {
+    if (is_plant((data >> 3u) & 255u)) {
         return vec4(2.0, 2.0, 0.5, 1.0);
     }
     return g.sun_view_proj * vec4(sway(pos, data), 1.0);
@@ -806,7 +868,9 @@ fn shade_terrain(i: VOut) -> vec4<f32> {
     let under = 0.35 + 0.4 * surf.sss;
     // Light from the open sky: the dome's colour straight up, bluer in the
     // shade than the warm sun. Light bounced off the sunlit ground below is warm.
-    let skylight = sky_dome(vec3(0.0, 1.0, 0.0)) * 0.8 + sky_dome(normalize(vec3(-sun.z, 0.02, sun.x))) * 0.3;
+    var skylight = sky_dome(vec3(0.0, 1.0, 0.0)) * 0.8 + sky_dome(normalize(vec3(-sun.z, 0.02, sun.x))) * 0.3;
+    // The painted golden-hour sky is more saturated than the light it really sheds.
+    skylight = mix(skylight, vec3(dot(skylight, vec3(0.3, 0.5, 0.2))) * vec3(0.95, 0.95, 1.05), golden_hour() * 0.55);
     let bounce = light * lin(vec3(0.52, 0.47, 0.36)) * 0.16 * max(sun.y, 0.0);
     let ambient = (skylight * (sky + (1.0 - sky) * surf.sss * 0.6) + bounce * (1.0 - sky) * under) * ao;
     // Sunlight scattered through leaves and grass, strongest when looking towards the sun.

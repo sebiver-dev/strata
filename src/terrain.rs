@@ -485,7 +485,10 @@ impl Terrain {
                         }
                     } else if ym < water {
                         WATER
-                    } else if col.surface == GRASS && ym - VOXEL_SIZE <= col.height_m && tall_grass(s, wx, wy, wz) {
+                    } else if col.surface == GRASS
+                        && ym - VOXEL_SIZE <= col.height_m
+                        && tall_grass(s, wx, wy, wz, crate::plants::verge(self, xm, zm))
+                    {
                         TALL_GRASS
                     } else {
                         AIR
@@ -569,10 +572,13 @@ pub fn tall_meadow(seed: u32, xm: f32, zm: f32) -> f32 {
 }
 
 /// Whether the air voxel resting on a grass block holds tall grass: dense in
-/// meadows and tall-grass fields, sparse between them.
-fn tall_grass(seed: u32, x: i32, y: i32, z: i32) -> bool {
+/// meadows, tall-grass fields and along road verges and river banks (`verge`,
+/// 0..1), sparse between them.
+fn tall_grass(seed: u32, x: i32, y: i32, z: i32, verge: f32) -> bool {
     let (xm, zm) = (x as f32 * VOXEL_SIZE, z as f32 * VOXEL_SIZE);
-    let chance = (0.06 + 0.8 * meadow(seed, xm, zm)).max(0.97 * tall_meadow(seed, xm, zm));
+    let chance = (0.06 + 0.8 * meadow(seed, xm, zm))
+        .max(0.97 * tall_meadow(seed, xm, zm))
+        .max(0.85 * verge);
     unit(crate::noise::hash3(seed.wrapping_add(32), x, y, z)) < chance
 }
 

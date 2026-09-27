@@ -30,13 +30,14 @@ impl MeshData {
     }
 }
 
-struct Face {
-    n: IVec3,
-    u: IVec3,
-    v: IVec3,
+pub(crate) struct Face {
+    pub n: IVec3,
+    pub u: IVec3,
+    pub v: IVec3,
 }
 
-const FACES: [Face; 6] = [
+/// The six face directions in the order the shader's normal table uses.
+pub(crate) const FACES: [Face; 6] = [
     Face {
         n: IVec3::X,
         u: IVec3::Y,

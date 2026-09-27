@@ -1,11 +1,12 @@
 //! Ties the world, the player and the renderer together each frame.
 
 use crate::block::{self, is_solid, Block, AIR, PLACEABLE, VOXEL_SIZE, WATER};
-use crate::chunk::{chunk_of, CHUNK};
+use crate::chunk::chunk_of;
+use crate::far::FarField;
 use crate::mesh;
 use crate::player::{MoveInput, Player};
 use crate::renderer::{Globals, Renderer};
-use crate::terrain::WATER_LEVEL_M;
+use crate::terrain::{WATER_LEVEL_M, WORLD_CHUNKS_XZ, WORLD_CHUNKS_Y};
 use crate::world::World;
 use glam::{IVec3, Mat4, Vec3};
 use std::collections::HashSet;
@@ -18,9 +19,13 @@ const MOUSE_SENSITIVITY: f32 = 0.0022;
 
 pub struct Settings {
     pub seed: u32,
+    /// Radius in chunks drawn as full voxels; the far field covers the rest.
     pub view_radius: i32,
     pub stream_budget_ms: f64,
     pub mesh_budget_ms: f64,
+    pub far_budget_ms: f64,
+    /// Distance in metres at which the fog has mostly swallowed the terrain.
+    pub fog_m: f32,
 }
 
 impl Default for Settings {
@@ -28,16 +33,20 @@ impl Default for Settings {
         if cfg!(target_arch = "wasm32") {
             Settings {
                 seed: 20260927,
-                view_radius: 9,
+                view_radius: 7,
                 stream_budget_ms: 5.0,
                 mesh_budget_ms: 4.0,
+                far_budget_ms: 3.0,
+                fog_m: 1000.0,
             }
         } else {
             Settings {
                 seed: 20260927,
-                view_radius: 14,
+                view_radius: 10,
                 stream_budget_ms: 7.0,
                 mesh_budget_ms: 6.0,
+                far_budget_ms: 3.0,
+                fog_m: 1300.0,
             }
         }
     }
@@ -46,6 +55,8 @@ impl Default for Settings {
 pub struct Game {
     pub world: World,
     pub player: Player,
+    far: FarField,
+    near_mask: Vec<u8>,
     settings: Settings,
     keys: HashSet<KeyCode>,
     buttons: HashSet<MouseButton>,
@@ -65,6 +76,8 @@ impl Game {
         Self {
             world,
             player,
+            far: FarField::default(),
+            near_mask: Vec::new(),
             settings,
             keys: HashSet::new(),
             buttons: HashSet::new(),
@@ -154,6 +167,13 @@ impl Game {
             renderer.remove(c);
         }
         self.remesh(renderer);
+        self.update_near_mask(renderer);
+        self.far.update(
+            &self.world.terrain,
+            self.player.pos,
+            self.settings.far_budget_ms,
+            |t, m| renderer.upload_far(t, m),
+        );
 
         // Hold the player still until the ground under them exists.
         let here = chunk_of((self.player.pos / VOXEL_SIZE).floor().as_ivec3());
@@ -252,6 +272,32 @@ impl Game {
         }
     }
 
+    /// Tells the renderer which chunk columns show full voxel meshes, so the far
+    /// field hides itself there. A column counts once every chunk in it is meshed.
+    fn update_near_mask(&mut self, renderer: &mut Renderer) {
+        let side = WORLD_CHUNKS_XZ;
+        let mut mask = vec![0u8; (side * side) as usize];
+        let center = chunk_of((self.player.pos / VOXEL_SIZE).floor().as_ivec3());
+        let r = self.world.view_radius;
+        for dz in -r..=r {
+            for dx in -r..=r {
+                let (x, z) = (center.x + dx, center.z + dz);
+                if dx * dx + dz * dz > r * r || x < 0 || z < 0 || x >= side || z >= side {
+                    continue;
+                }
+                let meshed = (0..WORLD_CHUNKS_Y).all(|y| {
+                    let c = IVec3::new(x, y, z);
+                    self.world.chunks.contains_key(&c) && !self.world.dirty.contains(&c)
+                });
+                mask[(z * side + x) as usize] = meshed as u8;
+            }
+        }
+        if mask != self.near_mask {
+            renderer.set_near_mask(&mask);
+            self.near_mask = mask;
+        }
+    }
+
     pub fn globals(&self, width: u32, height: u32, manual_srgb: bool) -> Globals {
         let aspect = width as f32 / height.max(1) as f32;
         let eye = self.player.eye();
@@ -259,7 +305,7 @@ impl Game {
         let view = Mat4::look_to_rh(eye, self.player.look_dir(), Vec3::Y);
         let vp = proj * view;
         let sun = Vec3::new(0.45, 0.72, 0.28).normalize();
-        let fog = self.world.view_radius as f32 * CHUNK as f32 * VOXEL_SIZE * 0.75;
+        let fog = self.settings.fog_m;
         let underwater = self.world.get((eye / VOXEL_SIZE).floor().as_ivec3()) == WATER;
         let (hl, has) = match self.target {
             Some(v) => (v.as_vec3() * VOXEL_SIZE, 1.0),
@@ -278,14 +324,16 @@ impl Game {
 
     pub fn status(&self, renderer: &Renderer) -> String {
         format!(
-            "Strata | {:.0} fps | {} | brush {} | {}{} | {} chunks drawn | {}k tris",
+            "Strata | {:.0} fps | {} | brush {} | {}{} | {} chunks, {} far tiles | {}k + {}k far tris",
             self.fps,
             block::name(PLACEABLE[self.selected]),
             self.brush,
             if self.player.flying { "flying" } else { "walking" },
             if self.ready { "" } else { " (loading)" },
             renderer.mesh_count(),
+            self.far.tile_count(),
             renderer.triangles_drawn / 1000,
+            renderer.far_triangles_drawn / 1000,
         )
     }
 }

@@ -3,6 +3,7 @@
 //! that target for refraction and reflections), then tone mapping and the
 //! crosshair onto the screen. Runs on Vulkan, Metal, DirectX 12 and browser WebGPU.
 
+use crate::avatar::{ActorDraw, ActorVertex};
 use crate::mesh::{MeshData, Vertex};
 use crate::terrain::WORLD_CHUNKS_XZ;
 use bytemuck::{Pod, Zeroable};
@@ -93,6 +94,9 @@ pub struct Renderer {
     far_terrain: wgpu::RenderPipeline,
     far_water: wgpu::RenderPipeline,
     overlay: wgpu::RenderPipeline,
+    actor: wgpu::RenderPipeline,
+    actor_shadow: wgpu::RenderPipeline,
+    actors: ActorBuffers,
     globals: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     meshes: HashMap<IVec3, GpuMesh>,
@@ -124,6 +128,14 @@ struct GpuTimer {
 }
 
 const TIMED_PASSES: u32 = 4;
+
+/// This frame's actor geometry on the GPU, rewritten every frame and grown as needed.
+#[derive(Default)]
+struct ActorBuffers {
+    buffers: Option<(wgpu::Buffer, wgpu::Buffer)>,
+    scene: std::ops::Range<u32>,
+    shadow: std::ops::Range<u32>,
+}
 
 impl GpuTimer {
     fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
@@ -299,7 +311,9 @@ impl Renderer {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("world.wgsl"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/world.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(include_str!("shaders/world.wgsl"), include_str!("shaders/actor.wgsl")).into(),
+            ),
         });
 
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
@@ -544,6 +558,40 @@ impl Renderer {
             bias: Default::default(),
             cull: None,
         });
+        let actor_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<ActorVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Uint32, 4 => Uint32],
+        };
+        let actor_buffers = [Some(actor_layout)];
+        let actor = pipeline(Desc {
+            label: "actor",
+            layout: &world_pipeline_layout,
+            vs: "vs_actor",
+            fs: Some("fs_actor"),
+            buffers: &actor_buffers,
+            target: Some(HDR_FORMAT),
+            blend: None,
+            depth: Some((true, Greater)),
+            bias: Default::default(),
+            cull: Some(wgpu::Face::Back),
+        });
+        let actor_shadow = pipeline(Desc {
+            label: "actor shadow",
+            layout: &shadow_pipeline_layout,
+            vs: "vs_actor_shadow",
+            fs: None,
+            buffers: &actor_buffers,
+            target: None,
+            blend: None,
+            depth: Some((true, LessEqual)),
+            bias: wgpu::DepthBiasState {
+                constant: 2,
+                slope_scale: 2.0,
+                clamp: 0.0,
+            },
+            cull: None,
+        });
         let overlay = pipeline(Desc {
             label: "overlay",
             layout: &post_pipeline_layout,
@@ -613,6 +661,9 @@ impl Renderer {
             far_terrain,
             far_water,
             overlay,
+            actor,
+            actor_shadow,
+            actors: ActorBuffers::default(),
             globals,
             bind_group,
             meshes: HashMap::new(),
@@ -798,6 +849,37 @@ impl Renderer {
         );
     }
 
+    /// Replaces the posed characters drawn this frame.
+    pub fn set_actors(&mut self, draw: &ActorDraw) {
+        let a = &mut self.actors;
+        let vbytes = std::mem::size_of_val(draw.vertices.as_slice()) as u64;
+        let ibytes = std::mem::size_of_val(draw.indices.as_slice()) as u64;
+        let fits = a
+            .buffers
+            .as_ref()
+            .is_some_and(|(v, i)| v.size() >= vbytes && i.size() >= ibytes);
+        if !fits {
+            let make = |label, size: u64, usage| {
+                self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(label),
+                    size: size.next_power_of_two().max(4096),
+                    usage: usage | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                })
+            };
+            a.buffers = Some((
+                make("actor vertices", vbytes, wgpu::BufferUsages::VERTEX),
+                make("actor indices", ibytes, wgpu::BufferUsages::INDEX),
+            ));
+        }
+        if let Some((vb, ib)) = &a.buffers {
+            self.queue.write_buffer(vb, 0, bytemuck::cast_slice(&draw.vertices));
+            self.queue.write_buffer(ib, 0, bytemuck::cast_slice(&draw.indices));
+        }
+        a.scene = draw.scene.clone();
+        a.shadow = draw.shadow.clone();
+    }
+
     pub fn remove(&mut self, cpos: IVec3) {
         self.meshes.remove(&cpos);
     }
@@ -891,9 +973,15 @@ impl Renderer {
                     pass.draw_indexed(0..*n, 0, 0..1);
                 }
             }
+            if let (Some((vb, ib)), false) = (&self.actors.buffers, self.actors.shadow.is_empty()) {
+                pass.set_pipeline(&self.actor_shadow);
+                pass.set_vertex_buffer(0, vb.slice(..));
+                pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(self.actors.shadow.clone(), 0, 0..1);
+            }
         }
 
-        // 2. Sky and terrain. Reverse Z: depth 0 is infinitely far away.
+        // 2. Sky, characters and terrain. Reverse Z: depth 0 is infinitely far away.
         {
             let color = color_attachment(&t.hdr_view, wgpu::LoadOp::Clear(wgpu::Color::BLACK));
             let mut pass = encoder.begin_render_pass(&pass_desc(
@@ -906,6 +994,13 @@ impl Renderer {
             pass.set_bind_group(1, &t.scene_bind, &[]);
             pass.set_pipeline(&self.sky);
             pass.draw(0..3, 0..1);
+            // Characters first: they are near the camera and hide terrain behind them.
+            if let (Some((vb, ib)), false) = (&self.actors.buffers, self.actors.scene.is_empty()) {
+                pass.set_pipeline(&self.actor);
+                pass.set_vertex_buffer(0, vb.slice(..));
+                pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(self.actors.scene.clone(), 0, 0..1);
+            }
             pass.set_pipeline(&self.terrain);
             for m in &visible {
                 if let Some((vb, ib, n)) = &m.buffers {

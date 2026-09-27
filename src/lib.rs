@@ -2,6 +2,7 @@
 //! generated from code; the game ships no textures, models or sounds.
 
 pub mod app;
+pub mod avatar;
 pub mod block;
 pub mod budget;
 pub mod chunk;

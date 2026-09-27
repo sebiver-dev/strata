@@ -1,5 +1,6 @@
 //! Ties the world, the player and the renderer together each frame.
 
+use crate::avatar::{PoseInput, Rig, Tool};
 use crate::block::{self, is_solid, Block, AIR, PLACEABLE, VOXEL_SIZE, WATER};
 use crate::budget::{Cost, Deadline};
 use crate::chunk::chunk_of;
@@ -21,6 +22,10 @@ const BLOCK_REPEAT_S: f32 = 0.25;
 /// Voxels along each edge of a building block (a 1 m cube).
 pub const BLOCK_VOXELS: i32 = 2;
 const MOUSE_SENSITIVITY: f32 = 0.0022;
+/// How far behind the player's eye the third-person camera sits.
+const THIRD_PERSON_M: f32 = 3.2;
+/// Sideways offset of the third-person camera, so the crosshair clears the body.
+const SHOULDER_M: f32 = 0.55;
 /// Largest brush radius in voxels (a 6.5 m wide brush).
 pub const MAX_BRUSH: i32 = 6;
 
@@ -175,6 +180,11 @@ pub struct Game {
     worst_timer: f32,
     target: Option<IVec3>,
     ready: bool,
+    /// Whether the camera follows behind the player instead of looking from their eyes.
+    pub third_person: bool,
+    /// Current distance of the third-person camera; shortened where terrain is in the way.
+    camera_dist: f32,
+    rig: Rig,
 }
 
 impl Game {
@@ -189,6 +199,11 @@ impl Game {
             player.pitch = pitch;
             player.flying = true;
         }
+        // `?view=third` starts behind the player, for screenshots.
+        #[cfg(target_arch = "wasm32")]
+        let third_person = crate::web::url_param("view").as_deref() == Some("third");
+        #[cfg(not(target_arch = "wasm32"))]
+        let third_person = false;
         #[cfg(target_arch = "wasm32")]
         let night = crate::web::url_param("night").is_some_and(|v| v != "0");
         #[cfg(not(target_arch = "wasm32"))]
@@ -218,6 +233,9 @@ impl Game {
             worst_timer: 0.0,
             target: None,
             ready: false,
+            third_person,
+            camera_dist: 0.0,
+            rig: Rig::default(),
         }
     }
 
@@ -237,6 +255,7 @@ impl Game {
                         Shape::Cube => Shape::Block,
                     }
                 }
+                KeyCode::KeyV => self.third_person = !self.third_person,
                 KeyCode::KeyN => self.night_wanted = !self.night_wanted,
                 _ => {
                     let digits = [
@@ -383,7 +402,15 @@ impl Game {
             self.player.update(&self.world, input, dt);
         }
 
-        let hit = self.world.raycast(self.player.eye(), self.player.look_dir(), REACH_M);
+        self.update_camera(dt);
+        // Aim along the crosshair, which is the camera's line of sight, but only
+        // at what the player can reach from where they stand.
+        let (cam, dir) = (self.camera_pos(), self.player.look_dir());
+        let eye = self.player.eye();
+        let hit = self
+            .world
+            .raycast(cam, dir, REACH_M + cam.distance(eye))
+            .filter(|h| ((h.voxel.as_vec3() + 0.5) * VOXEL_SIZE - eye).length() <= REACH_M + 0.5);
         self.target = hit.as_ref().map(|h| h.voxel);
         self.edit_timer -= dt;
         if self.edit_timer <= 0.0 {
@@ -398,15 +425,89 @@ impl Game {
                 if dig {
                     self.edit(h.voxel, AIR);
                     self.edit_timer = repeat;
+                    self.rig.act();
                 } else if build {
                     // Blocks go in the grid cell just in front of the aimed-at
                     // face, which also fills out a half-dug block.
                     self.edit(h.before, PLACEABLE[self.selected]);
                     self.edit_timer = repeat;
+                    self.rig.act();
                 }
             }
         }
         self.clicked = None;
+
+        let pose = self.pose();
+        self.rig.update(&pose, dt);
+        renderer.set_actors(&self.rig.build(&pose, self.player.eye(), self.third_person));
+    }
+
+    fn pose(&self) -> PoseInput {
+        let hud = self.hud();
+        let p = &self.player;
+        PoseInput {
+            pos: p.pos,
+            vel: p.vel,
+            yaw: p.yaw,
+            pitch: p.pitch,
+            on_ground: p.on_ground,
+            flying: p.flying,
+            in_water: p.in_water,
+            tool: Tool::from_selection(PLACEABLE[hud.selected], hud.brush),
+        }
+    }
+
+    /// Eases the third-person camera out to its distance, pulling it in
+    /// wherever terrain between it and the player would block the view.
+    fn update_camera(&mut self, dt: f32) {
+        if !self.third_person {
+            self.camera_dist = 0.0;
+            return;
+        }
+        let (pivot, back) = self.camera_rig();
+        let mut free = THIRD_PERSON_M;
+        let steps = 40;
+        for i in 1..=steps {
+            let d = THIRD_PERSON_M * i as f32 / steps as f32;
+            let p = pivot + back * d;
+            if is_solid(self.world.get((p / VOXEL_SIZE).floor().as_ivec3())) {
+                free = (d - 0.35).max(0.0);
+                break;
+            }
+        }
+        // Snap in at once so walls never block the view; ease back out.
+        self.camera_dist = if free < self.camera_dist {
+            free
+        } else {
+            self.camera_dist + (free - self.camera_dist) * (dt * 6.0).min(1.0)
+        };
+    }
+
+    /// The third-person camera's pivot (over the right shoulder) and the direction it backs away in.
+    fn camera_rig(&self) -> (Vec3, Vec3) {
+        let dir = self.player.look_dir();
+        let right = Vec3::new(-dir.z, 0.0, dir.x).normalize_or_zero();
+        let eye = self.player.eye();
+        let shoulder = right * SHOULDER_M + Vec3::Y * 0.15;
+        // Keep the pivot out of walls the player is pressed against.
+        let pivot = match self.world.raycast(eye, shoulder, shoulder.length()) {
+            Some(h) => eye + shoulder.normalize() * (h.distance - 0.2).max(0.0),
+            None => eye + shoulder,
+        };
+        (pivot, -dir)
+    }
+
+    /// Where the view is rendered from.
+    pub fn camera_pos(&self) -> Vec3 {
+        if self.third_person {
+            let (pivot, back) = self.camera_rig();
+            // Blend from the eye so the shoulder offset grows in with the distance.
+            let t = (self.camera_dist / THIRD_PERSON_M).clamp(0.0, 1.0);
+            let eye = self.player.eye();
+            eye.lerp(pivot, t) + back * self.camera_dist
+        } else {
+            self.player.eye()
+        }
     }
 
     /// Digs (with AIR) or builds the brush volume aimed at voxel `at`.
@@ -496,7 +597,7 @@ impl Game {
     /// `width` and `height` are the scene's render size, `scale` that size over the window's.
     pub fn globals(&self, width: u32, height: u32, manual_srgb: bool, scale: f32) -> Globals {
         let aspect = width as f32 / height.max(1) as f32;
-        let eye = self.player.eye();
+        let eye = self.camera_pos();
         let proj = Mat4::perspective_infinite_reverse_rh(70f32.to_radians(), aspect, 0.05);
         let view = Mat4::look_to_rh(eye, self.player.look_dir(), Vec3::Y);
         let vp = proj * view;
@@ -523,7 +624,7 @@ impl Game {
         Globals {
             view_proj: vp.to_cols_array_2d(),
             inv_view_proj: vp.inverse().to_cols_array_2d(),
-            sun_view_proj: sun_view_proj(eye, sun).to_cols_array_2d(),
+            sun_view_proj: sun_view_proj(self.player.eye(), sun).to_cols_array_2d(),
             camera_pos: eye.extend(1.0).to_array(),
             sun_dir: sun.extend(self.time).to_array(),
             params: [

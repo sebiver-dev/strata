@@ -5,6 +5,7 @@
 //! hides far tiles under any chunk column that has its voxel mesh.
 
 use crate::block::*;
+use crate::budget::{Cost, Deadline};
 use crate::mesh::{MeshData, Vertex, FACES};
 use crate::terrain::{Terrain, TREE_CELL_M, WATER_LEVEL_M, WORLD_SIZE_M};
 use glam::{IVec2, Vec2, Vec3};
@@ -52,6 +53,8 @@ pub fn tile_distance(tile: IVec2, p: Vec3) -> f32 {
 #[derive(Default)]
 pub struct FarField {
     levels: HashMap<IVec2, u8>,
+    /// How long building and uploading one tile takes, per level.
+    costs: [Cost; LEVEL_CELL_M.len()],
 }
 
 impl FarField {
@@ -66,10 +69,10 @@ impl FarField {
         &mut self,
         terrain: &Terrain,
         camera: Vec3,
-        budget_ms: f64,
+        deadline: &Deadline,
+        share: f64,
         mut upload: impl FnMut(IVec2, &MeshData),
     ) -> usize {
-        let start = web_time::Instant::now();
         let mut todo = Vec::new();
         for z in 0..TILES {
             for x in 0..TILES {
@@ -85,13 +88,16 @@ impl FarField {
         todo.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut built = 0;
         for (_, t, level) in todo {
-            let mesh = build_tile(terrain, t, level);
-            upload(t, &mesh);
-            self.levels.insert(t, level);
-            built += 1;
-            if start.elapsed().as_secs_f64() * 1000.0 > budget_ms {
+            let cost = &mut self.costs[level as usize];
+            if !deadline.fits(cost, share, built == 0) {
                 break;
             }
+            let start = web_time::Instant::now();
+            let mesh = build_tile(terrain, t, level);
+            upload(t, &mesh);
+            cost.record(start.elapsed().as_secs_f64() * 1000.0);
+            self.levels.insert(t, level);
+            built += 1;
         }
         built
     }

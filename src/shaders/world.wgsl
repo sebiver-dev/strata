@@ -404,45 +404,8 @@ fn under_near(p: vec3<f32>, n: vec3<f32>) -> bool {
     return textureLoad(near_mask, c, 0).r != 0u;
 }
 
-// The in-plane axes of each face direction, matching `FACES` in mesh.rs.
-const FACE_U = array<vec3<f32>, 6>(
-    vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0), vec3(0.0, 0.0, 1.0),
-    vec3(1.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0),
-);
-const FACE_V = array<vec3<f32>, 6>(
-    vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0),
-    vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0),
-);
-
-// Leaf faces on the outline of a crown lose a ragged band along their open
-// edges, so crowns read as foliage rather than as solid cubes.
-fn frayed(i: VOut, pix: f32) -> bool {
-    let edges = (i.info >> 13u) & 15u;
-    if (edges == 0u || pix > 0.06) {
-        return false;
-    }
-    let fi = i.info & 7u;
-    let f = fract(i.world / VOXEL);
-    let fu = dot(f, FACE_U[fi]);
-    let fv = dot(f, FACE_V[fi]);
-    var d = 1.0;
-    if ((edges & 1u) != 0u) { d = min(d, 1.0 - fu); }
-    if ((edges & 2u) != 0u) { d = min(d, fu); }
-    if ((edges & 4u) != 0u) { d = min(d, 1.0 - fv); }
-    if ((edges & 8u) != 0u) { d = min(d, fv); }
-    let q = i.world - floor(i.world / 64.0) * 64.0;
-    let ragged = vnoise(q * 14.0) * 0.7 + vnoise(q * 31.0) * 0.3;
-    // Narrower with distance, so far crowns do not sparkle.
-    let width = 0.42 * (1.0 - smoothstep(0.02, 0.06, pix));
-    return d < width * ragged;
-}
-
 @fragment
 fn fs_terrain(i: VOut) -> @location(0) vec4<f32> {
-    let pix = length(fwidth(i.world)) * 0.7;
-    if (frayed(i, pix)) {
-        discard;
-    }
     return shade_terrain(i);
 }
 

@@ -1,6 +1,7 @@
 //! Ties the world, the player and the renderer together each frame.
 
 use crate::block::{self, is_solid, Block, AIR, PLACEABLE, VOXEL_SIZE, WATER};
+use crate::budget::{Cost, Deadline};
 use crate::chunk::chunk_of;
 use crate::far::FarField;
 use crate::mesh;
@@ -21,9 +22,10 @@ pub struct Settings {
     pub seed: u32,
     /// Radius in chunks drawn as full voxels; the far field covers the rest.
     pub view_radius: i32,
-    pub stream_budget_ms: f64,
-    pub mesh_budget_ms: f64,
-    pub far_budget_ms: f64,
+    /// Milliseconds per frame for background work (generating chunks, meshing,
+    /// far tiles) once the player can move. Kept small and fixed so loading
+    /// never causes a frame spike.
+    pub work_budget_ms: f64,
     /// Distance in metres at which the fog has mostly swallowed the terrain.
     pub fog_m: f32,
 }
@@ -34,18 +36,14 @@ impl Default for Settings {
             Settings {
                 seed: 20260927,
                 view_radius: 7,
-                stream_budget_ms: 5.0,
-                mesh_budget_ms: 4.0,
-                far_budget_ms: 3.0,
+                work_budget_ms: 4.0,
                 fog_m: 1000.0,
             }
         } else {
             Settings {
                 seed: 20260927,
                 view_radius: 10,
-                stream_budget_ms: 7.0,
-                mesh_budget_ms: 6.0,
-                far_budget_ms: 3.0,
+                work_budget_ms: 6.0,
                 fog_m: 1300.0,
             }
         }
@@ -67,10 +65,8 @@ pub struct Game {
     fps: f32,
     /// Smoothed CPU milliseconds per frame: world streaming, meshing, far field, rendering.
     cpu_ms: [f32; 4],
-    /// Share of the chunk columns within the view radius that show voxels.
-    coverage: f32,
-    /// Multiplier on the loading budgets this frame.
-    boost: f64,
+    /// How long meshing and uploading one chunk takes.
+    mesh_cost: Cost,
     target: Option<IVec3>,
     ready: bool,
 }
@@ -101,8 +97,7 @@ impl Game {
             time: 0.0,
             fps: 0.0,
             cpu_ms: [0.0; 4],
-            coverage: 0.0,
-            boost: 1.0,
+            mesh_cost: Cost::default(),
             target: None,
             ready: false,
         }
@@ -181,32 +176,26 @@ impl Game {
 
         let clock = web_time::Instant::now();
         let lap = || clock.elapsed().as_secs_f32() * 1000.0;
-        // Until the ground around the player exists they cannot move, and while
-        // much of the voxel area is still missing the far field's box trees show
-        // up close, so spend more of the frame loading in both cases.
-        let boost = if !self.ready {
-            5.0
-        } else if self.coverage < 0.85 {
-            3.0
-        } else {
-            1.0
-        };
-        self.boost = boost;
-        self.world
-            .stream(self.player.pos, self.settings.stream_budget_ms * boost);
+        // Until the ground around the player exists they cannot move, so a long
+        // frame costs nothing and loading may take most of it. Afterwards all
+        // background work shares one small, fixed slice of every frame: a steady
+        // frame rate matters more than how fast distant chunks appear.
+        let budget = if self.ready { self.settings.work_budget_ms } else { 40.0 };
+        let deadline = Deadline::new(budget);
+        // Each stage may run until its share of the budget is used; later stages
+        // always keep at least the remainder.
+        self.world.stream(self.player.pos, &deadline, 0.4);
         let t_stream = lap();
         for c in self.world.removed.drain(..) {
             renderer.remove(c);
         }
-        self.remesh(renderer);
+        self.remesh(renderer, &deadline, 0.8);
         self.update_near_mask(renderer);
         let t_mesh = lap();
-        self.far.update(
-            &self.world.terrain,
-            self.player.pos,
-            self.settings.far_budget_ms * boost,
-            |t, m| renderer.upload_far(t, m),
-        );
+        self.far
+            .update(&self.world.terrain, self.player.pos, &deadline, 1.0, |t, m| {
+                renderer.upload_far(t, m)
+            });
         let t_far = lap();
         self.smooth_cpu(0, t_stream);
         self.smooth_cpu(1, t_mesh - t_stream);
@@ -278,8 +267,8 @@ impl Game {
             .any(|d| self.world.get(v + *d) == WATER)
     }
 
-    fn remesh(&mut self, renderer: &mut Renderer) {
-        let start = web_time::Instant::now();
+    fn remesh(&mut self, renderer: &mut Renderer, deadline: &Deadline, share: f64) {
+        let mut built = 0;
         let center = chunk_of((self.player.pos / VOXEL_SIZE).floor().as_ivec3());
         let r = self.world.view_radius;
         let mut todo: Vec<IVec3> = self
@@ -300,12 +289,15 @@ impl Game {
             if !self.world.neighbourhood_ready(c) {
                 continue;
             }
-            let m = mesh::build(&self.world, c);
-            renderer.upload(c, &m);
-            self.world.dirty.remove(&c);
-            if start.elapsed().as_secs_f64() * 1000.0 > self.settings.mesh_budget_ms * self.boost {
+            if !deadline.fits(&self.mesh_cost, share, built == 0) {
                 break;
             }
+            let start = web_time::Instant::now();
+            let m = mesh::build(&self.world, c);
+            renderer.upload(c, &m);
+            self.mesh_cost.record(start.elapsed().as_secs_f64() * 1000.0);
+            self.world.dirty.remove(&c);
+            built += 1;
         }
     }
 
@@ -316,7 +308,6 @@ impl Game {
         let mut mask = vec![0u8; (side * side) as usize];
         let center = chunk_of((self.player.pos / VOXEL_SIZE).floor().as_ivec3());
         let r = self.world.view_radius;
-        let (mut total, mut covered) = (0u32, 0u32);
         for dz in -r..=r {
             for dx in -r..=r {
                 let (x, z) = (center.x + dx, center.z + dz);
@@ -328,11 +319,8 @@ impl Game {
                     self.world.chunks.contains_key(&c) && !self.world.dirty.contains(&c)
                 });
                 mask[(z * side + x) as usize] = meshed as u8;
-                total += 1;
-                covered += meshed as u32;
             }
         }
-        self.coverage = covered as f32 / total.max(1) as f32;
         if mask != self.near_mask {
             renderer.set_near_mask(&mask);
             self.near_mask = mask;

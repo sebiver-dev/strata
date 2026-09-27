@@ -8,6 +8,7 @@ use crate::terrain::WORLD_CHUNKS_XZ;
 use bytemuck::{Pod, Zeroable};
 use glam::{IVec2, IVec3, Mat4, Vec3, Vec4};
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
@@ -95,6 +96,61 @@ pub struct Renderer {
     pub adapter_name: String,
     pub triangles_drawn: u32,
     pub far_triangles_drawn: u32,
+    /// Fraction of the window's pixels the 3D scene is rendered at.
+    render_scale: f32,
+    /// Forced render scale from the page URL (`?scale=`), for testing.
+    pub scale_override: Option<f32>,
+    timer: Option<GpuTimer>,
+    /// Smoothed GPU time per pass in milliseconds: shadow, scene, water, post.
+    pub gpu_ms: Option<[f32; 4]>,
+}
+
+/// GPU pass timings from timestamp queries, read back without stalling: a new
+/// readback starts only once the previous one has arrived.
+struct GpuTimer {
+    queries: wgpu::QuerySet,
+    resolve: wgpu::Buffer,
+    readback: wgpu::Buffer,
+    /// 0: idle, 1: waiting for the map, 2: mapped and ready to read.
+    state: Arc<std::sync::atomic::AtomicU8>,
+    period_ns: f32,
+}
+
+const TIMED_PASSES: u32 = 4;
+
+impl GpuTimer {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
+        let size = TIMED_PASSES as u64 * 2 * 8;
+        Self {
+            queries: device.create_query_set(&wgpu::QuerySetDescriptor {
+                label: Some("pass timings"),
+                ty: wgpu::QueryType::Timestamp,
+                count: TIMED_PASSES * 2,
+            }),
+            resolve: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("timings resolve"),
+                size,
+                usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }),
+            readback: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("timings readback"),
+                size,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            state: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            period_ns: queue.get_timestamp_period(),
+        }
+    }
+
+    fn writes(&self, pass: u32) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
+        Some(wgpu::RenderPassTimestampWrites {
+            query_set: &self.queries,
+            beginning_of_pass_write_index: Some(pass * 2),
+            end_of_pass_write_index: Some(pass * 2 + 1),
+        })
+    }
 }
 
 fn make_mesh(device: &wgpu::Device, mesh: &MeshData, min: Vec3, max: Vec3) -> GpuMesh {
@@ -150,12 +206,13 @@ fn pass_desc<'a>(
     label: &'a str,
     color: &'a [Option<wgpu::RenderPassColorAttachment<'a>>],
     depth: Option<wgpu::RenderPassDepthStencilAttachment<'a>>,
+    timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'a>>,
 ) -> wgpu::RenderPassDescriptor<'a> {
     wgpu::RenderPassDescriptor {
         label: Some(label),
         color_attachments: color,
         depth_stencil_attachment: depth,
-        timestamp_writes: None,
+        timestamp_writes,
         occlusion_query_set: None,
         multiview_mask: None,
     }
@@ -201,10 +258,15 @@ impl Renderer {
             })
             .await
             .map_err(|e| format!("No suitable GPU adapter: {e}"))?;
-        let adapter_name = adapter.get_info().name;
+        let info = adapter.get_info();
+        let adapter_name = match info.name.as_str() {
+            "" => format!("{:?} adapter", info.device_type),
+            name => format!("{name} ({:?})", info.device_type),
+        };
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("strata"),
+                required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
                 required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
                 ..Default::default()
             })
@@ -307,7 +369,10 @@ impl Renderer {
         });
         let post_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post inputs"),
-            entries: &[texture_entry(5, wgpu::TextureSampleType::Float { filterable: false })],
+            entries: &[
+                texture_entry(5, wgpu::TextureSampleType::Float { filterable: true }),
+                sampler_entry(6, wgpu::SamplerBindingType::Filtering),
+            ],
         });
         let shadow_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("shadow"),
@@ -507,6 +572,10 @@ impl Renderer {
             ..Default::default()
         });
 
+        let timer = device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY)
+            .then(|| GpuTimer::new(&device, &queue));
         let targets = Self::create_targets(
             &device,
             &scene_layout,
@@ -545,6 +614,10 @@ impl Renderer {
             adapter_name,
             triangles_drawn: 0,
             far_triangles_drawn: 0,
+            render_scale: 1.0,
+            scale_override: None,
+            timer,
+            gpu_ms: None,
         })
     }
 
@@ -608,10 +681,16 @@ impl Renderer {
         let post_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("post inputs"),
             layout: post_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 5,
-                resource: wgpu::BindingResource::TextureView(&hdr_view),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&hdr_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::Sampler(linear_sampler),
+                },
+            ],
         });
         Targets {
             hdr,
@@ -632,6 +711,13 @@ impl Renderer {
         self.config.width = w;
         self.config.height = h;
         self.surface.configure(&self.device, &self.config);
+        // The scene shaders cost the same per pixel however dense the screen is,
+        // so very high resolutions (Retina, 4K) render the scene with fewer
+        // pixels and scale it up. The crosshair stays sharp.
+        let budget = if cfg!(target_arch = "wasm32") { 2.1e6 } else { 3.7e6 };
+        let fit = (budget / (w as f32 * h as f32)).sqrt().min(1.0);
+        self.render_scale = self.scale_override.unwrap_or(fit).clamp(0.25, 1.0);
+        let (rw, rh) = self.render_size();
         self.targets = Self::create_targets(
             &self.device,
             &self.scene_layout,
@@ -639,13 +725,27 @@ impl Renderer {
             &self.shadow_view,
             &self.shadow_sampler,
             &self.linear_sampler,
-            w,
-            h,
+            rw,
+            rh,
         );
     }
 
+    /// Size of the window in pixels.
     pub fn size(&self) -> (u32, u32) {
         (self.config.width, self.config.height)
+    }
+
+    /// Size the 3D scene is rendered at before it is scaled to the window.
+    pub fn render_size(&self) -> (u32, u32) {
+        let s = self.render_scale;
+        (
+            ((self.config.width as f32 * s).round() as u32).max(1),
+            ((self.config.height as f32 * s).round() as u32).max(1),
+        )
+    }
+
+    pub fn render_scale(&self) -> f32 {
+        self.render_scale
     }
 
     pub fn manual_srgb(&self) -> bool {
@@ -711,23 +811,34 @@ impl Renderer {
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         self.queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(globals));
 
+        self.read_timings();
         let planes = frustum_planes(Mat4::from_cols_array_2d(&globals.view_proj));
-        let visible: Vec<&GpuMesh> = self
+        let eye = Vec3::from_slice(&globals.camera_pos[..3]);
+        // Near to far, so the depth test rejects hidden pixels before the
+        // (expensive) material shader runs on them.
+        let by_distance = |a: &&GpuMesh, b: &&GpuMesh| {
+            let da = eye.distance_squared(eye.clamp(a.min, a.max));
+            let db = eye.distance_squared(eye.clamp(b.min, b.max));
+            da.total_cmp(&db)
+        };
+        let mut visible: Vec<&GpuMesh> = self
             .meshes
             .values()
             .filter(|m| aabb_visible(&planes, m.min, m.max))
             .collect();
+        visible.sort_unstable_by(by_distance);
         let sun_planes = frustum_planes(Mat4::from_cols_array_2d(&globals.sun_view_proj));
         let casters: Vec<&GpuMesh> = self
             .meshes
             .values()
             .filter(|m| aabb_visible(&sun_planes, m.min, m.max))
             .collect();
-        let far_visible: Vec<&GpuMesh> = self
+        let mut far_visible: Vec<&GpuMesh> = self
             .far_meshes
             .values()
             .filter(|m| aabb_visible(&planes, m.min, m.max))
             .collect();
+        far_visible.sort_unstable_by(by_distance);
 
         let mut encoder = self.device.create_command_encoder(&Default::default());
         let mut triangles = 0;
@@ -754,6 +865,7 @@ impl Renderer {
             })]
         };
         let t = &self.targets;
+        let timer = self.timer.as_ref();
 
         // 1. Sun shadow map.
         {
@@ -761,6 +873,7 @@ impl Renderer {
                 "shadow",
                 &[],
                 depth_attachment(&self.shadow_view, wgpu::LoadOp::Clear(1.0)),
+                timer.and_then(|t| t.writes(0)),
             ));
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.set_pipeline(&self.shadow);
@@ -780,6 +893,7 @@ impl Renderer {
                 "scene",
                 &color,
                 depth_attachment(&t.depth_view, wgpu::LoadOp::Clear(0.0)),
+                timer.and_then(|t| t.writes(1)),
             ));
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.set_bind_group(1, &t.scene_bind, &[]);
@@ -805,17 +919,21 @@ impl Renderer {
             }
         }
 
-        // 3. Water, reading a snapshot of what is behind it.
+        // 3. Water, reading a snapshot of what is behind it. The pass always
+        // runs (empty without water) so its timing slot is always written.
         let has_water = visible.iter().chain(&far_visible).any(|m| m.water.is_some());
         if has_water {
             let size = t.hdr.size();
             encoder.copy_texture_to_texture(t.hdr.as_image_copy(), t.scene_copy.as_image_copy(), size);
             encoder.copy_texture_to_texture(t.depth.as_image_copy(), t.depth_copy.as_image_copy(), size);
+        }
+        {
             let color = color_attachment(&t.hdr_view, wgpu::LoadOp::Load);
             let mut pass = encoder.begin_render_pass(&pass_desc(
                 "water",
                 &color,
                 depth_attachment(&t.depth_view, wgpu::LoadOp::Load),
+                timer.and_then(|t| t.writes(2)),
             ));
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.set_bind_group(1, &t.scene_bind, &[]);
@@ -842,7 +960,7 @@ impl Renderer {
         // 4. Tone mapping and the crosshair onto the screen.
         {
             let color = color_attachment(&view, wgpu::LoadOp::Clear(wgpu::Color::BLACK));
-            let mut pass = encoder.begin_render_pass(&pass_desc("post", &color, None));
+            let mut pass = encoder.begin_render_pass(&pass_desc("post", &color, None, timer.and_then(|t| t.writes(3))));
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.set_bind_group(1, &t.post_bind, &[]);
             pass.set_pipeline(&self.post);
@@ -852,8 +970,52 @@ impl Renderer {
         }
         self.triangles_drawn = triangles;
         self.far_triangles_drawn = far_triangles;
+        let start_readback = timer.is_some_and(|t| t.state.load(Ordering::Acquire) == 0);
+        if let (Some(t), true) = (timer, start_readback) {
+            encoder.resolve_query_set(&t.queries, 0..TIMED_PASSES * 2, &t.resolve, 0);
+            encoder.copy_buffer_to_buffer(&t.resolve, 0, &t.readback, 0, t.resolve.size());
+        }
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
+        if let (Some(t), true) = (&self.timer, start_readback) {
+            t.state.store(1, Ordering::Release);
+            let state = t.state.clone();
+            t.readback.map_async(wgpu::MapMode::Read, .., move |r| {
+                state.store(if r.is_ok() { 2 } else { 0 }, Ordering::Release);
+            });
+        }
+    }
+
+    /// Picks up the latest pass timings if they have arrived.
+    fn read_timings(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = self.device.poll(wgpu::PollType::Poll);
+        let Some(t) = &self.timer else { return };
+        if t.state.load(Ordering::Acquire) != 2 {
+            return;
+        }
+        let ticks: Option<Vec<u64>> = t.readback.get_mapped_range(..).ok().map(|data| {
+            data.chunks_exact(8)
+                .map(|b| u64::from_le_bytes(b.try_into().unwrap_or_default()))
+                .collect()
+        });
+        let ms: [f32; 4] = match &ticks {
+            Some(ticks) if ticks.len() >= TIMED_PASSES as usize * 2 => std::array::from_fn(|i| {
+                let (a, b) = (ticks[i * 2], ticks[i * 2 + 1]);
+                b.saturating_sub(a) as f32 * t.period_ns / 1e6
+            }),
+            _ => [f32::NAN; 4],
+        };
+        t.readback.unmap();
+        t.state.store(0, Ordering::Release);
+        // Ignore nonsense from drivers that reset or quantise the counters.
+        if ms.iter().any(|m| !m.is_finite() || *m > 1000.0) {
+            return;
+        }
+        self.gpu_ms = Some(match self.gpu_ms {
+            Some(old) => std::array::from_fn(|i| old[i] * 0.9 + ms[i] * 0.1),
+            None => ms,
+        });
     }
 }
 

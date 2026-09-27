@@ -133,6 +133,33 @@ fn solid_box(out: &mut MeshData, lo: Vec3, hi: Vec3, mat: Block, faces: &[usize]
     }
 }
 
+/// Three stacked boxes that follow a tree crown's shape more closely than its
+/// bounding box: a tapering stack for tall (conifer) crowns, and a wide middle
+/// with narrower top and bottom for round ones. Used for the nearest far tiles,
+/// where the swap to the real voxel tree is easiest to notice.
+fn rounded_canopy(lo: Vec3, hi: Vec3) -> [(Vec3, Vec3); 3] {
+    let c = (lo + hi) * 0.5;
+    let half = (hi - lo) * 0.5;
+    let slab = |y0: f32, y1: f32, w: f32| {
+        let h = Vec3::new(half.x * w, 0.0, half.z * w);
+        (Vec3::new(c.x - h.x, y0, c.z - h.z), Vec3::new(c.x + h.x, y1, c.z + h.z))
+    };
+    let y = |t: f32| lo.y + (hi.y - lo.y) * t;
+    if hi.y - lo.y > 1.5 * (hi.x - lo.x) {
+        [
+            slab(y(0.0), y(0.4), 1.0),
+            slab(y(0.4), y(0.72), 0.68),
+            slab(y(0.72), y(1.0), 0.36),
+        ]
+    } else {
+        [
+            slab(y(0.0), y(0.25), 0.7),
+            slab(y(0.25), y(0.8), 1.0),
+            slab(y(0.8), y(1.0), 0.62),
+        ]
+    }
+}
+
 /// Meshes one far tile at a level of detail.
 pub fn build_tile(terrain: &Terrain, tile: IVec2, level: u8) -> MeshData {
     let cell = LEVEL_CELL_M[level as usize];
@@ -197,7 +224,13 @@ pub fn build_tile(terrain: &Terrain, tile: IVec2, level: u8) -> MeshData {
                 let Some([canopy, trunk]) = terrain.tree_boxes(gx, gz) else {
                     continue;
                 };
-                solid_box(&mut out, canopy.0, canopy.1, LEAVES, &[0, 1, 2, 3, 4, 5]);
+                if level == 0 {
+                    for (lo, hi) in rounded_canopy(canopy.0, canopy.1) {
+                        solid_box(&mut out, lo, hi, LEAVES, &[0, 1, 2, 3, 4, 5]);
+                    }
+                } else {
+                    solid_box(&mut out, canopy.0, canopy.1, LEAVES, &[0, 1, 2, 3, 4, 5]);
+                }
                 if level == 0 {
                     solid_box(&mut out, trunk.0, trunk.1, WOOD, &[0, 1, 4, 5]);
                 }

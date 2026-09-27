@@ -22,6 +22,10 @@ pub const WATER_LEVEL_M: f32 = 24.5;
 /// Trees sit on a jittered grid with this spacing in metres.
 pub const TREE_CELL_M: f32 = 9.0;
 const TREE_REACH_M: f32 = 7.5;
+/// Grid cell (metres) that holds at most one boulder.
+const BOULDER_CELL_M: f32 = 6.0;
+/// Largest boulder radius in metres.
+const BOULDER_MAX_R_M: f32 = 2.4;
 const TREE_MAX_HEIGHT_M: f32 = 26.0;
 
 /// Half the width of a road's packed surface in metres.
@@ -267,6 +271,34 @@ impl Terrain {
         })
     }
 
+    /// A rounded, half-buried boulder: common along the river banks and in the
+    /// shallows, scattered sparsely over the meadows, never on roads.
+    pub fn boulder_in_cell(&self, gx: i32, gz: i32) -> Option<Boulder> {
+        let h = hash2(self.seed.wrapping_add(40), gx, gz);
+        let xm = (gx as f32 + 0.1 + 0.8 * unit(h)) * BOULDER_CELL_M;
+        let zm = (gz as f32 + 0.1 + 0.8 * unit(h.rotate_left(9))) * BOULDER_CELL_M;
+        let info = self.column_info(xm, zm);
+        let above_water = info.height_m - WATER_LEVEL_M;
+        let chance = if (-1.2..2.5).contains(&above_water) {
+            0.5
+        } else if info.surface == GRASS && info.height_m < 60.0 {
+            0.05
+        } else {
+            0.0
+        };
+        if unit(h.rotate_left(19)) >= chance || self.road_distance(xm, zm) < 3.5 {
+            return None;
+        }
+        let size = unit(h.rotate_left(27));
+        let r = 0.6 + (BOULDER_MAX_R_M - 0.6) * size * size;
+        let squash = 0.65 + 0.25 * unit(h.rotate_left(4));
+        Some(Boulder {
+            centre: Vec3::new(xm, info.height_m - r * 0.3, zm),
+            radii: Vec3::new(r * (0.95 + 0.3 * unit(h.rotate_left(13))), r * squash, r),
+            seed: h,
+        })
+    }
+
     fn stamp_tree(&self, tree: &Tree, origin: IVec3, data: &mut [Block; CHUNK_VOLUME]) {
         let mut put = |p: IVec3, b: Block, replace_solid: bool| {
             let l = p - origin;
@@ -434,6 +466,15 @@ impl Terrain {
             }
             let (ox, oz) = (origin.x as f32 * VOXEL_SIZE, origin.z as f32 * VOXEL_SIZE);
             let side = CHUNK as f32 * VOXEL_SIZE;
+            let reach = BOULDER_MAX_R_M * 1.3;
+            let cell = |m: f32| (m / BOULDER_CELL_M).floor() as i32;
+            for gz in cell(oz - reach)..=cell(oz + side + reach) {
+                for gx in cell(ox - reach)..=cell(ox + side + reach) {
+                    if let Some(b) = self.boulder_in_cell(gx, gz) {
+                        stamp_boulder(&b, s, origin, &mut data);
+                    }
+                }
+            }
             for base in self.lanterns_in(ox, ox + side, oz, oz + side) {
                 stamp_lantern(base, origin, &mut data);
             }
@@ -454,6 +495,36 @@ impl Terrain {
             }
         }
         glam::Vec3::new(rx + 30.0, 60.0, z)
+    }
+}
+
+pub struct Boulder {
+    /// Centre in metres.
+    pub centre: Vec3,
+    /// Half extents in metres.
+    pub radii: Vec3,
+    seed: u32,
+}
+
+/// Fills a lumpy ellipsoid of stone; the smooth mesher rounds it off.
+fn stamp_boulder(b: &Boulder, seed: u32, origin: IVec3, data: &mut [Block; CHUNK_VOLUME]) {
+    let lo = ((b.centre - b.radii * 1.2) / VOXEL_SIZE).floor().as_ivec3().max(origin);
+    let hi = ((b.centre + b.radii * 1.2) / VOXEL_SIZE)
+        .ceil()
+        .as_ivec3()
+        .min(origin + IVec3::splat(CHUNK - 1));
+    for y in lo.y..=hi.y {
+        for z in lo.z..=hi.z {
+            for x in lo.x..=hi.x {
+                let p = (IVec3::new(x, y, z).as_vec3() + 0.5) * VOXEL_SIZE;
+                let d = ((p - b.centre) / b.radii).length();
+                let lump = value3(seed.wrapping_add(41) ^ b.seed, p.x * 0.9, p.y * 0.9, p.z * 0.9) - 0.5;
+                if d < 1.0 + lump * 0.35 {
+                    let l = IVec3::new(x, y, z) - origin;
+                    data[local_index(l.x, l.y, l.z)] = STONE;
+                }
+            }
+        }
     }
 }
 
@@ -515,6 +586,24 @@ mod tests {
             assert_eq!(ca.get(i, i, i), cb.get(i, i, i));
             assert_eq!(ca.get(i, 0, 31 - i), cb.get(i, 0, 31 - i));
         }
+    }
+
+    #[test]
+    fn river_banks_have_boulders_and_roads_do_not() {
+        let t = Terrain::new(20260927);
+        let (mut bank, mut road) = (0, 0);
+        for gz in 150..190 {
+            for gx in 120..180 {
+                if let Some(b) = t.boulder_in_cell(gx, gz) {
+                    let above = t.column_info(b.centre.x, b.centre.z).height_m - WATER_LEVEL_M;
+                    bank += (above < 2.5) as i32;
+                    road += (t.road_distance(b.centre.x, b.centre.z) < 3.5) as i32;
+                    assert!(b.radii.max_element() <= BOULDER_MAX_R_M * 1.25);
+                }
+            }
+        }
+        assert!(bank > 10, "{bank} boulders by the river");
+        assert_eq!(road, 0);
     }
 
     #[test]

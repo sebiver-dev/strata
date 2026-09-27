@@ -25,6 +25,14 @@ pub const TALL_GRASS: Block = 13;
 /// A thin wooden lantern post, drawn as a pole rather than a full voxel.
 pub const POST: Block = 14;
 
+// Materials that exist only on meshes, never as voxels.
+/// Lupin flower spikes.
+pub const LUPIN: Block = 15;
+/// Daisy petals.
+pub const DAISY: Block = 16;
+/// The yellow heart of a daisy.
+pub const DAISY_HEART: Block = 17;
+
 /// Materials the player can place, in hotbar order (keys 1..).
 pub const PLACEABLE: [Block; 8] = [STONE, DIRT, GRASS, SAND, GRAVEL, WOOD, PLANKS, SNOW];
 

@@ -19,10 +19,14 @@ depends on:
   native), and a job starts only when its measured cost fits, so loading
   never causes a frame spike.
 - The rest of the valley, out to the snow-capped rim 2 km away, is drawn as a
-  far field: blocky columns built from the terrain's height function in 64 m
-  tiles, with 2, 4 or 8 m cells depending on distance and box-shaped forests.
+  far field: smooth rolling ground built from the terrain's height function in
+  64 m tiles, with 2, 4 or 8 m cells depending on distance, and round crowns
+  and spires for the forests.
   The shader hides far tiles wherever the full voxel meshes are drawn.
-- Meshing emits only visible faces, with per-corner ambient occlusion.
+- Nothing is drawn as cubes. The voxel data stays underneath, but ground,
+  trees and placed pieces are meshed as one smooth surface (surface nets over
+  a lightly blurred occupancy field), with smooth normals and soft ambient
+  occlusion. Building still snaps to the voxel grid.
 - A wgpu renderer with sun shadows, HDR rendering with filmic tone mapping
   and a light colour grade. It uses reverse-Z depth and frustum culling.
 - An analytic atmosphere under a low afternoon sun: the sun's colour, the
@@ -90,7 +94,7 @@ Add `?cam=x,y,z,yaw,pitch` to the page URL to start flying at a fixed camera
 | `src/terrain.rs` | World generation: valley, river, caves, materials, trees |
 | `src/chunk.rs` | 32³ voxel chunks with uniform-chunk compression |
 | `src/world.rs` | Loaded chunks, streaming, edits and voxel ray casts |
-| `src/mesh.rs` | Face-culled meshing with ambient occlusion |
+| `src/mesh.rs` | Smooth surface meshing (surface nets), grass blades, lanterns |
 | `src/far.rs` | Far-field tiles and their levels of detail |
 | `src/player.rs` | Movement and collision |
 | `src/renderer.rs` | wgpu setup, pipelines, per-chunk buffers, culling |

@@ -1,12 +1,13 @@
 //! Distant terrain. Beyond the voxel view radius the valley is drawn straight
-//! from the terrain's height function as blocky columns on a coarser grid. The
-//! world is cut into 64 m tiles, and a tile's cells grow from 2 m to 8 m with
-//! distance. Near the player the full voxel meshes take over, and the shader
-//! hides far tiles under any chunk column that has its voxel mesh.
+//! from the terrain's height function as a smooth height field, with rounded
+//! crowns and trunks for its forests. The world is cut into 64 m tiles, and a
+//! tile's grid spacing grows from 2 m to 8 m with distance. Near the player the
+//! full voxel meshes take over, and the shader hides far tiles under any chunk
+//! column that has its voxel mesh.
 
 use crate::block::*;
 use crate::budget::{Cost, Deadline};
-use crate::mesh::{MeshData, Vertex, FACES};
+use crate::mesh::{smooth_data, MeshData, Vertex, FACES};
 use crate::terrain::{Terrain, TREE_CELL_M, WATER_LEVEL_M, WORLD_SIZE_M};
 use glam::{IVec2, Vec2, Vec3};
 use std::collections::HashMap;
@@ -103,17 +104,8 @@ impl FarField {
     }
 }
 
-/// Emits one face of an axis-aligned box. Corners at or below `shade_below`
-/// are darkened a little, which grounds tall walls.
-fn face(
-    verts: &mut Vec<Vertex>,
-    idx: &mut Vec<u32>,
-    lo: Vec3,
-    hi: Vec3,
-    fi: usize,
-    mat: Block,
-    shade_below: Option<f32>,
-) {
+/// Emits one face of an axis-aligned box (used for flat water).
+fn face(verts: &mut Vec<Vertex>, idx: &mut Vec<u32>, lo: Vec3, hi: Vec3, fi: usize, mat: Block) {
     let f = &FACES[fi];
     let size = hi - lo;
     let (n, u, v) = (f.n.as_vec3(), f.u.as_vec3(), f.v.as_vec3());
@@ -121,49 +113,98 @@ fn face(
     let start = verts.len() as u32;
     for (cu, cv) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
         let pos = base + u * size * cu + v * size * cv;
-        let ao = match shade_below {
-            Some(b) if pos.y <= b + 1e-3 => 2,
-            _ => 3,
-        };
         verts.push(Vertex {
             pos: pos.to_array(),
-            data: fi as u32 | ((mat as u32) << 3) | (ao << 11),
+            data: fi as u32 | ((mat as u32) << 3) | (3 << 11),
         });
     }
     idx.extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 3]);
 }
 
-fn solid_box(out: &mut MeshData, lo: Vec3, hi: Vec3, mat: Block, faces: &[usize]) {
-    for &fi in faces {
-        face(&mut out.vertices, &mut out.indices, lo, hi, fi, mat, None);
+/// A closed surface of revolution around a vertical axis through `centre`
+/// (x and z), following `profile` as (height, radius) pairs from bottom to top.
+/// `wobble` gives each ring a slightly irregular outline so crowns do not look
+/// turned on a lathe.
+fn revolve(out: &mut MeshData, centre: Vec2, profile: &[(f32, f32)], segments: u32, mat: Block, wobble: u32) {
+    let rings = profile.len();
+    let start = out.vertices.len() as u32;
+    for (r, &(y, radius)) in profile.iter().enumerate() {
+        // Slope of the outline, for normals that lean up or down with it.
+        let (ya, ra) = profile[r.saturating_sub(1)];
+        let (yb, rb) = profile[(r + 1).min(rings - 1)];
+        let slope = if (yb - ya).abs() > 1e-4 {
+            (rb - ra) / (yb - ya)
+        } else {
+            0.0
+        };
+        for k in 0..segments {
+            let a = k as f32 / segments as f32 * std::f32::consts::TAU;
+            let bump = if wobble != 0 {
+                let h = crate::noise::hash3(wobble, k as i32, r as i32, 0);
+                0.82 + 0.3 * crate::noise::unit(h)
+            } else {
+                1.0
+            };
+            let (c, s) = (a.cos(), a.sin());
+            let pos = Vec3::new(centre.x + c * radius * bump, y, centre.y + s * radius * bump);
+            // Top and bottom caps close to a point; their normals point along the axis.
+            let n = if radius < 1e-3 {
+                Vec3::new(0.0, if r == 0 { -1.0 } else { 1.0 }, 0.0)
+            } else {
+                Vec3::new(c, -slope, s).normalize()
+            };
+            out.vertices.push(Vertex {
+                pos: pos.to_array(),
+                data: smooth_data(mat, 3, n),
+            });
+        }
+    }
+    for r in 0..rings as u32 - 1 {
+        for k in 0..segments {
+            let k1 = (k + 1) % segments;
+            let a = start + r * segments + k;
+            let b = start + r * segments + k1;
+            let c = start + (r + 1) * segments + k1;
+            let d = start + (r + 1) * segments + k;
+            out.indices.extend_from_slice(&[a, c, b, a, d, c]);
+        }
     }
 }
 
-/// Three stacked boxes that follow a tree crown's shape more closely than its
-/// bounding box: a tapering stack for tall (conifer) crowns, and a wide middle
-/// with narrower top and bottom for round ones. Used for the nearest far tiles,
-/// where the swap to the real voxel tree is easiest to notice.
-fn rounded_canopy(lo: Vec3, hi: Vec3) -> [(Vec3, Vec3); 3] {
-    let c = (lo + hi) * 0.5;
-    let half = (hi - lo) * 0.5;
-    let slab = |y0: f32, y1: f32, w: f32| {
-        let h = Vec3::new(half.x * w, 0.0, half.z * w);
-        (Vec3::new(c.x - h.x, y0, c.z - h.z), Vec3::new(c.x + h.x, y1, c.z + h.z))
-    };
-    let y = |t: f32| lo.y + (hi.y - lo.y) * t;
-    if hi.y - lo.y > 1.5 * (hi.x - lo.x) {
-        [
-            slab(y(0.0), y(0.4), 1.0),
-            slab(y(0.4), y(0.72), 0.68),
-            slab(y(0.72), y(1.0), 0.36),
-        ]
+/// A rounded crown for a tree, from its bounding box: a lumpy ellipsoid for
+/// broadleaf trees and a tiered spire for tall, narrow conifers.
+fn crown(out: &mut MeshData, lo: Vec3, hi: Vec3, seed: u32, level: u8) {
+    let c = Vec2::new((lo.x + hi.x) * 0.5, (lo.z + hi.z) * 0.5);
+    let r = (hi.x - lo.x) * 0.5;
+    let (y0, y1) = (lo.y, hi.y);
+    let segs = if level == 0 { 9 } else { 6 };
+    let mut profile = Vec::new();
+    if y1 - y0 > 1.5 * (hi.x - lo.x) {
+        // Three drooping tiers narrowing to a point.
+        let h = y1 - y0;
+        profile.push((y0, 0.0));
+        for (t, w) in [
+            (0.02, 0.95),
+            (0.22, 0.62),
+            (0.3, 0.8),
+            (0.5, 0.45),
+            (0.58, 0.6),
+            (0.8, 0.25),
+        ] {
+            profile.push((y0 + h * t, r * w));
+        }
+        profile.push((y1, 0.0));
     } else {
-        [
-            slab(y(0.0), y(0.25), 0.7),
-            slab(y(0.25), y(0.8), 1.0),
-            slab(y(0.8), y(1.0), 0.62),
-        ]
+        let rings = if level == 0 { 6 } else { 4 };
+        for i in 0..=rings {
+            let t = i as f32 / rings as f32;
+            let a = t * std::f32::consts::PI;
+            // Flatter underneath, fuller on top, like a real crown.
+            let y = y0 + (y1 - y0) * (0.5 - 0.5 * a.cos());
+            profile.push((y, r * a.sin() * if t < 0.5 { 0.92 } else { 1.0 }));
+        }
     }
+    revolve(out, c, &profile, segs, LEAVES, seed | 1);
 }
 
 /// Meshes one far tile at a level of detail.
@@ -172,54 +213,75 @@ pub fn build_tile(terrain: &Terrain, tile: IVec2, level: u8) -> MeshData {
     let n = (TILE_M / cell) as i32;
     let origin = tile.as_vec2() * TILE_M;
 
-    // Column tops for the tile plus a one-cell border, snapped to the voxel grid.
-    let w = n + 2;
-    let mut cols = Vec::with_capacity((w * w) as usize);
-    for j in -1..=n {
-        for i in -1..=n {
-            let x = origin.x + (i as f32 + 0.5) * cell;
-            let z = origin.y + (j as f32 + 0.5) * cell;
-            let c = terrain.column_info(x, z);
-            let top = (c.height_m / VOXEL_SIZE).round() * VOXEL_SIZE;
-            cols.push((top, c));
+    // Heights on the grid corners plus a one-cell border for normals.
+    let w = n + 3;
+    let mut heights = Vec::with_capacity((w * w) as usize);
+    for j in -1..=n + 1 {
+        for i in -1..=n + 1 {
+            let x = origin.x + i as f32 * cell;
+            let z = origin.y + j as f32 * cell;
+            heights.push(terrain.height_at(x, z).0);
         }
     }
-    let at = |i: i32, j: i32| cols[((j + 1) * w + i + 1) as usize];
+    let h = |i: i32, j: i32| heights[((j + 1) * w + i + 1) as usize];
 
     let mut out = MeshData::default();
-    // +X, -X, +Z, -Z walls and the neighbour each one faces.
-    const SIDES: [(usize, i32, i32); 4] = [(0, 1, 0), (1, -1, 0), (4, 0, 1), (5, 0, -1)];
+    let corner = |i: i32, j: i32| Vec3::new(origin.x + i as f32 * cell, h(i, j), origin.y + j as f32 * cell);
+    let normal = |i: i32, j: i32| {
+        let dx = (h(i + 1, j) - h(i - 1, j)) / (2.0 * cell);
+        let dz = (h(i, j + 1) - h(i, j - 1)) / (2.0 * cell);
+        Vec3::new(-dx, 1.0, -dz).normalize()
+    };
+    for j in 0..=n {
+        for i in 0..=n {
+            let p = corner(i, j);
+            let mat = terrain.column_info(p.x, p.z).surface;
+            out.vertices.push(Vertex {
+                pos: p.to_array(),
+                data: smooth_data(mat, 3, normal(i, j)),
+            });
+        }
+    }
+    let vi = |i: i32, j: i32| (j * (n + 1) + i) as u32;
     for j in 0..n {
         for i in 0..n {
-            let (top, c) = at(i, j);
-            let lo = Vec3::new(origin.x + i as f32 * cell, 0.0, origin.y + j as f32 * cell);
-            let hi = Vec3::new(lo.x + cell, top, lo.z + cell);
-            face(&mut out.vertices, &mut out.indices, lo, hi, 2, c.surface, None);
+            let (a, b, c, d) = (vi(i, j), vi(i + 1, j), vi(i + 1, j + 1), vi(i, j + 1));
+            // Counter-clockwise seen from above.
+            out.indices.extend_from_slice(&[a, c, b, a, d, c]);
+            let top = h(i, j).min(h(i + 1, j)).min(h(i, j + 1)).min(h(i + 1, j + 1));
             if top < WATER_LEVEL_M {
-                let (wlo, whi) = (Vec3::new(lo.x, top, lo.z), Vec3::new(hi.x, WATER_LEVEL_M - 0.06, hi.z));
-                face(
-                    &mut out.water_vertices,
-                    &mut out.water_indices,
-                    wlo,
-                    whi,
-                    2,
-                    WATER,
-                    None,
-                );
-            }
-            for (fi, di, dj) in SIDES {
-                let (ni, nj) = (i + di, j + dj);
-                let mut bottom = at(ni, nj).0;
-                if ni < 0 || nj < 0 || ni >= n || nj >= n {
-                    bottom = bottom.min(top - SKIRT_M - cell);
-                }
-                if bottom < top {
-                    let mat = if top - bottom <= cell { c.surface } else { c.subsurface };
-                    let wall_lo = Vec3::new(lo.x, bottom, lo.z);
-                    face(&mut out.vertices, &mut out.indices, wall_lo, hi, fi, mat, Some(bottom));
-                }
+                let lo = Vec3::new(origin.x + i as f32 * cell, top - 1.0, origin.y + j as f32 * cell);
+                let hi = Vec3::new(lo.x + cell, WATER_LEVEL_M - 0.06, lo.z + cell);
+                face(&mut out.water_vertices, &mut out.water_indices, lo, hi, 2, WATER);
             }
         }
+    }
+    // Skirts hang from the tile's edges so neighbours at another level never
+    // leave a crack. They are drawn from both sides.
+    let edge: Vec<(i32, i32)> = (0..=n)
+        .map(|i| (i, 0))
+        .chain((0..=n).map(|j| (n, j)))
+        .chain((0..=n).rev().map(|i| (i, n)))
+        .chain((0..=n).rev().map(|j| (0, j)))
+        .collect();
+    for pair in edge.windows(2) {
+        let [(i0, j0), (i1, j1)] = [pair[0], pair[1]];
+        if (i0, j0) == (i1, j1) {
+            continue;
+        }
+        let base = out.vertices.len() as u32;
+        for (i, j) in [(i0, j0), (i1, j1)] {
+            let mut p = corner(i, j);
+            p.y -= SKIRT_M + cell;
+            let data = out.vertices[vi(i, j) as usize].data;
+            out.vertices.push(Vertex {
+                pos: p.to_array(),
+                data,
+            });
+        }
+        let (a, b) = (vi(i0, j0), vi(i1, j1));
+        let (c, d) = (base + 1, base);
+        out.indices.extend_from_slice(&[a, b, c, a, c, d, a, c, b, a, d, c]);
     }
 
     if level <= TREE_MAX_LEVEL {
@@ -230,15 +292,18 @@ pub fn build_tile(terrain: &Terrain, tile: IVec2, level: u8) -> MeshData {
                 let Some([canopy, trunk]) = terrain.tree_boxes(gx, gz) else {
                     continue;
                 };
+                let seed = crate::noise::hash3(terrain.seed, gx, gz, 77);
+                crown(&mut out, canopy.0, canopy.1, seed, level);
                 if level == 0 {
-                    for (lo, hi) in rounded_canopy(canopy.0, canopy.1) {
-                        solid_box(&mut out, lo, hi, LEAVES, &[0, 1, 2, 3, 4, 5]);
-                    }
-                } else {
-                    solid_box(&mut out, canopy.0, canopy.1, LEAVES, &[0, 1, 2, 3, 4, 5]);
-                }
-                if level == 0 {
-                    solid_box(&mut out, trunk.0, trunk.1, WOOD, &[0, 1, 4, 5]);
+                    let c = Vec2::new((trunk.0.x + trunk.1.x) * 0.5, (trunk.0.z + trunk.1.z) * 0.5);
+                    let profile = [
+                        (trunk.0.y - 0.5, 0.0),
+                        (trunk.0.y - 0.5, 0.55),
+                        (trunk.0.y + 0.6, 0.42),
+                        (trunk.1.y + 0.5, 0.32),
+                        (trunk.1.y + 0.5, 0.0),
+                    ];
+                    revolve(&mut out, c, &profile, 6, WOOD, 0);
                 }
             }
         }
@@ -271,28 +336,37 @@ mod tests {
     }
 
     #[test]
-    fn tops_cover_the_tile_and_faces_point_outward() {
+    fn ground_covers_the_tile_and_faces_up() {
         let terrain = Terrain::new(7);
         for level in 0..3u8 {
             let m = build_tile(&terrain, IVec2::new(12, 15), level);
-            let mut top_area = 0.0;
+            let mut area = 0.0;
             for tri in m.indices.chunks(3) {
                 let v = [0, 1, 2].map(|k| m.vertices[tri[k] as usize]);
                 let [a, b, c] = v.map(|v| Vec3::from(v.pos));
                 let normal = (b - a).cross(c - a);
-                let fi = (v[0].data & 7) as usize;
-                assert!(
-                    normal.normalize().dot(FACES[fi].n.as_vec3()) > 0.99,
-                    "face {fi} winds inward"
-                );
-                if fi == 2 && (v[0].data >> 3) & 255 != LEAVES as u32 {
-                    top_area += normal.length() * 0.5;
+                let mat = (v[0].data >> 3) & 255;
+                // Ground triangles (not trees or skirts) wind counter-clockwise from above.
+                if mat != LEAVES as u32 && mat != WOOD as u32 && normal.y.abs() > 1e-4 {
+                    assert!(normal.y > 0.0, "level {level}: a ground triangle faces down");
+                    area += normal.y * 0.5;
                 }
             }
-            assert!(
-                (top_area - TILE_M * TILE_M).abs() < 1.0,
-                "level {level} covers {top_area} m²"
-            );
+            assert!((area - TILE_M * TILE_M).abs() < 1.0, "level {level} covers {area} m²");
+        }
+    }
+
+    #[test]
+    fn crowns_are_closed_and_face_outward() {
+        let mut out = MeshData::default();
+        crown(&mut out, Vec3::new(0.0, 10.0, 0.0), Vec3::new(8.0, 16.0, 8.0), 5, 0);
+        let centre = Vec3::new(4.0, 13.0, 4.0);
+        for tri in out.indices.chunks(3) {
+            let [a, b, c] = [0, 1, 2].map(|k| Vec3::from(out.vertices[tri[k] as usize].pos));
+            let normal = (b - a).cross(c - a);
+            if normal.length() > 1e-5 {
+                assert!(normal.dot((a + b + c) / 3.0 - centre) > 0.0);
+            }
         }
     }
 

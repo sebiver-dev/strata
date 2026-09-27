@@ -17,9 +17,17 @@ depends on:
 - Chunks stream in and out around the player within a per-frame time budget,
   so loading never stalls a frame.
 - Meshing emits only visible faces, with per-corner ambient occlusion.
-- A wgpu renderer with a procedural sky, filmic tone mapping, distance fog,
-  animated translucent water and textureless procedural materials. It uses
-  reverse-Z depth and frustum culling.
+- A wgpu renderer with a procedural sky, sun shadows, HDR rendering with
+  filmic tone mapping, and distance fog. It uses reverse-Z depth and frustum
+  culling.
+- Textureless procedural materials, each with its own colour, relief,
+  roughness and translucency: lichen and cracks on stone, pebbles in dirt,
+  wind ripples in sand, clumped leaves that glow when backlit and sway in the
+  wind, and centimetre-sized flowers in the grass that give the ground a
+  human scale.
+- Water that refracts and tints what lies beneath it by depth, reflects the
+  terrain with screen-space reflections (falling back to the sky), and foams
+  along the shore.
 - First-person walking with gravity, auto step-up onto half-metre ledges,
   swimming and a fly mode.
 - Digging and building with a sphere brush. Holes dug below the river line
@@ -40,6 +48,9 @@ cargo install wasm-bindgen-cli --version 0.2.129   # once; must match Cargo.lock
 ./scripts/build-web.sh
 python3 -m http.server -d web 8080                  # then open http://localhost:8080
 ```
+
+Add `?cam=x,y,z,yaw,pitch` to the page URL to start flying at a fixed camera
+(metres and radians), which is handy for before-and-after screenshots.
 
 ## Controls
 

@@ -16,9 +16,10 @@ struct Globals {
     // xyz: direction towards the sun, w: time in seconds
     sun_dir: vec4<f32>,
     // x: fog distance, y: 1.0 if the output needs manual sRGB encoding,
-    // z: 1.0 if the camera is under water, w: brush shape (0 sphere, 1 cube)
+    // z: 1.0 if the camera is under water, w: brush shape (0 sphere, 1 cube, 2 block)
     params: vec4<f32>,
-    // xyz: targeted voxel min corner in metres, w: 0 when nothing is targeted,
+    // xyz: min corner in metres of the targeted voxel (of its grid block in
+    // block mode), w: 0 when nothing is targeted,
     // otherwise 1 + the brush radius in voxels
     highlight: vec4<f32>,
     // xy: scene render size in pixels, z: shadow map size in texels,
@@ -494,6 +495,9 @@ fn fs_far_terrain(i: VOut) -> @location(0) vec4<f32> {
 // Must match `Brush::contains` in game.rs.
 fn in_brush(d: vec3<f32>) -> bool {
     let r = g.highlight.w - 1.0;
+    if (g.params.w > 1.5) {
+        return all(d >= vec3(0.0)) && all(d <= vec3(1.0));
+    }
     if (g.params.w > 0.5) {
         return all(abs(d) <= vec3(r));
     }

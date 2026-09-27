@@ -4,7 +4,7 @@
 //! and the tool at the edge of the view; the whole body still casts a shadow.
 
 use crate::block::{Block, VOXEL_SIZE};
-use crate::game::Brush;
+use crate::game::{Brush, Shape, BLOCK_VOXELS};
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Quat, Vec3};
 use std::ops::Range;
@@ -39,7 +39,7 @@ pub struct ActorDraw {
 /// What the player is holding.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Tool {
-    /// A single block of a material, placed one voxel at a time.
+    /// A building block of a material, placed one grid block at a time.
     Block(Block),
     /// A shaping brush: a handle with a head the size and shape of the brush.
     Brush(Block, Brush),
@@ -47,10 +47,9 @@ pub enum Tool {
 
 impl Tool {
     pub fn from_selection(material: Block, brush: Brush) -> Self {
-        if brush.radius == 0 {
-            Tool::Block(material)
-        } else {
-            Tool::Brush(material, brush)
+        match brush.shape {
+            Shape::Block => Tool::Block(material),
+            Shape::Sphere | Shape::Cube => Tool::Brush(material, brush),
         }
     }
 }
@@ -264,7 +263,8 @@ impl Rig {
             TUNIC_TRIM,
         );
         part(d, arm, Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.045, 0.05, 0.05), SKIN);
-        let grip = hand * Mat4::from_translation(Vec3::new(0.0, 0.0, 0.02));
+        // Slightly smaller than life so the tool does not fill the view.
+        let grip = hand * Mat4::from_translation(Vec3::new(0.0, 0.0, 0.02)) * Mat4::from_scale(Vec3::splat(0.8));
         tool(d, grip, p.tool, 0);
         for v in &mut d.vertices[start..] {
             v.flags |= 1;
@@ -304,7 +304,8 @@ fn tool(d: &mut ActorDraw, grip: Mat4, tool: Tool, flags: u32) {
             let at = grip
                 * Mat4::from_translation(Vec3::new(0.0, 0.09, 0.02))
                 * Mat4::from_quat(Quat::from_euler(glam::EulerRot::YXZ, 0.6, 0.35, 0.0));
-            block(d, at, 0.085, m, flags);
+            // Textured like a whole building block, so its faces show the grid.
+            block_box(d, at, Vec3::splat(0.085), m, flags, BLOCK_VOXELS as f32 * VOXEL_SIZE);
         }
         Tool::Brush(m, b) => {
             // A wooden handle with a shaped head of the material, bigger for bigger brushes.
@@ -312,31 +313,35 @@ fn tool(d: &mut ActorDraw, grip: Mat4, tool: Tool, flags: u32) {
             part(d, grip, Vec3::new(0.0, 0.31, 0.0), Vec3::new(0.03, 0.015, 0.03), METAL);
             let r = 0.055 + 0.012 * b.radius as f32;
             let head = grip * Mat4::from_translation(Vec3::new(0.0, 0.33 + r, 0.0));
-            if b.cube {
-                block(d, head, r, m, flags);
+            if b.shape == Shape::Cube {
+                block_box(d, head, Vec3::splat(r), m, flags, VOXEL_SIZE);
             } else {
                 // A rounded head: three crossed slabs read as a ball at hand size.
                 let t = r * 0.62;
-                block_box(d, head, Vec3::new(r, t, t), m, flags);
-                block_box(d, head, Vec3::new(t, r, t), m, flags);
-                block_box(d, head, Vec3::new(t, t, r), m, flags);
+                block_box(d, head, Vec3::new(r, t, t), m, flags, VOXEL_SIZE);
+                block_box(d, head, Vec3::new(t, r, t), m, flags, VOXEL_SIZE);
+                block_box(d, head, Vec3::new(t, t, r), m, flags, VOXEL_SIZE);
             }
         }
     }
 }
 
-fn block(d: &mut ActorDraw, at: Mat4, half: f32, m: Block, flags: u32) {
-    block_box(d, at, Vec3::splat(half), m, flags);
-}
-
-fn block_box(d: &mut ActorDraw, at: Mat4, half: Vec3, m: Block, flags: u32) {
-    // The texture spans one voxel across the largest side, centred.
-    let scale = VOXEL_SIZE * 0.5 / half.max_element();
-    cuboid(d, at, Vec3::ZERO, half, [255, 255, 255], flags | (m as u32) << 8, scale);
+/// A box of terrain material whose largest side shows `span` metres of it.
+fn block_box(d: &mut ActorDraw, at: Mat4, half: Vec3, m: Block, flags: u32, span: f32) {
+    let scale = span * 0.5 / half.max_element();
+    cuboid(
+        d,
+        at,
+        Vec3::ZERO,
+        half,
+        [255, 255, 255],
+        flags | (m as u32) << 8,
+        (scale, span * 0.5),
+    );
 }
 
 fn part(d: &mut ActorDraw, at: Mat4, center: Vec3, half: Vec3, color: [u8; 3]) {
-    cuboid(d, at, center, half, color, 0, 0.0);
+    cuboid(d, at, center, half, color, 0, (0.0, 0.0));
 }
 
 /// Unit face directions and in-face axes, in the terrain's face order.
@@ -351,7 +356,8 @@ const FACES: [(Vec3, Vec3, Vec3); 6] = [
 
 /// Appends a box with half extents `half` centred at `center` in `at`'s frame.
 /// Lower corners get a little occlusion so parts read as solid forms.
-fn cuboid(d: &mut ActorDraw, at: Mat4, center: Vec3, half: Vec3, color: [u8; 3], flags: u32, tex_scale: f32) {
+/// Texture coordinates are the local position times `tex.0`, plus `tex.1`.
+fn cuboid(d: &mut ActorDraw, at: Mat4, center: Vec3, half: Vec3, color: [u8; 3], flags: u32, tex: (f32, f32)) {
     for (face, (n, u, v)) in FACES.iter().enumerate() {
         let base = d.vertices.len() as u32;
         let normal = at.transform_vector3(*n).normalize();
@@ -360,11 +366,11 @@ fn cuboid(d: &mut ActorDraw, at: Mat4, center: Vec3, half: Vec3, color: [u8; 3],
             let p = center + local * half;
             // Occlusion from the corner's height within the part.
             let ao = if local.y < 0.0 { 200u32 } else { 255 };
-            let tex = (local * half * tex_scale) + Vec3::splat(VOXEL_SIZE * 0.5);
+            let uvw = (center + local * half) * tex.0 + Vec3::splat(tex.1);
             d.vertices.push(ActorVertex {
                 pos: at.transform_point3(p).to_array(),
                 normal: normal.to_array(),
-                tex: tex.to_array(),
+                tex: uvw.to_array(),
                 color: color[0] as u32 | (color[1] as u32) << 8 | (color[2] as u32) << 16 | ao << 24,
                 flags: flags | (face as u32) << 1,
             });
@@ -414,7 +420,13 @@ mod tests {
 
     #[test]
     fn first_person_shows_only_the_hand() {
-        let p = pose(Tool::Brush(STONE, Brush { radius: 2, cube: false }));
+        let p = pose(Tool::Brush(
+            STONE,
+            Brush {
+                shape: Shape::Sphere,
+                radius: 2,
+            },
+        ));
         let d = Rig::default().build(&p, p.pos + Vec3::Y * 1.6, false);
         assert!(!d.scene.is_empty());
         assert_eq!(d.scene.end, d.shadow.start);
@@ -427,13 +439,9 @@ mod tests {
     #[test]
     fn tool_follows_the_brush() {
         let m = STONE;
-        assert_eq!(
-            Tool::from_selection(m, Brush { radius: 0, cube: false }),
-            Tool::Block(m)
-        );
-        assert!(matches!(
-            Tool::from_selection(m, Brush { radius: 1, cube: true }),
-            Tool::Brush(..)
-        ));
+        let brush = |shape| Brush { shape, radius: 1 };
+        assert_eq!(Tool::from_selection(m, brush(Shape::Block)), Tool::Block(m));
+        assert!(matches!(Tool::from_selection(m, brush(Shape::Cube)), Tool::Brush(..)));
+        assert!(matches!(Tool::from_selection(m, brush(Shape::Sphere)), Tool::Brush(..)));
     }
 }

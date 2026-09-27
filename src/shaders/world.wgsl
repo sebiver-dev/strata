@@ -801,6 +801,19 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.sss = 0.2;
             wettable = false;
         }
+        case 55u: { // leaded glass lit from within: diamond panes glowing warm in narrow openings
+            let an = abs(n);
+            let u = select(p.x, p.z, an.x > an.z);
+            let d1 = fract((u + p.y) / 0.15);
+            let d2 = fract((u - p.y) / 0.15);
+            let lead = (1.0 - smoothstep(0.04, 0.09, min(min(d1, 1.0 - d1), min(d2, 1.0 - d2)))) * d_dm;
+            s.albedo = mix(vec3(0.95, 0.70, 0.40), vec3(0.07, 0.06, 0.05), lead);
+            s.rough = mix(0.15, 0.6, lead);
+            s.f0 = 0.04;
+            let flicker = 0.92 + 0.08 * vnoise(vec3(g.sun_dir.w * 3.0, floor(p.x / 2.0), floor(p.z / 2.0)));
+            s.emit = LAMP_COLOR * (1.0 - lead) * (0.5 + 3.4 * lamp_on()) * flicker;
+            wettable = false;
+        }
         default: {}
     }
 

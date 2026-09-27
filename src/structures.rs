@@ -16,6 +16,7 @@ use crate::mesh::{smooth_data, MeshData, Vertex};
 use crate::model;
 use crate::noise::{hash2, unit};
 use crate::terrain::{Terrain, WATER_LEVEL_M};
+use crate::watchtower::Watchtower;
 use glam::{IVec3, Vec2, Vec3};
 use std::collections::HashMap;
 
@@ -545,7 +546,7 @@ impl Fence {
 pub enum Structure {
     Bridge(Bridge),
     Cottage(Cottage),
-    Tower(Tower),
+    Watchtower(Watchtower),
     Castle(Castle),
     Fence(Fence),
 }
@@ -627,32 +628,13 @@ impl Structures {
         }
         let _ = bx1;
 
-        // The watchtower takes the highest knoll in view a few hundred metres out, the
-        // castle a broad height further off, so both frame the view on arrival.
-        let tower = best_site(
+        // The watchtower stands on the knoll across the river, left of the view on arrival.
+        s.add(Structure::Watchtower(Watchtower::plan(
             t,
-            spawn,
-            (SPAWN_YAW - 0.6, SPAWN_YAW + 0.5),
-            (130.0, 320.0),
-            3.0,
-            72.0,
-            2.5,
-            0.02,
-        );
-        if let Some(c) = tower {
-            let c = Vec2::new(snap(c.x, 0.25), snap(c.y, 0.25));
-            let (lo, hi) = ground_range(t, c - 3.0, c + 3.0);
-            s.add(Structure::Tower(Tower {
-                c,
-                r: 2.6,
-                base: lo - 1.0,
-                top: hi + 11.0,
-                room: 3.0,
-                cone_r: 4.0,
-                cone_h: 5.0,
-                seed: seed ^ 20,
-            }));
-        }
+            tower_site(t),
+            Vec2::new(spawn.x, spawn.z),
+            seed ^ 20,
+        )));
         if let Some(c) = best_site(
             t,
             spawn,
@@ -677,6 +659,7 @@ impl Structures {
             match st {
                 Structure::Cottage(c) => c.model(t, &mut all),
                 Structure::Fence(f) => f.model(t, &mut all),
+                Structure::Watchtower(w) => w.model(t, &mut all),
                 _ => {}
             }
         }
@@ -715,7 +698,7 @@ impl Structures {
         let (lo, hi) = match &st {
             Structure::Bridge(b) => b.bounds(),
             Structure::Cottage(c) => c.bounds(),
-            Structure::Tower(t) => t.bounds(),
+            Structure::Watchtower(w) => w.bounds(),
             Structure::Castle(c) => c.bounds(),
             Structure::Fence(f) => (f.lo, f.hi),
         };
@@ -773,7 +756,7 @@ impl Structures {
                         let b = match st {
                             Structure::Bridge(b) => b.block(p, g),
                             Structure::Cottage(c) => c.block(p, g),
-                            Structure::Tower(t) => t.block(p),
+                            Structure::Watchtower(w) => w.block(p, g),
                             Structure::Castle(c) => c.block(p),
                             Structure::Fence(f) => f.block(p, g),
                         };
@@ -829,12 +812,21 @@ impl Structures {
             match st {
                 Structure::Bridge(b) => b.far(out),
                 Structure::Cottage(c) => c.far(out),
-                Structure::Tower(t) => t.far(out),
+                Structure::Watchtower(w) => w.far(out),
                 Structure::Castle(c) => c.far(out),
                 Structure::Fence(_) => {}
             }
         }
     }
+}
+
+/// The knoll the watchtower stands on, west of the river across from the
+/// hamlet. The spawn vista is composed around it; ground height comes from the
+/// terrain at build time and the tower's footings reach down to it.
+const TOWER_KNOLL: (f32, f32) = (860.0, 810.0);
+
+fn tower_site(_t: &Terrain) -> Vec2 {
+    Vec2::new(TOWER_KNOLL.0, TOWER_KNOLL.1)
 }
 
 /// Which way the player faces on arrival (`Player::new`), as a yaw in radians.
@@ -908,7 +900,7 @@ fn polygon(out: &mut MeshData, pts: &[Vec3], mat: Block) {
 }
 
 /// All six faces of an axis-aligned box.
-fn boxed(out: &mut MeshData, lo: Vec3, hi: Vec3, mat: Block) {
+pub(crate) fn boxed(out: &mut MeshData, lo: Vec3, hi: Vec3, mat: Block) {
     for fi in 0..6 {
         face(&mut out.vertices, &mut out.indices, lo, hi, fi, mat);
     }
@@ -930,7 +922,7 @@ mod tests {
         assert_eq!(count(|x| matches!(x, Structure::Bridge(_))), 1);
         assert!(count(|x| matches!(x, Structure::Cottage(_))) >= 5);
         assert!(count(|x| matches!(x, Structure::Fence(_))) >= 2);
-        assert_eq!(count(|x| matches!(x, Structure::Tower(_))), 1);
+        assert_eq!(count(|x| matches!(x, Structure::Watchtower(_))), 1);
         assert_eq!(count(|x| matches!(x, Structure::Castle(_))), 1);
     }
 

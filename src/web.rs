@@ -68,12 +68,12 @@ pub fn set_hud(h: &crate::game::Hud) {
         None => "null".into(),
     };
     hud(&format!(
-        "{{\"materials\":[{}],\"selected\":{},\"brush\":{},\"width\":{},\"cube\":{},\"maxBrush\":{},\"flying\":{},\"target\":{}}}",
+        "{{\"materials\":[{}],\"selected\":{},\"brush\":{},\"width\":{},\"shape\":\"{}\",\"maxBrush\":{},\"flying\":{},\"target\":{}}}",
         materials.join(","),
         h.selected,
         h.brush.radius,
         h.brush.width_m(),
-        h.brush.cube,
+        h.brush.shape.name(),
         crate::game::MAX_BRUSH,
         h.flying,
         target,

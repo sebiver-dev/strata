@@ -49,6 +49,10 @@
   #brush .big { font-weight: 600; font-size: 14px; }
   #brush .small { color: var(--dim); font-size: 11.5px; white-space: nowrap; }
   #brush .small kbd { font-size: 10px; padding: 0 3px; }
+  .modes { display: flex; gap: 3px; align-items: center; margin-bottom: 2px; font-size: 11px; }
+  .modes span { padding: 0 6px; border-radius: 4px; color: var(--dim); border: 1px solid transparent; }
+  .modes span.on { color: #1b1a12; background: var(--accent); font-weight: 600; }
+  .modes kbd { margin-left: 3px; font-size: 10px; padding: 0 3px; }
 
   #hint { left: 12px; bottom: 14px; color: var(--dim); font-size: 12px; }
   #keys { left: 12px; bottom: 44px; padding: 10px 14px; display: none; }
@@ -87,9 +91,9 @@
   <div id="brush" class="glass">
     <canvas id="brushicon" width="112" height="112"></canvas>
     <div>
+      <div class="modes"><span data-shape="block">Block</span><span data-shape="sphere">Sphere</span><span data-shape="cube">Cube</span><kbd>B</kbd></div>
       <div class="big" id="brushsize"></div>
-      <div class="small" id="brushshape"></div>
-      <div class="small"><kbd>[</kbd> <kbd>]</kbd> size &nbsp;<kbd>B</kbd> shape</div>
+      <div class="small" id="brushhint"></div>
     </div>
   </div>
 </div>
@@ -112,12 +116,12 @@
     ["<kbd>Shift</kbd>", "Sprint"],
     ["<kbd>C</kbd> / <kbd>Ctrl</kbd>", "Sink (flying)"],
     ["<kbd>F</kbd>", "Toggle flying"],
-    ["Left click", "Dig (hold)"],
-    ["Right click", "Build (hold)"],
+    ["Left click", "Break (hold for more)"],
+    ["Right click", "Place (hold for more)"],
     ["<kbd>1</kbd>–<kbd>8</kbd> / wheel", "Pick material"],
     ["Middle click", "Copy aimed material"],
+    ["<kbd>B</kbd>", "Block, sphere or cube tool"],
     ["<kbd>[</kbd> <kbd>]</kbd> / <kbd>Alt</kbd>+wheel", "Brush size"],
-    ["<kbd>B</kbd>", "Sphere / cube brush"],
     ["<kbd>N</kbd>", "Day / night"],
     ["<kbd>H</kbd>", "Show controls"],
     ["<kbd>Esc</kbd>", "Release mouse"],
@@ -236,9 +240,12 @@
 
   // ------------------------------------------------------------- brush icon
   // A slice through the brush, one cell per voxel, drawn on the largest brush's grid.
-  function drawBrush(canvas, radius, cube, maxR) {
+  function drawBrush(canvas, radius, shape, maxR, material) {
+    if (shape === "block") return drawCube(canvas, material);
+    const cube = shape === "cube";
     const S = canvas.width, ctx = canvas.getContext("2d"), n = 2 * maxR + 1;
     const cell = (S - 6) / n, off = (S - cell * n) / 2;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, S, S);
     for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
       const dx = x - maxR, dy = y - maxR;
@@ -279,10 +286,18 @@
       clearTimeout(nameTimer);
       nameTimer = setTimeout(() => el.classList.remove("show"), 1200);
     }
-    if (!last || last.brush !== s.brush || last.cube !== s.cube) {
-      drawBrush($("brushicon"), s.brush, s.cube, s.maxBrush);
-      $("brushsize").textContent = s.brush === 0 ? "Single voxel" : `${s.width} m wide`;
-      $("brushshape").textContent = `${s.cube ? "Cube" : "Sphere"} · size ${s.brush + 1} of ${s.maxBrush + 1}`;
+    if (!last || last.brush !== s.brush || last.shape !== s.shape || last.selected !== s.selected) {
+      drawBrush($("brushicon"), s.brush, s.shape, s.maxBrush, s.materials[s.selected]);
+      for (const el of document.querySelectorAll(".modes span")) {
+        el.classList.toggle("on", el.dataset.shape === s.shape);
+      }
+      if (s.shape === "block") {
+        $("brushsize").textContent = "1 m block";
+        $("brushhint").innerHTML = "Break and place one at a time";
+      } else {
+        $("brushsize").textContent = s.brush === 0 ? "Single voxel" : `${s.width} m ${s.shape}`;
+        $("brushhint").innerHTML = `Size ${s.brush + 1} of ${s.maxBrush + 1} &nbsp;<kbd>[</kbd> <kbd>]</kbd>`;
+      }
     }
     $("move").innerHTML = s.flying ? "<b>Flying</b> <kbd>F</kbd> to walk" : "<b>Walking</b> <kbd>F</kbd> to fly";
     $("aim").textContent = s.target ? `Aiming at ${s.target}` : "Nothing in reach";

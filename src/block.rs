@@ -22,6 +22,8 @@ pub const PATH: Block = 11;
 pub const LANTERN: Block = 12;
 /// Tall grass blades standing in the air voxel above a grass block.
 pub const TALL_GRASS: Block = 13;
+/// A thin wooden lantern post, drawn as a pole rather than a full voxel.
+pub const POST: Block = 14;
 
 /// Materials the player can place, in hotbar order (keys 1..).
 pub const PLACEABLE: [Block; 8] = [STONE, DIRT, GRASS, SAND, GRAVEL, WOOD, PLANKS, SNOW];
@@ -42,6 +44,7 @@ pub fn name(b: Block) -> &'static str {
         PATH => "path",
         LANTERN => "lantern",
         TALL_GRASS => "tall grass",
+        POST => "post",
         _ => "unknown",
     }
 }
@@ -49,7 +52,7 @@ pub fn name(b: Block) -> &'static str {
 /// Blocks that fully hide the faces of their neighbours.
 #[inline]
 pub fn is_opaque(b: Block) -> bool {
-    !matches!(b, AIR | WATER | TALL_GRASS)
+    !matches!(b, AIR | WATER | TALL_GRASS | POST | LANTERN)
 }
 
 /// Blocks the player collides with.

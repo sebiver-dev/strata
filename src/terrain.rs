@@ -457,27 +457,36 @@ impl Terrain {
     }
 }
 
-/// A wooden post with a lantern and a small plank roof on top.
+/// A wooden post with a lantern on top (the mesher gives the lantern its roof).
 fn stamp_lantern(base: IVec3, origin: IVec3, data: &mut [Block; CHUNK_VOLUME]) {
-    for dy in 0..=LANTERN_POST + 1 {
+    for dy in 0..=LANTERN_POST {
         let l = base + IVec3::Y * dy - origin;
         if l.cmplt(IVec3::ZERO).any() || l.cmpge(IVec3::splat(CHUNK)).any() {
             continue;
         }
         data[local_index(l.x, l.y, l.z)] = match dy {
-            d if d < LANTERN_POST => WOOD,
-            d if d == LANTERN_POST => LANTERN,
-            _ => PLANKS,
+            d if d < LANTERN_POST => POST,
+            _ => LANTERN,
         };
     }
 }
 
+/// How much a spot (in metres) is meadow, 0..1: grass grows thick there.
+pub fn meadow(seed: u32, xm: f32, zm: f32) -> f32 {
+    smoothstep(0.38, 0.62, fbm2(seed.wrapping_add(30), xm / 38.0, zm / 38.0, 3))
+}
+
+/// How much a spot (in metres) is tall-grass field, 0..1: dense grass that
+/// stands chest- to head-high, in wide patches of its own.
+pub fn tall_meadow(seed: u32, xm: f32, zm: f32) -> f32 {
+    smoothstep(0.56, 0.68, fbm2(seed.wrapping_add(34), xm / 64.0, zm / 64.0, 3))
+}
+
 /// Whether the air voxel resting on a grass block holds tall grass: dense in
-/// meadows, sparse between them.
+/// meadows and tall-grass fields, sparse between them.
 fn tall_grass(seed: u32, x: i32, y: i32, z: i32) -> bool {
     let (xm, zm) = (x as f32 * VOXEL_SIZE, z as f32 * VOXEL_SIZE);
-    let meadow = fbm2(seed.wrapping_add(30), xm / 38.0, zm / 38.0, 3);
-    let chance = 0.06 + 0.8 * smoothstep(0.38, 0.62, meadow);
+    let chance = (0.06 + 0.8 * meadow(seed, xm, zm)).max(0.97 * tall_meadow(seed, xm, zm));
     unit(crate::noise::hash3(seed.wrapping_add(32), x, y, z)) < chance
 }
 
@@ -506,6 +515,17 @@ mod tests {
             assert_eq!(ca.get(i, i, i), cb.get(i, i, i));
             assert_eq!(ca.get(i, 0, 31 - i), cb.get(i, 0, 31 - i));
         }
+    }
+
+    #[test]
+    fn valley_has_tall_grass_fields() {
+        let seed = 20260927;
+        let mut field = 0;
+        for i in 0..400 {
+            let (x, z) = (600.0 + (i % 20) as f32 * 40.0, 700.0 + (i / 20) as f32 * 40.0);
+            field += (tall_meadow(seed, x, z) > 0.9) as i32;
+        }
+        assert!((10..300).contains(&field), "{field} of 400 samples in tall grass");
     }
 
     #[test]

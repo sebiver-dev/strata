@@ -502,10 +502,13 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.height = slab * 0.012 + fine * 0.01;
         }
         case 12u: { // lantern: dark iron frame around warm glass
-            let f = fract(p / VOXEL);
+            // Coordinates across the lantern body (0..1), which sits centred in its voxel
+            // 0.04..0.32 m above the floor and 0.26 m wide (see mesh.rs).
+            let m = fract(p / VOXEL) * VOXEL;
+            let f = vec3((m.x - 0.12) / 0.26, (m.y - 0.04) / 0.28, (m.z - 0.12) / 0.26);
             let a = select(select(f.xy, f.zy, abs(n.x) > 0.5), f.xz, abs(n.y) > 0.5);
             let edge = min(min(a.x, 1.0 - a.x), min(a.y, 1.0 - a.y));
-            let glass = smoothstep(0.12, 0.16, edge);
+            let glass = smoothstep(0.08, 0.12, edge);
             let bar = 1.0 - smoothstep(0.02, 0.04, abs(a.x - 0.5));
             let pane = glass * (1.0 - bar) * step(abs(n.y), 0.5);
             s.albedo = mix(vec3(0.10, 0.09, 0.08), vec3(0.9, 0.7, 0.4), pane);

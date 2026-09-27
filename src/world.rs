@@ -119,7 +119,8 @@ impl World {
             .lanterns
             .values()
             .flatten()
-            .map(|v| (v.as_vec3() + 0.5) * VOXEL_SIZE)
+            // The glass body's centre (see mesh::lantern).
+            .map(|v| (v.as_vec3() + glam::Vec3::new(0.5, 0.36, 0.5)) * VOXEL_SIZE)
             .collect();
         all.sort_by(|a, b| a.distance_squared(p).total_cmp(&b.distance_squared(p)));
         all.truncate(max);

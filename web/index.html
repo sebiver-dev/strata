@@ -132,7 +132,7 @@
   }
 
   // ------------------------------------------------------ material icons
-  // Each hotbar icon is a small cube painted from code, like everything in Strata.
+  // Each hotbar icon is a small swatch painted from code, like everything in Strata.
   function hash(x, y, s) {
     let h = (x * 374761393 + y * 668265263 + s * 2246822519) | 0;
     h = Math.imul(h ^ (h >>> 13), 1274126177);
@@ -213,48 +213,61 @@
     ctx.putImageData(img, 0, 0);
     return c;
   }
-  function drawCube(canvas, name) {
+  // A smooth, rounded pebble of the material, lit from the upper left.
+  function drawSwatch(canvas, name) {
     const S = canvas.width, ctx = canvas.getContext("2d");
-    const L = S * 0.46, w = L * 0.866, h = L * 0.5, cx = S / 2, y0 = (S - 2 * L) / 2;
-    const top = faceTexture(name, "top"), side = faceTexture(name, "side");
-    const face = (tex, a, b, c, d, e, f, shade) => {
-      ctx.setTransform(a / T, b / T, c / T, d / T, e, f);
-      ctx.drawImage(tex, 0, 0);
-      ctx.fillStyle = `rgba(0,0,0,${shade})`;
-      ctx.fillRect(0, 0, T, T);
-    };
-    ctx.clearRect(0, 0, S, S);
-    ctx.imageSmoothingEnabled = true;
-    face(top, w, h, -w, h, cx, y0, 0);
-    face(side, w, h, 0, L, cx - w, y0 + h, 0.2);
-    face(side, w, -h, 0, L, cx, y0 + 2 * h, 0.38);
+    const r = S * 0.4, cx = S / 2, cy = S / 2;
+    const tex = faceTexture(name, name === "wood" ? "side" : "top");
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.strokeStyle = "rgba(0,0,0,.35)";
-    ctx.lineWidth = Math.max(1, S / 64);
+    ctx.clearRect(0, 0, S, S);
+    // Soft contact shadow.
+    const shadow = ctx.createRadialGradient(cx, cy + r * 0.85, 0, cx, cy + r * 0.85, r * 1.05);
+    shadow.addColorStop(0, "rgba(0,0,0,.45)");
+    shadow.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = shadow;
+    ctx.fillRect(0, 0, S, S);
+    ctx.save();
     ctx.beginPath();
-    ctx.moveTo(cx, y0); ctx.lineTo(cx + w, y0 + h); ctx.lineTo(cx + w, y0 + h + L); ctx.lineTo(cx, y0 + 2 * h + L);
-    ctx.lineTo(cx - w, y0 + h + L); ctx.lineTo(cx - w, y0 + h); ctx.closePath();
-    ctx.moveTo(cx - w, y0 + h); ctx.lineTo(cx, y0 + 2 * h); ctx.lineTo(cx + w, y0 + h);
-    ctx.moveTo(cx, y0 + 2 * h); ctx.lineTo(cx, y0 + 2 * h + L);
-    ctx.stroke();
+    ctx.ellipse(cx, cy, r, r * 0.92, 0, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(tex, cx - r, cy - r, 2 * r, 2 * r);
+    // Rounded shading: bright upper left, darker rim.
+    const light = ctx.createRadialGradient(cx - r * 0.4, cy - r * 0.45, r * 0.05, cx, cy, r * 1.05);
+    light.addColorStop(0, "rgba(255,255,255,.38)");
+    light.addColorStop(0.45, "rgba(255,255,255,0)");
+    light.addColorStop(0.8, "rgba(0,0,0,.18)");
+    light.addColorStop(1, "rgba(0,0,0,.5)");
+    ctx.fillStyle = light;
+    ctx.fillRect(0, 0, S, S);
+    ctx.restore();
   }
 
   // ------------------------------------------------------------- brush icon
-  // A slice through the brush, one cell per voxel, drawn on the largest brush's grid.
+  // The brush's outline at its true size relative to the largest brush.
   function drawBrush(canvas, radius, shape, maxR, material) {
-    if (shape === "block") return drawCube(canvas, material);
-    const cube = shape === "cube";
-    const S = canvas.width, ctx = canvas.getContext("2d"), n = 2 * maxR + 1;
-    const cell = (S - 6) / n, off = (S - cell * n) / 2;
+    if (shape === "block") return drawSwatch(canvas, material);
+    const S = canvas.width, ctx = canvas.getContext("2d"), cx = S / 2;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, S, S);
-    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
-      const dx = x - maxR, dy = y - maxR;
-      const inside = cube ? Math.max(Math.abs(dx), Math.abs(dy)) <= radius
-                          : dx * dx + dy * dy <= (radius + 0.35) ** 2;
-      ctx.fillStyle = inside ? "rgba(243,227,162,.95)" : "rgba(255,255,255,.1)";
-      ctx.fillRect(off + x * cell + 0.5, off + y * cell + 0.5, cell - 1, cell - 1);
-    }
+    const full = S * 0.44, size = full * (radius + 0.5) / (maxR + 0.5);
+    const outline = (half, round) => {
+      ctx.beginPath();
+      if (shape === "cube") ctx.roundRect(cx - half, cx - half, 2 * half, 2 * half, round);
+      else ctx.arc(cx, cx, half, 0, Math.PI * 2);
+    };
+    outline(full, full * 0.3);
+    ctx.strokeStyle = "rgba(255,255,255,.18)";
+    ctx.lineWidth = S / 40;
+    ctx.setLineDash([S / 30, S / 30]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    outline(size, size * 0.3);
+    const fill = ctx.createRadialGradient(cx - size * 0.35, cx - size * 0.35, 0, cx, cx, size * 1.2);
+    fill.addColorStop(0, "rgba(255,244,200,.98)");
+    fill.addColorStop(1, "rgba(214,190,110,.9)");
+    ctx.fillStyle = fill;
+    ctx.fill();
   }
 
   // ------------------------------------------------------------- HUD state
@@ -272,7 +285,7 @@
         slot.title = title(m);
         const c = document.createElement("canvas");
         c.width = c.height = 112;
-        drawCube(c, m);
+        drawSwatch(c, m);
         const k = document.createElement("i");
         k.textContent = i + 1;
         slot.append(c, k);

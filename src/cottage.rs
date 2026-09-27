@@ -213,6 +213,17 @@ impl Cottage {
                 .any(|&(da, side)| b * side > 0.0 && (a - da).abs() < DOOR_HALF_W)
     }
 
+    /// Top of the entry step under `(a, b)` outside the front door, if any.
+    /// Steps drop half a metre each going out from the wall.
+    fn step_top(&self, a: f32, b: f32) -> Option<f32> {
+        let out = b * self.front - self.half_wid;
+        if out < 0.0 || a.abs() >= DOOR_HALF_W + 0.25 {
+            return None;
+        }
+        let k = (out / VOXEL_SIZE).floor();
+        Some(self.floor - (k + 1.0) * VOXEL_SIZE).filter(|top| *top > self.base - 0.25)
+    }
+
     /// Where the stairs start along the house, and the across range (towards
     /// the back wall) of the stair band.
     fn stair_band(&self, b: f32) -> bool {
@@ -285,6 +296,11 @@ impl Cottage {
                     }
                 }
                 return Some(AIR);
+            }
+        }
+        if let Some(top) = self.step_top(a, b) {
+            if p.y < top && p.y + VOXEL_SIZE > ground {
+                return Some(BUILT);
             }
         }
         // Roof and gables.
@@ -750,7 +766,7 @@ impl Cottage {
     }
 
     /// A plank door hung open inwards, with its frame, lintel and a step.
-    fn door(&self, out: &mut MeshData, at: &impl Fn(f32, f32) -> Vec3, t_dir: Vec3, n_dir: Vec3, da: f32, _side: f32) {
+    fn door(&self, out: &mut MeshData, at: &impl Fn(f32, f32) -> Vec3, t_dir: Vec3, n_dir: Vec3, da: f32, side: f32) {
         let f = self.floor;
         let (d0, d1) = (da - DOOR_HALF_W, da + DOOR_HALF_W);
         let depth = WALL * 0.5 + 0.03;
@@ -789,13 +805,21 @@ impl Cottage {
             let c = hinge + open * (DOOR_HALF_W - 0.02) + Vec3::Y * y + open.cross(Vec3::Y) * 0.05;
             board(out, c, open, Vec3::Y, Vec3::new(DOOR_HALF_W - 0.08, 0.06, 0.02), BOARDS);
         }
-        // A worn stone step outside.
-        block(
-            out,
-            at(d0 - 0.15, f - 0.35) + n_dir * 0.25,
-            at(d1 + 0.15, f - 0.02) + n_dir * 0.75,
-            MASONRY,
-        );
+        // Worn stone steps down to the ground, but not onto a deck.
+        if side == self.front {
+            let mut k = 0.0;
+            while f - (k + 1.0) * VOXEL_SIZE > self.base - 0.25 {
+                let top = f - (k + 1.0) * VOXEL_SIZE;
+                let o = WALL * 0.5 + k * VOXEL_SIZE;
+                block(
+                    out,
+                    at(d0 - 0.2, self.base - 0.5) + n_dir * o,
+                    at(d1 + 0.2, top) + n_dir * (o + VOXEL_SIZE),
+                    MASONRY,
+                );
+                k += 1.0;
+            }
+        }
     }
 
     fn roof(&self, out: &mut MeshData) {
@@ -1170,6 +1194,25 @@ mod tests {
         let room = c.p(-1.0, f + 1.0, 0.25);
         assert_eq!(c.block(room, f - 1.0), Some(AIR));
         assert_eq!(c.block(c.p(-1.0, f - 0.25, 0.25), f - 1.0), Some(BUILT));
+    }
+
+    #[test]
+    fn steps_lead_from_the_ground_to_the_front_door() {
+        let mut c = cottage(1, 0.0);
+        // Raise the floor well above the lowest ground so a flight is needed.
+        c.floor = c.base + 1.5;
+        let mut height = c.floor;
+        let mut k = 0.0;
+        while let Some(top) = c.step_top(0.0, c.front * (c.half_wid + k * VOXEL_SIZE + 0.25)) {
+            assert!(height - top <= VOXEL_SIZE + 1e-4, "rise {} at step {k}", height - top);
+            height = top;
+            k += 1.0;
+        }
+        assert!(
+            height <= c.base + VOXEL_SIZE,
+            "flight stops at {height}, ground {}",
+            c.base
+        );
     }
 
     #[test]

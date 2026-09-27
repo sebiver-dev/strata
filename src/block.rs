@@ -42,6 +42,14 @@ pub const PLASTER: Block = 19;
 pub const ROOF: Block = 20;
 /// A lit window; glows warm from dusk on.
 pub const WINDOW: Block = 21;
+/// Planed, dark-stained oak: framing timbers, rafters, furniture.
+pub const OAK: Block = 22;
+/// Sawn boards: floors, doors, shutters, decks.
+pub const BOARDS: Block = 23;
+/// Woollen cloth: blankets and banners.
+pub const CLOTH: Block = 24;
+/// Collision inside built models. Solid but never drawn: the model is.
+pub const BUILT: Block = 25;
 /// Wrought iron: lantern frames, arms and chains (mesh only).
 pub const IRON: Block = 26;
 
@@ -68,6 +76,10 @@ pub fn name(b: Block) -> &'static str {
         PLASTER => "plaster",
         ROOF => "roof",
         WINDOW => "window",
+        OAK => "oak",
+        BOARDS => "boards",
+        CLOTH => "cloth",
+        BUILT => "building",
         POST => "post",
         IRON => "iron",
         _ => "unknown",
@@ -77,7 +89,7 @@ pub fn name(b: Block) -> &'static str {
 /// Blocks that fully hide the faces of their neighbours.
 #[inline]
 pub fn is_opaque(b: Block) -> bool {
-    !matches!(b, AIR | WATER | TALL_GRASS | POST | LANTERN)
+    !matches!(b, AIR | WATER | TALL_GRASS | POST | LANTERN | BUILT)
 }
 
 /// Blocks the player collides with.

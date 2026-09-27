@@ -5,24 +5,302 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Strata</title>
 <style>
+  :root {
+    --ink: #eef3ef;
+    --dim: #b9c6bd;
+    --glass: rgba(12, 18, 16, .58);
+    --edge: rgba(255, 255, 255, .14);
+    --accent: #f3e3a2;
+    --slot: clamp(38px, 5.2vw, 56px);
+  }
   html, body { margin: 0; height: 100%; background: #0e1412; overflow: hidden; }
-  canvas { display: block; width: 100vw; height: 100vh; outline: none; }
-  .hud { position: fixed; left: 12px; font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; color: #e8eee9; text-shadow: 0 1px 2px #000a; pointer-events: none; }
-  #status { top: 10px; }
-  #help { bottom: 10px; opacity: .85; }
+  canvas { display: block; outline: none; }
+  body > canvas { width: 100vw; height: 100vh; }
+  .hud { position: fixed; color: var(--ink); font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+         text-shadow: 0 1px 2px rgba(0,0,0,.6); pointer-events: none; user-select: none; }
+  .glass { background: var(--glass); border: 1px solid var(--edge); border-radius: 10px;
+           backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+  kbd { display: inline-block; min-width: 1.1em; padding: 0 5px; border: 1px solid rgba(255,255,255,.28);
+        border-bottom-width: 2px; border-radius: 4px; font: 600 11px/1.5 ui-monospace, Menlo, Consolas, monospace;
+        text-align: center; color: var(--ink); background: rgba(255,255,255,.06); text-shadow: none; }
+
+  #status { top: 10px; left: 12px; max-width: calc(100vw - 400px); font: 11px/1.5 ui-monospace, Menlo, Consolas, monospace; color: var(--dim); }
+
+  #mode { top: 10px; right: 12px; padding: 6px 10px; display: none; gap: 12px; align-items: center; }
+  #mode b { font-weight: 600; }
+  #mode .sep { width: 1px; align-self: stretch; background: var(--edge); }
+
+  #dock { left: 50%; bottom: 14px; transform: translateX(-50%); display: none; align-items: flex-end; gap: 10px; }
+  #matname { position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); text-align: center; font-weight: 600;
+             font-size: 15px; letter-spacing: .02em; opacity: 0; transition: opacity .4s; }
+  #matname.show { opacity: 1; transition: none; }
+  #bar { display: flex; gap: 4px; padding: 5px; }
+  .slot { position: relative; width: var(--slot); height: var(--slot); border-radius: 7px;
+          border: 1px solid transparent; transition: transform .12s, background .12s, border-color .12s; }
+  .slot canvas { width: 100%; height: 100%; }
+  .slot i { position: absolute; left: 4px; top: 1px; font: 600 10px/1.3 ui-monospace, Menlo, monospace;
+            font-style: normal; color: var(--dim); }
+  .slot.on { transform: translateY(-5px); background: rgba(255,255,255,.12); border-color: var(--accent);
+             box-shadow: 0 0 0 1px rgba(243,227,162,.35), 0 6px 16px rgba(0,0,0,.35); }
+  .slot.on i { color: var(--accent); }
+
+  #brush { display: flex; align-items: center; gap: 10px; padding: 5px 12px 5px 5px; height: var(--slot); }
+  #brush canvas { width: var(--slot); height: var(--slot); }
+  #brush .big { font-weight: 600; font-size: 14px; }
+  #brush .small { color: var(--dim); font-size: 11.5px; white-space: nowrap; }
+  #brush .small kbd { font-size: 10px; padding: 0 3px; }
+
+  #hint { left: 12px; bottom: 14px; color: var(--dim); font-size: 12px; }
+  #keys { left: 12px; bottom: 44px; padding: 10px 14px; display: none; }
+  #keys.show { display: block; }
+
+  #play { left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(600px, calc(100vw - 32px));
+          padding: 22px 24px 18px; box-sizing: border-box; display: none; }
+  #play h1 { margin: 0; font-size: 26px; letter-spacing: .04em; font-weight: 700; }
+  #play .go { margin: 4px 0 16px; color: var(--accent); font-weight: 600; }
+  .keys { display: grid; grid-template-columns: auto 1fr; gap: 5px 14px; align-items: baseline; }
+  .keys dt { text-align: right; white-space: nowrap; }
+  .keys dd { margin: 0; color: var(--dim); white-space: nowrap; }
+  #play .keys { grid-template-columns: auto 1fr auto 1fr; }
+  @media (max-width: 560px) { #play .keys { grid-template-columns: auto 1fr; } #brush .small { display: none; } }
+
+  body.ready #dock, body.ready #mode { display: flex; }
+  body.ready:not(.locked) #play { display: block; }
+  body.locked #hint { display: block; }
+  #hint { display: none; }
+
   #error { display: none; position: fixed; inset: 30% 10% auto; padding: 16px 20px; background: #2a1414; color: #fbe9e9; font: 15px/1.5 system-ui, sans-serif; border-radius: 8px; }
 </style>
 </head>
 <body>
 <div id="status" class="hud">Loading Strata...</div>
-<div id="help" class="hud">Click to play · WASD move · Space jump · Shift sprint · F fly · Left click dig · Right click build · 1-8 or wheel pick material · [ ] brush size · Esc release mouse</div>
+
+<div id="mode" class="hud glass">
+  <span id="move"><b>Walking</b></span>
+  <span class="sep"></span>
+  <span id="aim">Nothing in reach</span>
+</div>
+
+<div id="dock" class="hud">
+  <div id="matname"></div>
+  <div id="bar" class="glass"></div>
+  <div id="brush" class="glass">
+    <canvas id="brushicon" width="112" height="112"></canvas>
+    <div>
+      <div class="big" id="brushsize"></div>
+      <div class="small" id="brushshape"></div>
+      <div class="small"><kbd>[</kbd> <kbd>]</kbd> size &nbsp;<kbd>B</kbd> shape</div>
+    </div>
+  </div>
+</div>
+
+<div id="hint" class="hud"><kbd>H</kbd> controls</div>
+<div id="keys" class="hud glass"><dl class="keys"></dl></div>
+
+<div id="play" class="hud glass">
+  <h1>STRATA</h1>
+  <div class="go">Click anywhere to play</div>
+  <dl class="keys"></dl>
+</div>
+
 <div id="error"></div>
 <script type="module">
+  // ------------------------------------------------------------- controls list
+  const CONTROLS = [
+    ["<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>", "Move"],
+    ["<kbd>Space</kbd>", "Jump / rise"],
+    ["<kbd>Shift</kbd>", "Sprint"],
+    ["<kbd>C</kbd> / <kbd>Ctrl</kbd>", "Sink (flying)"],
+    ["<kbd>F</kbd>", "Toggle flying"],
+    ["Left click", "Dig (hold)"],
+    ["Right click", "Build (hold)"],
+    ["<kbd>1</kbd>–<kbd>8</kbd> / wheel", "Pick material"],
+    ["Middle click", "Copy aimed material"],
+    ["<kbd>[</kbd> <kbd>]</kbd> / <kbd>Alt</kbd>+wheel", "Brush size"],
+    ["<kbd>B</kbd>", "Sphere / cube brush"],
+    ["<kbd>H</kbd>", "Show controls"],
+    ["<kbd>Esc</kbd>", "Release mouse"],
+  ];
+  for (const dl of document.querySelectorAll("dl.keys")) {
+    dl.innerHTML = CONTROLS.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+  }
+
+  // ------------------------------------------------------ material icons
+  // Each hotbar icon is a small cube painted from code, like everything in Strata.
+  function hash(x, y, s) {
+    let h = (x * 374761393 + y * 668265263 + s * 2246822519) | 0;
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
+  }
+  function vnoise(x, y, s) {
+    const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+    const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+    const a = hash(xi, yi, s), b = hash(xi + 1, yi, s), c = hash(xi, yi + 1, s), d = hash(xi + 1, yi + 1, s);
+    return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+  }
+  const mix = (a, b, t) => a.map((x, i) => x + (b[i] - x) * t);
+  const T = 32;
+  // Returns [r, g, b] in 0..255 for texel (x, y) of a face ("top" or "side").
+  const PAINT = {
+    stone(x, y) {
+      const band = vnoise(0, y / 5, 3) * 0.5 + vnoise(x / 9, y / 2.5, 4) * 0.2;
+      let c = mix([104, 104, 100], [150, 147, 140], band + hash(x, y, 1) * 0.15);
+      if (Math.abs(vnoise(x / 6, y / 6, 5) - 0.5) < 0.03) c = mix(c, [60, 60, 58], 0.6);
+      return c;
+    },
+    dirt(x, y) {
+      let c = mix([98, 68, 44], [132, 94, 60], vnoise(x / 4, y / 4, 7) * 0.7 + hash(x, y, 2) * 0.3);
+      if (hash(x >> 2, y >> 2, 8) > 0.86 && hash(x, y, 9) > 0.3) c = mix(c, [150, 140, 125], 0.6);
+      return c;
+    },
+    grass(x, y, face) {
+      const green = mix([70, 118, 44], [118, 160, 62], vnoise(x / 5, y / 5, 11) * 0.6 + hash(x, y, 12) * 0.4);
+      if (face === "top") return hash(x, y, 13) > 0.97 ? [236, 220, 120] : green;
+      const fringe = 5 + Math.floor(hash(x, 0, 14) * 5);
+      return y < fringe ? green : PAINT.dirt(x, y);
+    },
+    sand(x, y) {
+      const ripple = Math.sin((x + vnoise(x / 8, y / 8, 15) * 6) * 0.9 + y * 0.35) * 0.5 + 0.5;
+      return mix([206, 184, 132], [232, 214, 166], ripple * 0.5 + hash(x, y, 16) * 0.5);
+    },
+    gravel(x, y) {
+      const cx = Math.floor(x / 5), cy = Math.floor(y / 5);
+      const dx = x / 5 - cx - 0.5, dy = y / 5 - cy - 0.5;
+      const pebble = Math.hypot(dx, dy) < 0.42;
+      const tone = hash(cx, cy, 17);
+      return pebble ? mix([112, 108, 100], [176, 168, 154], tone * 0.8 + hash(x, y, 18) * 0.2)
+                    : [74, 68, 60];
+    },
+    wood(x, y, face) {
+      if (face === "top") {
+        const r = Math.hypot(x - T / 2 + 0.5, y - T / 2 + 0.5);
+        if (r > T / 2 - 3) return [84, 58, 36];
+        const ring = Math.sin(r * 1.3 + vnoise(x / 4, y / 4, 19) * 3) * 0.5 + 0.5;
+        return mix([176, 136, 88], [206, 168, 112], ring);
+      }
+      const groove = Math.sin(x * 1.1 + vnoise(x / 3, y / 10, 20) * 4) * 0.5 + 0.5;
+      return mix([62, 42, 28], [110, 78, 50], groove * 0.7 + hash(x, y, 21) * 0.3);
+    },
+    planks(x, y) {
+      const row = Math.floor(y / 8);
+      if (y % 8 === 7) return [96, 66, 40];
+      const off = row % 2 ? 11 : 0;
+      if ((x + off) % 22 === 0) return [104, 72, 44];
+      const grain = vnoise(x / 9, y * 1.5 + row * 7, 22);
+      return mix([164, 118, 72], [196, 150, 96], grain * 0.8 + hash(row, 0, 23) * 0.2);
+    },
+    snow(x, y) {
+      const c = mix([214, 224, 238], [246, 249, 252], vnoise(x / 6, y / 6, 24) * 0.8 + hash(x, y, 25) * 0.2);
+      return hash(x, y, 26) > 0.985 ? [255, 255, 255] : c;
+    },
+  };
+  function faceTexture(name, face) {
+    const c = document.createElement("canvas");
+    c.width = c.height = T;
+    const ctx = c.getContext("2d");
+    const img = ctx.createImageData(T, T);
+    const paint = PAINT[name] || PAINT.stone;
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const [r, g, b] = paint(x, y, face), i = (y * T + x) * 4;
+      img.data[i] = r; img.data[i + 1] = g; img.data[i + 2] = b; img.data[i + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    return c;
+  }
+  function drawCube(canvas, name) {
+    const S = canvas.width, ctx = canvas.getContext("2d");
+    const L = S * 0.46, w = L * 0.866, h = L * 0.5, cx = S / 2, y0 = (S - 2 * L) / 2;
+    const top = faceTexture(name, "top"), side = faceTexture(name, "side");
+    const face = (tex, a, b, c, d, e, f, shade) => {
+      ctx.setTransform(a / T, b / T, c / T, d / T, e, f);
+      ctx.drawImage(tex, 0, 0);
+      ctx.fillStyle = `rgba(0,0,0,${shade})`;
+      ctx.fillRect(0, 0, T, T);
+    };
+    ctx.clearRect(0, 0, S, S);
+    ctx.imageSmoothingEnabled = true;
+    face(top, w, h, -w, h, cx, y0, 0);
+    face(side, w, h, 0, L, cx - w, y0 + h, 0.2);
+    face(side, w, -h, 0, L, cx, y0 + 2 * h, 0.38);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.strokeStyle = "rgba(0,0,0,.35)";
+    ctx.lineWidth = Math.max(1, S / 64);
+    ctx.beginPath();
+    ctx.moveTo(cx, y0); ctx.lineTo(cx + w, y0 + h); ctx.lineTo(cx + w, y0 + h + L); ctx.lineTo(cx, y0 + 2 * h + L);
+    ctx.lineTo(cx - w, y0 + h + L); ctx.lineTo(cx - w, y0 + h); ctx.closePath();
+    ctx.moveTo(cx - w, y0 + h); ctx.lineTo(cx, y0 + 2 * h); ctx.lineTo(cx + w, y0 + h);
+    ctx.moveTo(cx, y0 + 2 * h); ctx.lineTo(cx, y0 + 2 * h + L);
+    ctx.stroke();
+  }
+
+  // ------------------------------------------------------------- brush icon
+  // A slice through the brush, one cell per voxel, drawn on the largest brush's grid.
+  function drawBrush(canvas, radius, cube, maxR) {
+    const S = canvas.width, ctx = canvas.getContext("2d"), n = 2 * maxR + 1;
+    const cell = (S - 6) / n, off = (S - cell * n) / 2;
+    ctx.clearRect(0, 0, S, S);
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+      const dx = x - maxR, dy = y - maxR;
+      const inside = cube ? Math.max(Math.abs(dx), Math.abs(dy)) <= radius
+                          : dx * dx + dy * dy <= (radius + 0.35) ** 2;
+      ctx.fillStyle = inside ? "rgba(243,227,162,.95)" : "rgba(255,255,255,.1)";
+      ctx.fillRect(off + x * cell + 0.5, off + y * cell + 0.5, cell - 1, cell - 1);
+    }
+  }
+
+  // ------------------------------------------------------------- HUD state
+  const $ = (id) => document.getElementById(id);
+  const title = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+  let last = null, nameTimer = 0;
+  globalThis.strataHud = (s) => {
+    document.body.classList.add("ready");
+    const bar = $("bar");
+    if (!last || last.materials.join() !== s.materials.join()) {
+      bar.innerHTML = "";
+      s.materials.forEach((m, i) => {
+        const slot = document.createElement("div");
+        slot.className = "slot";
+        slot.title = title(m);
+        const c = document.createElement("canvas");
+        c.width = c.height = 112;
+        drawCube(c, m);
+        const k = document.createElement("i");
+        k.textContent = i + 1;
+        slot.append(c, k);
+        bar.append(slot);
+      });
+    }
+    [...bar.children].forEach((el, i) => el.classList.toggle("on", i === s.selected));
+    if (last && last.selected !== s.selected) {
+      const el = $("matname");
+      el.textContent = title(s.materials[s.selected]);
+      el.classList.add("show");
+      clearTimeout(nameTimer);
+      nameTimer = setTimeout(() => el.classList.remove("show"), 1200);
+    }
+    if (!last || last.brush !== s.brush || last.cube !== s.cube) {
+      drawBrush($("brushicon"), s.brush, s.cube, s.maxBrush);
+      $("brushsize").textContent = s.brush === 0 ? "Single voxel" : `${s.width} m wide`;
+      $("brushshape").textContent = `${s.cube ? "Cube" : "Sphere"} · size ${s.brush + 1} of ${s.maxBrush + 1}`;
+    }
+    $("move").innerHTML = s.flying ? "<b>Flying</b> <kbd>F</kbd> to walk" : "<b>Walking</b> <kbd>F</kbd> to fly";
+    $("aim").textContent = s.target ? `Aiming at ${s.target}` : "Nothing in reach";
+    last = s;
+  };
+
+  document.addEventListener("pointerlockchange", () => {
+    document.body.classList.toggle("locked", !!document.pointerLockElement);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.code === "KeyH" && !e.repeat) $("keys").classList.toggle("show");
+  });
+
+  // ------------------------------------------------------------- start
   import init from "./pkg/strata.js";
   init().catch((e) => {
     // winit uses an exception to hand control to the browser's event loop; that one is expected.
     if (!String(e).includes("Using exceptions for control flow")) {
-      const el = document.getElementById("error");
+      const el = $("error");
       el.textContent = "Strata could not start: " + e;
       el.style.display = "block";
     }

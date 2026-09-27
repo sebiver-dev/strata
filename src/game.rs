@@ -16,16 +16,50 @@ use winit::keyboard::KeyCode;
 
 const REACH_M: f32 = 8.0;
 const EDIT_REPEAT_S: f32 = 0.16;
+/// Slower repeat for whole blocks, so a held click places a row, not a pile.
+const BLOCK_REPEAT_S: f32 = 0.25;
+/// Voxels along each edge of a building block (a 1 m cube).
+pub const BLOCK_VOXELS: i32 = 2;
 const MOUSE_SENSITIVITY: f32 = 0.0022;
 /// Largest brush radius in voxels (a 6.5 m wide brush).
 pub const MAX_BRUSH: i32 = 6;
 
-/// The shape and size of the volume one click digs or builds.
+/// How a click edits the world.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Shape {
+    /// The default: whole 1 m blocks on a fixed grid, like building with bricks.
+    Block,
+    /// Advanced: a sphere of voxels around the aimed-at voxel.
+    Sphere,
+    /// Advanced: a cube of voxels around the aimed-at voxel.
+    Cube,
+}
+
+impl Shape {
+    pub fn name(self) -> &'static str {
+        match self {
+            Shape::Block => "block",
+            Shape::Sphere => "sphere",
+            Shape::Cube => "cube",
+        }
+    }
+
+    /// The value the terrain shader reads to draw the preview.
+    fn shader_id(self) -> f32 {
+        match self {
+            Shape::Sphere => 0.0,
+            Shape::Cube => 1.0,
+            Shape::Block => 2.0,
+        }
+    }
+}
+
+/// The building tool: its shape and, for the brushes, its size.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Brush {
-    /// Radius in voxels; 0 edits a single voxel.
+    pub shape: Shape,
+    /// Brush radius in voxels; 0 edits a single voxel. Unused for blocks.
     pub radius: i32,
-    pub cube: bool,
 }
 
 impl Brush {
@@ -33,16 +67,21 @@ impl Brush {
     /// Must match `in_brush` in the terrain shader, which previews it.
     pub fn contains(&self, d: IVec3) -> bool {
         let r = self.radius;
-        if self.cube {
-            d.abs().max_element() <= r
-        } else {
-            d.length_squared() as f32 <= (r as f32 + 0.35).powi(2)
+        match self.shape {
+            Shape::Block => d.min_element() >= 0 && d.max_element() < BLOCK_VOXELS,
+            Shape::Cube => d.abs().max_element() <= r,
+            Shape::Sphere => d.length_squared() as f32 <= (r as f32 + 0.35).powi(2),
         }
     }
 
-    /// Offsets of every voxel inside the brush.
+    /// Offsets of every voxel inside the brush, from its centre voxel (or from
+    /// the corner voxel of a block).
     pub fn offsets(self) -> impl Iterator<Item = IVec3> {
-        let r = self.radius;
+        let r = if self.shape == Shape::Block {
+            BLOCK_VOXELS
+        } else {
+            self.radius
+        };
         (-r..=r)
             .flat_map(move |z| (-r..=r).flat_map(move |y| (-r..=r).map(move |x| IVec3::new(x, y, z))))
             .filter(move |d| self.contains(*d))
@@ -50,7 +89,19 @@ impl Brush {
 
     /// Width across the brush in metres.
     pub fn width_m(&self) -> f32 {
-        (2 * self.radius + 1) as f32 * VOXEL_SIZE
+        match self.shape {
+            Shape::Block => BLOCK_VOXELS as f32 * VOXEL_SIZE,
+            _ => (2 * self.radius + 1) as f32 * VOXEL_SIZE,
+        }
+    }
+
+    /// The voxel the brush's offsets start from when aimed at voxel `v`: the
+    /// voxel itself, or for blocks the corner of the grid block holding it.
+    pub fn anchor(&self, v: IVec3) -> IVec3 {
+        match self.shape {
+            Shape::Block => v.div_euclid(IVec3::splat(BLOCK_VOXELS)) * BLOCK_VOXELS,
+            _ => v,
+        }
     }
 }
 
@@ -104,6 +155,9 @@ pub struct Game {
     settings: Settings,
     keys: HashSet<KeyCode>,
     buttons: HashSet<MouseButton>,
+    /// A click not yet acted on. Kept so a click shorter than one frame still
+    /// edits, which matters most when the frame rate is low.
+    clicked: Option<MouseButton>,
     selected: usize,
     brush: Brush,
     edit_timer: f32,
@@ -137,8 +191,12 @@ impl Game {
             settings,
             keys: HashSet::new(),
             buttons: HashSet::new(),
+            clicked: None,
             selected: 0,
-            brush: Brush { radius: 1, cube: false },
+            brush: Brush {
+                shape: Shape::Block,
+                radius: 1,
+            },
             edit_timer: 0.0,
             time: 0.0,
             fps: 0.0,
@@ -158,7 +216,13 @@ impl Game {
                 }
                 KeyCode::BracketLeft | KeyCode::Minus | KeyCode::NumpadSubtract => self.resize_brush(-1),
                 KeyCode::BracketRight | KeyCode::Equal | KeyCode::NumpadAdd => self.resize_brush(1),
-                KeyCode::KeyB => self.brush.cube = !self.brush.cube,
+                KeyCode::KeyB => {
+                    self.brush.shape = match self.brush.shape {
+                        Shape::Block => Shape::Sphere,
+                        Shape::Sphere => Shape::Cube,
+                        Shape::Cube => Shape::Block,
+                    }
+                }
                 _ => {
                     let digits = [
                         KeyCode::Digit1,
@@ -183,7 +247,15 @@ impl Game {
         }
     }
 
+    /// Resizing while in block mode switches to the sphere brush, so `]` is
+    /// all it takes to start sculpting.
     fn resize_brush(&mut self, step: i32) {
+        if self.brush.shape == Shape::Block {
+            if step > 0 {
+                self.brush.shape = Shape::Sphere;
+            }
+            return;
+        }
         self.brush.radius = (self.brush.radius + step).clamp(0, MAX_BRUSH);
     }
 
@@ -200,6 +272,7 @@ impl Game {
         }
         if pressed {
             self.buttons.insert(b);
+            self.clicked = Some(b);
             self.edit_timer = 0.0;
         } else {
             self.buttons.remove(&b);
@@ -225,6 +298,7 @@ impl Game {
     pub fn release_input(&mut self) {
         self.keys.clear();
         self.buttons.clear();
+        self.clicked = None;
     }
 
     fn held(&self, k: KeyCode) -> bool {
@@ -290,21 +364,32 @@ impl Game {
         self.edit_timer -= dt;
         if self.edit_timer <= 0.0 {
             if let Some(h) = hit {
-                if self.buttons.contains(&MouseButton::Left) {
+                let repeat = if self.brush.shape == Shape::Block {
+                    BLOCK_REPEAT_S
+                } else {
+                    EDIT_REPEAT_S
+                };
+                let down = |b| self.clicked == Some(b) || self.buttons.contains(&b);
+                let (dig, build) = (down(MouseButton::Left), down(MouseButton::Right));
+                if dig {
                     self.edit(h.voxel, AIR);
-                    self.edit_timer = EDIT_REPEAT_S;
-                } else if self.buttons.contains(&MouseButton::Right) {
+                    self.edit_timer = repeat;
+                } else if build {
+                    // Blocks go in the grid cell just in front of the aimed-at
+                    // face, which also fills out a half-dug block.
                     self.edit(h.before, PLACEABLE[self.selected]);
-                    self.edit_timer = EDIT_REPEAT_S;
+                    self.edit_timer = repeat;
                 }
             }
         }
+        self.clicked = None;
     }
 
-    /// Digs (with AIR) or builds the brush volume around `center`.
-    fn edit(&mut self, center: IVec3, block: Block) {
+    /// Digs (with AIR) or builds the brush volume aimed at voxel `at`.
+    fn edit(&mut self, at: IVec3, block: Block) {
+        let anchor = self.brush.anchor(at);
         for d in self.brush.offsets() {
-            let v = center + d;
+            let v = anchor + d;
             let current = self.world.get(v);
             if block == AIR {
                 if is_solid(current) {
@@ -396,7 +481,10 @@ impl Game {
         let fog = self.settings.fog_m;
         let underwater = self.world.get((eye / VOXEL_SIZE).floor().as_ivec3()) == WATER;
         let (hl, has) = match self.target {
-            Some(v) => (v.as_vec3() * VOXEL_SIZE, 1.0 + self.brush.radius as f32),
+            Some(v) => (
+                self.brush.anchor(v).as_vec3() * VOXEL_SIZE,
+                1.0 + self.brush.radius as f32,
+            ),
             None => (Vec3::ZERO, 0.0),
         };
         Globals {
@@ -409,7 +497,7 @@ impl Game {
                 fog,
                 manual_srgb as i32 as f32,
                 underwater as i32 as f32,
-                self.brush.cube as i32 as f32,
+                self.brush.shape.shader_id(),
             ],
             highlight: hl.extend(has).to_array(),
             screen: [width as f32, height as f32, SHADOW_SIZE as f32, scale],
@@ -486,13 +574,34 @@ mod tests {
 
     #[test]
     fn brush_volumes() {
-        let count = |radius, cube| Brush { radius, cube }.offsets().count();
-        assert_eq!(count(0, false), 1);
-        assert_eq!(count(0, true), 1);
-        assert_eq!(count(1, false), 7);
-        assert_eq!(count(1, true), 27);
-        assert_eq!(count(2, true), 125);
-        assert!(count(MAX_BRUSH, false) < count(MAX_BRUSH, true));
-        assert_eq!(Brush { radius: 2, cube: false }.width_m(), 2.5);
+        let count = |radius, shape| Brush { shape, radius }.offsets().count();
+        assert_eq!(count(0, Shape::Sphere), 1);
+        assert_eq!(count(0, Shape::Cube), 1);
+        assert_eq!(count(1, Shape::Sphere), 7);
+        assert_eq!(count(1, Shape::Cube), 27);
+        assert_eq!(count(2, Shape::Cube), 125);
+        assert!(count(MAX_BRUSH, Shape::Sphere) < count(MAX_BRUSH, Shape::Cube));
+        assert_eq!(count(3, Shape::Block), 8);
+        let sphere = Brush {
+            shape: Shape::Sphere,
+            radius: 2,
+        };
+        assert_eq!(sphere.width_m(), 2.5);
+    }
+
+    #[test]
+    fn blocks_snap_to_a_one_metre_grid() {
+        let block = Brush {
+            shape: Shape::Block,
+            radius: 1,
+        };
+        assert_eq!(block.width_m(), 1.0);
+        assert_eq!(block.anchor(IVec3::new(5, 4, -1)), IVec3::new(4, 4, -2));
+        assert_eq!(block.anchor(IVec3::new(-2, 0, 1)), IVec3::new(-2, 0, 0));
+        // Every voxel of a block anchors to the same corner.
+        let corner = IVec3::new(6, 2, -4);
+        for d in block.offsets() {
+            assert_eq!(block.anchor(corner + d), corner);
+        }
     }
 }

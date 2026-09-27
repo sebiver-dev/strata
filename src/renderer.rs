@@ -31,7 +31,14 @@ pub struct Globals {
     pub params: [f32; 4],
     pub highlight: [f32; 4],
     pub screen: [f32; 4],
+    /// x: night (0 day, 1 night), y: number of lights in use.
+    pub sky: [f32; 4],
+    /// Point lights (lanterns): xyz position in metres, w strength.
+    pub lights: [[f32; 4]; MAX_LIGHTS],
 }
+
+/// Most point lights shaded per frame; the nearest ones win.
+pub const MAX_LIGHTS: usize = 24;
 
 /// Orthographic view-projection for the sun's shadow map, centred on `center`.
 /// The centre is snapped to whole texels so shadow edges do not crawl as the

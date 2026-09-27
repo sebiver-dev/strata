@@ -6,7 +6,7 @@ use crate::chunk::chunk_of;
 use crate::far::FarField;
 use crate::mesh;
 use crate::player::{MoveInput, Player};
-use crate::renderer::{sun_view_proj, Globals, Renderer, SHADOW_SIZE};
+use crate::renderer::{sun_view_proj, Globals, Renderer, MAX_LIGHTS, SHADOW_SIZE};
 use crate::terrain::{WATER_LEVEL_M, WORLD_CHUNKS_XZ, WORLD_CHUNKS_Y};
 use crate::world::World;
 use glam::{IVec3, Mat4, Vec3};
@@ -167,6 +167,12 @@ pub struct Game {
     cpu_ms: [f32; 4],
     /// How long meshing and uploading one chunk takes.
     mesh_cost: Cost,
+    /// 0 in daylight, 1 at night; eases towards `night_wanted`.
+    night: f32,
+    night_wanted: bool,
+    /// Longest frame in the current and the last full second, in milliseconds.
+    worst_ms: [f32; 2],
+    worst_timer: f32,
     target: Option<IVec3>,
     ready: bool,
 }
@@ -183,6 +189,10 @@ impl Game {
             player.pitch = pitch;
             player.flying = true;
         }
+        #[cfg(target_arch = "wasm32")]
+        let night = crate::web::url_param("night").is_some_and(|v| v != "0");
+        #[cfg(not(target_arch = "wasm32"))]
+        let night = false;
         Self {
             world,
             player,
@@ -202,6 +212,10 @@ impl Game {
             fps: 0.0,
             cpu_ms: [0.0; 4],
             mesh_cost: Cost::default(),
+            night: night as i32 as f32,
+            night_wanted: night,
+            worst_ms: [0.0; 2],
+            worst_timer: 0.0,
             target: None,
             ready: false,
         }
@@ -223,6 +237,7 @@ impl Game {
                         Shape::Cube => Shape::Block,
                     }
                 }
+                KeyCode::KeyN => self.night_wanted = !self.night_wanted,
                 _ => {
                     let digits = [
                         KeyCode::Digit1,
@@ -306,7 +321,16 @@ impl Game {
     }
 
     pub fn update(&mut self, dt: f32, renderer: &mut Renderer) {
+        self.worst_ms[0] = self.worst_ms[0].max(dt * 1000.0);
+        self.worst_timer += dt;
+        if self.worst_timer >= 1.0 {
+            self.worst_timer = 0.0;
+            self.worst_ms = [0.0, self.worst_ms[0]];
+        }
         let dt = dt.min(0.05);
+        // Dusk and dawn take a few seconds.
+        let goal = self.night_wanted as i32 as f32;
+        self.night += (goal - self.night).clamp(-dt / 4.0, dt / 4.0);
         self.time += dt;
         self.fps = if self.fps == 0.0 {
             1.0 / dt.max(1e-3)
@@ -476,8 +500,17 @@ impl Game {
         let proj = Mat4::perspective_infinite_reverse_rh(70f32.to_radians(), aspect, 0.05);
         let view = Mat4::look_to_rh(eye, self.player.look_dir(), Vec3::Y);
         let vp = proj * view;
-        // A late-afternoon sun about 26 degrees up: warm light, long shadows.
-        let sun = Vec3::new(0.62, 0.36, 0.40).normalize();
+        // A late-afternoon sun about 26 degrees up (warm light, long shadows),
+        // or at night a high moon on the other side of the sky.
+        let day_sun = Vec3::new(0.62, 0.36, 0.40).normalize();
+        let moon = Vec3::new(-0.45, 0.62, -0.35).normalize();
+        let t = self.night * self.night * (3.0 - 2.0 * self.night);
+        let sun = day_sun.lerp(moon, t).normalize();
+        let mut lights = [[0.0; 4]; MAX_LIGHTS];
+        let near = self.world.nearest_lanterns(eye, MAX_LIGHTS);
+        for (slot, p) in lights.iter_mut().zip(&near) {
+            *slot = p.extend(1.0).to_array();
+        }
         let fog = self.settings.fog_m;
         let underwater = self.world.get((eye / VOXEL_SIZE).floor().as_ivec3()) == WATER;
         let (hl, has) = match self.target {
@@ -501,6 +534,8 @@ impl Game {
             ],
             highlight: hl.extend(has).to_array(),
             screen: [width as f32, height as f32, SHADOW_SIZE as f32, scale],
+            sky: [t, near.len() as f32, 0.0, 0.0],
+            lights,
         }
     }
 
@@ -553,8 +588,9 @@ impl Game {
 
     pub fn status(&self, renderer: &Renderer) -> String {
         format!(
-            "Strata | {:.0} fps | {} | brush {} | {}{} | {} chunks, {} far tiles | {}k + {}k far tris | {}",
+            "Strata | {:.0} fps, worst frame {:.0} ms | {} | brush {} | {}{} | {} chunks, {} far tiles | {}k + {}k far tris | {}",
             self.fps,
+            self.worst_ms[1].max(self.worst_ms[0]),
             block::name(PLACEABLE[self.selected]),
             self.brush.radius,
             if self.player.flying { "flying" } else { "walking" },

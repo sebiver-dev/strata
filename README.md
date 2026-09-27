@@ -34,6 +34,11 @@ depends on:
   wind ripples in sand, clumped leaves that glow when backlit and sway in the
   wind, and centimetre-sized flowers in the grass that give the ground a
   human scale.
+- Roads of packed earth follow the river and climb into the hills, lined
+  with lantern posts. Meadows of tall grass, from ankle to hip height, bend
+  in rolling gusts of wind.
+- Night mode (`N`, or `?night=1` in the browser): moonlight, stars, and
+  lanterns that light their surroundings and glow in the evening haze.
 - Water that refracts and tints what lies beneath it by depth, reflects the
   terrain with screen-space reflections (falling back to the sky), and foams
   along the shore.

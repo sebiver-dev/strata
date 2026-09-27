@@ -16,6 +16,12 @@ pub const WOOD: Block = 7;
 pub const LEAVES: Block = 8;
 pub const WATER: Block = 9;
 pub const PLANKS: Block = 10;
+/// Packed earth and gravel on roads.
+pub const PATH: Block = 11;
+/// A glowing lantern; every one in the loaded world is a light at night.
+pub const LANTERN: Block = 12;
+/// Tall grass blades standing in the air voxel above a grass block.
+pub const TALL_GRASS: Block = 13;
 
 /// Materials the player can place, in hotbar order (keys 1..).
 pub const PLACEABLE: [Block; 8] = [STONE, DIRT, GRASS, SAND, GRAVEL, WOOD, PLANKS, SNOW];
@@ -33,6 +39,9 @@ pub fn name(b: Block) -> &'static str {
         LEAVES => "leaves",
         WATER => "water",
         PLANKS => "planks",
+        PATH => "path",
+        LANTERN => "lantern",
+        TALL_GRASS => "tall grass",
         _ => "unknown",
     }
 }
@@ -40,11 +49,11 @@ pub fn name(b: Block) -> &'static str {
 /// Blocks that fully hide the faces of their neighbours.
 #[inline]
 pub fn is_opaque(b: Block) -> bool {
-    !matches!(b, AIR | WATER)
+    !matches!(b, AIR | WATER | TALL_GRASS)
 }
 
 /// Blocks the player collides with.
 #[inline]
 pub fn is_solid(b: Block) -> bool {
-    !matches!(b, AIR | WATER)
+    !matches!(b, AIR | WATER | TALL_GRASS)
 }

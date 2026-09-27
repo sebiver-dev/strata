@@ -24,6 +24,17 @@ pub const TREE_CELL_M: f32 = 9.0;
 const TREE_REACH_M: f32 = 7.5;
 const TREE_MAX_HEIGHT_M: f32 = 26.0;
 
+/// Half the width of a road's packed surface in metres.
+const ROAD_HALF_WIDTH_M: f32 = 1.6;
+/// Lantern posts stand this far apart along each road, alternating sides.
+const LANTERN_SPACING_M: f32 = 18.0;
+/// Z positions (metres) where side roads leave the valley road for the hills.
+const SIDE_ROADS_Z: [f32; 4] = [300.0, 780.0, 1290.0, 1760.0];
+/// How far side roads climb away from the valley road.
+const SIDE_ROAD_LENGTH_M: f32 = 560.0;
+/// Voxels in a lantern post below the lantern itself.
+const LANTERN_POST: i32 = 5;
+
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -63,6 +74,72 @@ impl Terrain {
         WORLD_SIZE_M * 0.5
             + 170.0 * (z_m / 270.0 + 0.7).sin()
             + 90.0 * (fbm2(s.wrapping_add(1), z_m / 420.0, 0.5, 3) * 2.0 - 1.0)
+    }
+
+    /// X coordinate (metres) of the valley road's centre line at a given Z. It
+    /// follows the east bank of the river, swinging a little on its own.
+    pub fn road_x(&self, z_m: f32) -> f32 {
+        self.river_x(z_m) + 40.0 + 8.0 * (z_m / 130.0 + 1.3).sin()
+    }
+
+    /// Z coordinate of side road `k` at a given X, if that X is on it.
+    fn side_road_z(&self, k: usize, x_m: f32) -> Option<f32> {
+        let z0 = SIDE_ROADS_Z[k];
+        let start = self.road_x(z0);
+        if x_m < start || x_m > start + SIDE_ROAD_LENGTH_M {
+            return None;
+        }
+        Some(z0 + 25.0 * ((x_m - start) / 110.0).sin())
+    }
+
+    /// Roughly how far (metres) a point is from the centre of the nearest road.
+    pub fn road_distance(&self, x_m: f32, z_m: f32) -> f32 {
+        let mut d = (x_m - self.road_x(z_m)).abs();
+        for k in 0..SIDE_ROADS_Z.len() {
+            if let Some(z) = self.side_road_z(k, x_m) {
+                d = d.min((z_m - z).abs());
+            }
+        }
+        d
+    }
+
+    /// Ground positions (voxel coordinates) of the lantern posts whose base lies
+    /// within the given rectangle of metres.
+    fn lanterns_in(&self, x0: f32, x1: f32, z0: f32, z1: f32) -> Vec<IVec3> {
+        let mut out = Vec::new();
+        let mut add = |x: f32, z: f32| {
+            if x < x0 || x >= x1 || z < z0 || z >= z1 {
+                return;
+            }
+            let (h, _) = self.height_at(x, z);
+            if h > WATER_LEVEL_M + 0.8 {
+                out.push(IVec3::new(
+                    (x / VOXEL_SIZE).floor() as i32,
+                    (h / VOXEL_SIZE).floor() as i32,
+                    (z / VOXEL_SIZE).floor() as i32,
+                ));
+            }
+        };
+        let side = |k: i32| if k % 2 == 0 { 2.6 } else { -2.6 };
+        let s = LANTERN_SPACING_M;
+        for k in (z0 / s).floor() as i32 - 1..=(z1 / s).ceil() as i32 {
+            let z = (k as f32 + 0.5) * s;
+            add(self.road_x(z) + side(k), z);
+        }
+        for (r, z0) in SIDE_ROADS_Z.iter().enumerate() {
+            let start = self.road_x(*z0);
+            // Side-road lanterns start a little way up so they do not crowd the junction.
+            for k in 1..(SIDE_ROAD_LENGTH_M / s) as i32 {
+                let x = start + k as f32 * s;
+                if x + 3.0 < x0 || x - 3.0 > x1 {
+                    continue;
+                }
+                if let Some(z) = self.side_road_z(r, x) {
+                    add(x, z + side(k));
+                }
+            }
+        }
+        out
     }
 
     /// Ground height in metres, plus how strongly this point is river channel (0..1).
@@ -111,6 +188,20 @@ impl Terrain {
         } else {
             (GRASS, DIRT)
         };
+        // Roads: packed earth with slightly ragged edges, only on dry ground.
+        let (surface, subsurface) = if h > WATER_LEVEL_M + 0.6 && slope < 1.3 && {
+            let d = self.road_distance(x_m, z_m);
+            let fray = unit(hash2(
+                self.seed.wrapping_add(31),
+                (x_m * 2.0) as i32,
+                (z_m * 2.0) as i32,
+            ));
+            d < ROAD_HALF_WIDTH_M + 0.5 * fray
+        } {
+            (PATH, DIRT)
+        } else {
+            (surface, subsurface)
+        };
         ColumnInfo {
             height_m: h,
             surface,
@@ -151,6 +242,10 @@ impl Terrain {
         }
         let info = self.column_info(xm, zm);
         if info.surface != GRASS || info.height_m < WATER_LEVEL_M + 1.5 || info.height_m > 78.0 {
+            return None;
+        }
+        // Keep roads clear of trunks.
+        if self.road_distance(xm, zm) < 5.0 {
             return None;
         }
         let conifer = info.height_m > 44.0 || unit(h.rotate_left(5)) < 0.25;
@@ -314,6 +409,8 @@ impl Terrain {
                         }
                     } else if ym < WATER_LEVEL_M {
                         WATER
+                    } else if col.surface == GRASS && ym - VOXEL_SIZE <= col.height_m && tall_grass(s, wx, wy, wz) {
+                        TALL_GRASS
                     } else {
                         AIR
                     };
@@ -335,6 +432,11 @@ impl Terrain {
                     }
                 }
             }
+            let (ox, oz) = (origin.x as f32 * VOXEL_SIZE, origin.z as f32 * VOXEL_SIZE);
+            let side = CHUNK as f32 * VOXEL_SIZE;
+            for base in self.lanterns_in(ox, ox + side, oz, oz + side) {
+                stamp_lantern(base, origin, &mut data);
+            }
         }
 
         Chunk::from_dense(data)
@@ -353,6 +455,30 @@ impl Terrain {
         }
         glam::Vec3::new(rx + 30.0, 60.0, z)
     }
+}
+
+/// A wooden post with a lantern and a small plank roof on top.
+fn stamp_lantern(base: IVec3, origin: IVec3, data: &mut [Block; CHUNK_VOLUME]) {
+    for dy in 0..=LANTERN_POST + 1 {
+        let l = base + IVec3::Y * dy - origin;
+        if l.cmplt(IVec3::ZERO).any() || l.cmpge(IVec3::splat(CHUNK)).any() {
+            continue;
+        }
+        data[local_index(l.x, l.y, l.z)] = match dy {
+            d if d < LANTERN_POST => WOOD,
+            d if d == LANTERN_POST => LANTERN,
+            _ => PLANKS,
+        };
+    }
+}
+
+/// Whether the air voxel resting on a grass block holds tall grass: dense in
+/// meadows, sparse between them.
+fn tall_grass(seed: u32, x: i32, y: i32, z: i32) -> bool {
+    let (xm, zm) = (x as f32 * VOXEL_SIZE, z as f32 * VOXEL_SIZE);
+    let meadow = fbm2(seed.wrapping_add(30), xm / 38.0, zm / 38.0, 3);
+    let chance = 0.06 + 0.8 * smoothstep(0.38, 0.62, meadow);
+    unit(crate::noise::hash3(seed.wrapping_add(32), x, y, z)) < chance
 }
 
 /// Spaghetti caves: tunnels where two independent noise fields both cross their midpoint.
@@ -380,6 +506,22 @@ mod tests {
             assert_eq!(ca.get(i, i, i), cb.get(i, i, i));
             assert_eq!(ca.get(i, 0, 31 - i), cb.get(i, 0, 31 - i));
         }
+    }
+
+    #[test]
+    fn valley_road_has_lantern_posts() {
+        let mut t = Terrain::new(20260927);
+        let z = 1024.0;
+        let x = t.road_x(z);
+        assert!(t.road_distance(x, z) < 0.01);
+        assert_eq!(t.column_info(x, z).surface, PATH);
+        let posts = t.lanterns_in(x - 8.0, x + 8.0, z - 40.0, z + 40.0);
+        assert!(posts.len() >= 3, "{posts:?}");
+        // The lantern sits on top of its post in the generated chunk.
+        let top = posts[0] + IVec3::Y * LANTERN_POST;
+        let c = t.generate(crate::chunk::chunk_of(top));
+        let l = crate::chunk::local_of(top);
+        assert_eq!(c.get(l.x, l.y, l.z), LANTERN);
     }
 
     #[test]

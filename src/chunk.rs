@@ -69,6 +69,22 @@ impl Chunk {
         }
     }
 
+    /// World voxel positions of every `b` in the chunk at `cpos`.
+    pub fn find(&self, cpos: IVec3, b: Block) -> Vec<IVec3> {
+        let Chunk::Dense(data) = self else {
+            return Vec::new();
+        };
+        let origin = cpos * CHUNK;
+        data.iter()
+            .enumerate()
+            .filter(|(_, v)| **v == b)
+            .map(|(i, _)| {
+                let i = i as i32;
+                origin + IVec3::new(i % CHUNK, i / (CHUNK * CHUNK), i / CHUNK % CHUNK)
+            })
+            .collect()
+    }
+
     pub fn is_uniform(&self, b: Block) -> bool {
         matches!(self, Chunk::Uniform(u) if *u == b)
     }

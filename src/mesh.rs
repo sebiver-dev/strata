@@ -13,6 +13,7 @@ pub struct Vertex {
     /// World position in metres.
     pub pos: [f32; 3],
     /// Bits 0..3 face direction, 3..11 material, 11..13 ambient occlusion (0 darkest).
+    /// Grass blades use the occlusion bits for height along the blade (3 at the tip).
     pub data: u32,
 }
 
@@ -149,10 +150,14 @@ pub fn build(world: &World, cpos: IVec3) -> MeshData {
                 if b == AIR {
                     continue;
                 }
+                if b == TALL_GRASS {
+                    grass_blades(&mut out, origin, p);
+                    continue;
+                }
                 for (fi, f) in FACES.iter().enumerate() {
                     let nb = pad.get(p + f.n);
                     if b == WATER {
-                        if nb == AIR {
+                        if nb == AIR || nb == TALL_GRASS {
                             emit(
                                 &pad,
                                 &mut out.water_vertices,
@@ -173,6 +178,42 @@ pub fn build(world: &World, cpos: IVec3) -> MeshData {
         }
     }
     out
+}
+
+/// Blades per tall grass voxel.
+const BLADES: u32 = 5;
+
+/// A tuft of thin tapered blades rising from the floor of voxel `p`. Heights
+/// vary in soft patches, from ankle-high to hip-high, and each blade leans a
+/// little its own way. Both windings are emitted so blades show from either side.
+fn grass_blades(out: &mut MeshData, origin: IVec3, p: IVec3) {
+    let w = origin + p;
+    let floor = w.as_vec3() * VOXEL_SIZE;
+    let patch = crate::noise::fbm2(97, w.x as f32 / 9.0, w.z as f32 / 9.0, 2);
+    let tall = 0.22 + 0.95 * patch * patch;
+    let data = |ao: u32| 2 | ((TALL_GRASS as u32) << 3) | (ao << 11);
+    for k in 0..BLADES {
+        let h = crate::noise::hash3(0x5eed + k, w.x, w.y, w.z);
+        let r = |shift: u32| crate::noise::unit(h.rotate_left(shift));
+        let base = floor + glam::Vec3::new(0.05 + 0.4 * r(0), 0.0, 0.05 + 0.4 * r(8));
+        let height = tall * (0.55 + 0.6 * r(16));
+        let angle = r(24) * std::f32::consts::TAU;
+        let side = glam::Vec3::new(angle.cos(), 0.0, angle.sin()) * 0.035;
+        let lean = glam::Vec3::new(r(4) - 0.5, 0.0, r(12) - 0.5) * height * 0.5;
+        let start = out.vertices.len() as u32;
+        for (pos, ao) in [
+            (base - side, 0),
+            (base + side, 0),
+            (base + lean + glam::Vec3::Y * height, 3),
+        ] {
+            out.vertices.push(Vertex {
+                pos: pos.to_array(),
+                data: data(ao),
+            });
+        }
+        out.indices
+            .extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 1]);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -234,6 +275,29 @@ mod tests {
         assert_eq!(m.indices.len(), 36);
         // Unoccluded faces are fully lit.
         assert!(m.vertices.iter().all(|v| (v.data >> 11) & 3 == 3));
+    }
+
+    #[test]
+    fn tall_grass_is_blades_and_does_not_hide_the_ground() {
+        let mut w = World::new(1, 1);
+        let mut c = Chunk::default();
+        c.set(5, 5, 5, GRASS);
+        c.set(5, 6, 5, TALL_GRASS);
+        w.chunks.insert(IVec3::ZERO, c);
+        let m = build(&w, IVec3::ZERO);
+        // Six faces for the grass block, including its top under the blades.
+        let blocks = m
+            .vertices
+            .iter()
+            .filter(|v| (v.data >> 3) & 255 == GRASS as u32)
+            .count();
+        assert_eq!(blocks, 24);
+        let blades = m
+            .vertices
+            .iter()
+            .filter(|v| (v.data >> 3) & 255 == TALL_GRASS as u32)
+            .count();
+        assert_eq!(blades, 3 * BLADES as usize);
     }
 
     #[test]

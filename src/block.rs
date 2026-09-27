@@ -33,6 +33,16 @@ pub const DAISY: Block = 16;
 /// The yellow heart of a daisy.
 pub const DAISY_HEART: Block = 17;
 
+// Built structures.
+/// Dressed stone laid in courses: bridges, towers, castle walls, plinths.
+pub const MASONRY: Block = 18;
+/// Lime plaster between the timbers of a cottage wall.
+pub const PLASTER: Block = 19;
+/// Slate and shingle roofing.
+pub const ROOF: Block = 20;
+/// A lit window; glows warm from dusk on.
+pub const WINDOW: Block = 21;
+
 /// Materials the player can place, in hotbar order (keys 1..).
 pub const PLACEABLE: [Block; 8] = [STONE, DIRT, GRASS, SAND, GRAVEL, WOOD, PLANKS, SNOW];
 
@@ -52,6 +62,10 @@ pub fn name(b: Block) -> &'static str {
         PATH => "path",
         LANTERN => "lantern",
         TALL_GRASS => "tall grass",
+        MASONRY => "masonry",
+        PLASTER => "plaster",
+        ROOF => "roof",
+        WINDOW => "window",
         POST => "post",
         _ => "unknown",
     }

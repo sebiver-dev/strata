@@ -105,7 +105,7 @@ impl FarField {
 }
 
 /// Emits one face of an axis-aligned box (used for flat water).
-fn face(verts: &mut Vec<Vertex>, idx: &mut Vec<u32>, lo: Vec3, hi: Vec3, fi: usize, mat: Block) {
+pub(crate) fn face(verts: &mut Vec<Vertex>, idx: &mut Vec<u32>, lo: Vec3, hi: Vec3, fi: usize, mat: Block) {
     let f = &FACES[fi];
     let size = hi - lo;
     let (n, u, v) = (f.n.as_vec3(), f.u.as_vec3(), f.v.as_vec3());
@@ -125,7 +125,14 @@ fn face(verts: &mut Vec<Vertex>, idx: &mut Vec<u32>, lo: Vec3, hi: Vec3, fi: usi
 /// (x and z), following `profile` as (height, radius) pairs from bottom to top.
 /// `wobble` gives each ring a slightly irregular outline so crowns do not look
 /// turned on a lathe.
-fn revolve(out: &mut MeshData, centre: Vec2, profile: &[(f32, f32)], segments: u32, mat: Block, wobble: u32) {
+pub(crate) fn revolve(
+    out: &mut MeshData,
+    centre: Vec2,
+    profile: &[(f32, f32)],
+    segments: u32,
+    mat: Block,
+    wobble: u32,
+) {
     let rings = profile.len();
     let start = out.vertices.len() as u32;
     for (r, &(y, radius)) in profile.iter().enumerate() {
@@ -278,6 +285,12 @@ pub fn build_tile(terrain: &Terrain, tile: IVec2, level: u8) -> MeshData {
                 let lo = Vec3::new(origin.x + i as f32 * cell, top - 1.0, origin.y + j as f32 * cell);
                 let hi = Vec3::new(lo.x + cell, level - 0.06, lo.z + cell);
                 face(&mut out.water_vertices, &mut out.water_indices, lo, hi, 2, WATER);
+                // Where the next cell downstream sits a fall lower, the water pours over.
+                let below = water_level(cx, cz + cell);
+                if below < level && h(i, j + 1).min(h(i + 1, j + 1)) < below {
+                    let lo = Vec3::new(lo.x, below - 0.06, hi.z);
+                    face(&mut out.water_vertices, &mut out.water_indices, lo, hi, 4, WATER);
+                }
             }
         }
     }
@@ -335,6 +348,7 @@ pub fn build_tile(terrain: &Terrain, tile: IVec2, level: u8) -> MeshData {
             }
         }
     }
+    terrain.structures.far(&mut out, origin, origin + TILE_M);
     out
 }
 

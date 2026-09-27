@@ -4,6 +4,7 @@
 use crate::block::*;
 use crate::chunk::{local_index, Chunk, CHUNK, CHUNK_VOLUME};
 use crate::noise::{fbm2, hash2, ridged2, unit, value3};
+use crate::structures::Structures;
 use glam::{IVec2, IVec3, Vec3};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,27 +15,28 @@ pub const WORLD_SIZE_M: f32 = 2048.0;
 pub const WORLD_CHUNKS_XZ: i32 = (WORLD_SIZE_M / VOXEL_SIZE) as i32 / CHUNK;
 /// Vertical extent in chunks (128 m of height).
 pub const WORLD_CHUNKS_Y: i32 = 8;
-/// Height of the river and lake surfaces in metres at the bottom of the
-/// valley; upstream the river sits higher, one step per fall.
+/// Height of the river and lake surfaces in metres along the home reach,
+/// the calm stretch around spawn where the village stands. Upstream the
+/// river sits higher, one step per fall, and downstream lower.
 pub const WATER_LEVEL_M: f32 = 24.5;
+/// The home reach holds this Z (metres).
+const HOME_Z_M: f32 = WORLD_SIZE_M * 0.5;
 /// Where the river drops as it runs towards +Z: the Z (metres) of each fall's
-/// lip and the drop in metres (whole voxels). A few small drops close together
-/// make a cascade. Keep in step with FALLS in world.wgsl.
-pub const FALLS: [(f32, f32); 10] = [
-    (380.0, 1.0),
-    (388.0, 1.0),
-    (396.0, 1.5),
-    (690.0, 4.0),
-    (1290.0, 1.0),
-    (1297.0, 1.0),
-    (1304.0, 1.0),
-    (1540.0, 6.0),
-    (1790.0, 1.5),
-    (1798.0, 1.5),
+/// lip, the drop in metres (whole voxels), and how many metres the valley floor
+/// takes to follow it down (short makes a cliff). A few small drops close
+/// together make a cascade. Keep Z and drop in step with fall() in world.wgsl.
+pub const FALLS: [(f32, f32, f32); 10] = [
+    (380.0, 1.0, 50.0),
+    (388.0, 1.0, 50.0),
+    (396.0, 1.5, 50.0),
+    (690.0, 8.0, 6.0),
+    (1290.0, 1.0, 50.0),
+    (1297.0, 1.0, 50.0),
+    (1304.0, 1.0, 50.0),
+    (1540.0, 4.0, 60.0),
+    (1790.0, 1.5, 50.0),
+    (1798.0, 1.5, 50.0),
 ];
-/// The valley floor drops over this many metres below each fall, so the
-/// water leaves the fall through a short gorge.
-const FALL_GORGE_M: f32 = 70.0;
 
 // Trees are sized like real ones (broadleaf 9 to 14 m, conifers 15 to 23 m)
 // so a 1.75 m player reads at the right scale against them.
@@ -63,30 +65,41 @@ pub fn fall_z(z0: f32, x_m: f32) -> f32 {
     z0 + 3.0 * (x_m * 0.21 + z0 * 0.01).sin()
 }
 
+/// How far below the home reach the river ends up after the falls downstream of it.
+fn drop_below_home() -> f32 {
+    FALLS.iter().filter(|f| f.0 > HOME_Z_M).map(|f| f.1).sum()
+}
+
 /// Height of still water (river and lakes) at a point, in metres.
 pub fn water_level(x_m: f32, z_m: f32) -> f32 {
-    WATER_LEVEL_M
+    WATER_LEVEL_M - drop_below_home()
         + FALLS
             .iter()
-            .filter(|(z0, _)| z_m < fall_z(*z0, x_m))
-            .map(|(_, d)| d)
+            .filter(|f| z_m < fall_z(f.0, x_m))
+            .map(|f| f.1)
             .sum::<f32>()
 }
 
-/// How far the valley floor is raised at a given Z so it keeps above the
-/// river's steps: it follows each fall down over a short gorge.
-fn floor_rise(z_m: f32) -> f32 {
+/// How far the valley floor is raised (or lowered) at a point so it keeps
+/// above the river's steps: it follows each fall down just below the lip. A
+/// fall that makes a cliff still lets a road ramp down beside it.
+fn floor_rise(z_m: f32, road_m: f32) -> f32 {
+    let ramp = 1.0 - smoothstep(6.0, 30.0, road_m);
     FALLS
         .iter()
-        .map(|(z0, d)| d * (1.0 - smoothstep(z0 + 4.0, z0 + 4.0 + FALL_GORGE_M, z_m)))
-        .sum()
+        .map(|&(z0, d, len)| {
+            let len = len + (60.0 - len).max(0.0) * ramp;
+            d * (1.0 - smoothstep(z0 + 1.0, z0 + 1.0 + len, z_m))
+        })
+        .sum::<f32>()
+        - drop_below_home()
 }
 
 /// Distance (metres) downstream of the nearest fall's lip, if within `reach`.
 pub fn below_fall(x_m: f32, z_m: f32, reach: f32) -> Option<f32> {
     FALLS
         .iter()
-        .map(|(z0, _)| z_m - fall_z(*z0, x_m))
+        .map(|f| z_m - fall_z(f.0, x_m))
         .filter(|d| (0.0..reach).contains(d))
         .reduce(f32::min)
 }
@@ -113,15 +126,20 @@ struct Tree {
 
 pub struct Terrain {
     pub seed: u32,
+    /// Bridge, cottages, fences, watchtower and castle.
+    pub structures: Structures,
     columns: HashMap<IVec2, Arc<Vec<ColumnInfo>>>,
 }
 
 impl Terrain {
     pub fn new(seed: u32) -> Self {
-        Self {
+        let mut t = Self {
             seed,
+            structures: Structures::default(),
             columns: HashMap::new(),
-        }
+        };
+        t.structures = Structures::plan(&t);
+        t
     }
 
     /// X coordinate (metres) of the river's centre line at a given Z.
@@ -218,7 +236,7 @@ impl Terrain {
         let mut h = floor + hills * valley.sqrt() + mountains * valley.powf(1.5) + edge_rise;
         // The valley floor climbs with the river's steps; the mountains far from
         // it barely need to, and must stay under the sky limit.
-        h += floor_rise(z_m) * (1.0 - 0.85 * valley);
+        h += floor_rise(z_m, self.road_distance(x_m, z_m)) * (1.0 - 0.85 * valley);
 
         let channel = 1.0 - smoothstep(7.0, 17.0, d);
         let bed = water_level(x_m, z_m) - 2.8 + 0.8 * fbm2(s.wrapping_add(6), x_m / 12.0, z_m / 12.0, 2);
@@ -238,7 +256,10 @@ impl Terrain {
         let snow_line = 84.0 + 8.0 * fbm2(self.seed.wrapping_add(7), x_m / 40.0, z_m / 40.0, 2);
 
         let water = water_level(x_m, z_m);
-        let (surface, subsurface) = if h < water + 1.0 {
+        let (surface, subsurface) = if slope > 1.3 && h > water - 1.0 {
+            // Steep banks, such as the cliffs beside a fall, are bare rock.
+            (STONE, STONE)
+        } else if h < water + 1.0 {
             if channel > 0.4 {
                 (GRAVEL, GRAVEL)
             } else {
@@ -259,7 +280,7 @@ impl Terrain {
                 (x_m * 2.0) as i32,
                 (z_m * 2.0) as i32,
             ));
-            d < ROAD_HALF_WIDTH_M + 0.5 * fray
+            d < ROAD_HALF_WIDTH_M + 0.5 * fray || self.structures.path_at(self, x_m, z_m)
         } {
             (PATH, DIRT)
         } else {
@@ -307,8 +328,8 @@ impl Terrain {
         if info.surface != GRASS || info.height_m < water_level(xm, zm) + 1.5 || info.height_m > 78.0 {
             return None;
         }
-        // Keep roads clear of trunks.
-        if self.road_distance(xm, zm) < 5.0 {
+        // Keep roads and buildings clear of trunks.
+        if self.road_distance(xm, zm) < 5.0 || self.structures.blocks_tree(xm, zm) {
             return None;
         }
         let conifer = info.height_m > 44.0 || unit(h.rotate_left(5)) < 0.25;
@@ -507,9 +528,11 @@ impl Terrain {
         let tree_top = max_h + TREE_MAX_HEIGHT_M;
         let (ox, oz) = (origin.x as f32 * VOXEL_SIZE, origin.z as f32 * VOXEL_SIZE);
         let side = CHUNK as f32 * VOXEL_SIZE;
+        let lo_m = origin.as_vec3() * VOXEL_SIZE;
+        let built = self.structures.touches(lo_m, lo_m + side);
         // The fall lip bows by a few metres, so look a little upstream for the highest water.
         let top_water = water_level(ox, oz - 4.0).max(water_level(ox + side, oz - 4.0));
-        if chunk_bottom_m > tree_top.max(top_water) {
+        if chunk_bottom_m > tree_top.max(top_water) && !built {
             return Chunk::Uniform(AIR);
         }
 
@@ -520,7 +543,14 @@ impl Terrain {
                 let col = cols[(z * CHUNK + x) as usize];
                 let wx = origin.x + x;
                 let wz = origin.z + z;
-                let water = water_level((wx as f32 + 0.5) * VOXEL_SIZE, (wz as f32 + 0.5) * VOXEL_SIZE);
+                let (xm, zm) = ((wx as f32 + 0.5) * VOXEL_SIZE, (wz as f32 + 0.5) * VOXEL_SIZE);
+                let mut water = water_level(xm, zm);
+                // Just below a fall's lip the upper reach pours over in a
+                // curtain that stands on the pool below.
+                let upper = water_level(xm, zm - VOXEL_SIZE);
+                if upper > water && self.height_at(xm, zm - VOXEL_SIZE).0 < upper - VOXEL_SIZE {
+                    water = upper;
+                }
                 for y in 0..CHUNK {
                     let wy = origin.y + y;
                     let ym = (wy as f32 + 0.5) * VOXEL_SIZE;
@@ -577,6 +607,11 @@ impl Terrain {
             for (base, towards) in self.lanterns_in(ox - m, ox + side + m, oz - m, oz + side + m) {
                 stamp_lantern(base, towards, origin, &mut data);
             }
+        }
+
+        if built {
+            self.structures
+                .stamp(origin, |x, z| cols[(z * CHUNK + x) as usize].height_m, &mut data);
         }
 
         Chunk::from_dense(data)
@@ -752,7 +787,7 @@ mod tests {
     #[test]
     fn river_steps_down_at_each_fall() {
         let mut t = Terrain::new(20260927);
-        for (z0, drop) in FALLS {
+        for (z0, drop, _) in FALLS {
             let x = t.river_x(z0);
             let lip = fall_z(z0, x);
             let (above, below) = (water_level(x, lip - 1.0), water_level(x, lip + 1.0));
@@ -776,8 +811,18 @@ mod tests {
                 assert!(wet >= 8, "fall at {z0}, side {side}: {wet} water columns");
             }
         }
-        // The water ends at the base level downstream of the last fall.
-        assert_eq!(water_level(1000.0, 2000.0), WATER_LEVEL_M);
+        // The home reach, where the village stands, is at the base level.
+        assert_eq!(water_level(t.river_x(HOME_Z_M), HOME_Z_M), WATER_LEVEL_M);
+    }
+
+    #[test]
+    fn shader_knows_the_falls() {
+        let wgsl = include_str!("shaders/world.wgsl");
+        for (z0, drop, _) in FALLS {
+            assert!(wgsl.contains(&format!("vec2({z0:.1}, {drop:.1})")), "fall at {z0}");
+        }
+        assert!(wgsl.contains(&format!("const WATER_LEVEL: f32 = {WATER_LEVEL_M:.1};")));
+        assert!(wgsl.contains(&format!("const HOME_Z: f32 = {HOME_Z_M:.1};")));
     }
 
     #[test]

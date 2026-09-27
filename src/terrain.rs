@@ -4,7 +4,7 @@
 use crate::block::*;
 use crate::chunk::{local_index, Chunk, CHUNK, CHUNK_VOLUME};
 use crate::noise::{fbm2, hash2, ridged2, unit, value3};
-use glam::{IVec2, IVec3};
+use glam::{IVec2, IVec3, Vec3};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -17,7 +17,8 @@ pub const WORLD_CHUNKS_Y: i32 = 8;
 /// Height of the river and lake surfaces in metres.
 pub const WATER_LEVEL_M: f32 = 24.5;
 
-const TREE_CELL_M: f32 = 7.0;
+/// Trees sit on a jittered grid with this spacing in metres.
+pub const TREE_CELL_M: f32 = 7.0;
 const TREE_REACH_M: f32 = 4.5;
 
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
@@ -25,11 +26,12 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// What an untouched column of terrain looks like from above.
 #[derive(Clone, Copy)]
-struct ColumnInfo {
-    height_m: f32,
-    surface: Block,
-    subsurface: Block,
+pub struct ColumnInfo {
+    pub height_m: f32,
+    pub surface: Block,
+    pub subsurface: Block,
 }
 
 struct Tree {
@@ -86,7 +88,7 @@ impl Terrain {
         )
     }
 
-    fn column_info(&self, x_m: f32, z_m: f32) -> ColumnInfo {
+    pub fn column_info(&self, x_m: f32, z_m: f32) -> ColumnInfo {
         let (h, channel) = self.height_at(x_m, z_m);
         let (hx, _) = self.height_at(x_m + 1.0, z_m);
         let (hz, _) = self.height_at(x_m, z_m + 1.0);
@@ -210,6 +212,32 @@ impl Terrain {
                 put(IVec3::new(tree.base.x + dx - 1, y, tree.base.z + dz - 1), WOOD, true);
             }
         }
+    }
+
+    /// Rough boxes (min, max in metres) around the canopy and trunk of the tree in a
+    /// tree-grid cell, if it has one. Used to draw forests far away.
+    pub fn tree_boxes(&self, gx: i32, gz: i32) -> Option<[(Vec3, Vec3); 2]> {
+        let t = self.tree_in_cell(gx, gz)?;
+        let r = t.canopy_r / VOXEL_SIZE;
+        let top = (t.base.y + t.trunk_voxels) as f32;
+        let (cx, cz) = (t.base.x as f32, t.base.z as f32);
+        let (canopy_lo, canopy_hi) = if t.conifer {
+            let y0 = (t.base.y + t.trunk_voxels / 3) as f32;
+            let h = r * 0.62;
+            (Vec3::new(cx - h, y0, cz - h), Vec3::new(cx + h, top + 4.0, cz + h))
+        } else {
+            let (h, v) = (r * 0.86, r / 1.25 * 0.86);
+            (
+                Vec3::new(cx - h, top + 0.5 - v, cz - h),
+                Vec3::new(cx + h, top + 0.5 + v, cz + h),
+            )
+        };
+        let trunk_lo = Vec3::new(cx - 1.0, t.base.y as f32, cz - 1.0);
+        let trunk_hi = Vec3::new(cx + 1.0, canopy_lo.y, cz + 1.0);
+        Some([
+            (canopy_lo * VOXEL_SIZE, canopy_hi * VOXEL_SIZE),
+            (trunk_lo * VOXEL_SIZE, trunk_hi * VOXEL_SIZE),
+        ])
     }
 
     /// Generates the voxels of one chunk.

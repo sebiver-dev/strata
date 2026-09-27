@@ -2,8 +2,9 @@
 //! crosshair overlay. Runs on Vulkan, Metal, DirectX 12 and browser WebGPU.
 
 use crate::mesh::{MeshData, Vertex};
+use crate::terrain::WORLD_CHUNKS_XZ;
 use bytemuck::{Pod, Zeroable};
-use glam::{IVec3, Mat4, Vec3, Vec4};
+use glam::{IVec2, IVec3, Mat4, Vec3, Vec4};
 use std::collections::HashMap;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -40,12 +41,44 @@ pub struct Renderer {
     sky: wgpu::RenderPipeline,
     terrain: wgpu::RenderPipeline,
     water: wgpu::RenderPipeline,
+    far_terrain: wgpu::RenderPipeline,
+    far_water: wgpu::RenderPipeline,
     overlay: wgpu::RenderPipeline,
     globals: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     meshes: HashMap<IVec3, GpuMesh>,
+    far_meshes: HashMap<IVec2, GpuMesh>,
+    /// One texel per chunk column of the world, non-zero where the column's
+    /// voxel meshes are drawn so far tiles must stay hidden there.
+    near_mask: wgpu::Texture,
     pub adapter_name: String,
     pub triangles_drawn: u32,
+    pub far_triangles_drawn: u32,
+}
+
+fn make_mesh(device: &wgpu::Device, mesh: &MeshData, min: Vec3, max: Vec3) -> GpuMesh {
+    let make = |v: &[Vertex], i: &[u32]| {
+        if i.is_empty() {
+            return None;
+        }
+        let vb = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("mesh vertices"),
+            contents: bytemuck::cast_slice(v),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let ib = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("mesh indices"),
+            contents: bytemuck::cast_slice(i),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        Some((vb, ib, i.len() as u32))
+    };
+    GpuMesh {
+        buffers: make(&mesh.vertices, &mesh.indices),
+        water: make(&mesh.water_vertices, &mesh.water_indices),
+        min,
+        max,
+    }
 }
 
 fn create_depth(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
@@ -91,6 +124,8 @@ impl Renderer {
             .await
             .map_err(|e| e.to_string())?;
 
+        device.set_device_lost_callback(|reason, message| log::error!("GPU device lost ({reason:?}): {message}"));
+
         let caps = surface.get_capabilities(&adapter);
         let format = caps
             .formats
@@ -117,26 +152,61 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let side = WORLD_CHUNKS_XZ as u32;
+        let near_mask = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("near mask"),
+            size: wgpu::Extent3d {
+                width: side,
+                height: side,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Uint,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("globals"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("globals"),
             layout: &bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: globals.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: globals.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(
+                        &near_mask.create_view(&wgpu::TextureViewDescriptor::default()),
+                    ),
+                },
+            ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("world"),
@@ -206,10 +276,30 @@ impl Renderer {
             Greater,
             Some(wgpu::Face::Back),
         );
+        let far_terrain = pipeline(
+            "far terrain",
+            "vs_world",
+            "fs_far_terrain",
+            &[Some(vertex_layout.clone())],
+            None,
+            true,
+            Greater,
+            Some(wgpu::Face::Back),
+        );
         let water = pipeline(
             "water",
             "vs_world",
             "fs_water",
+            &[Some(vertex_layout.clone())],
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+            false,
+            GreaterEqual,
+            None,
+        );
+        let far_water = pipeline(
+            "far water",
+            "vs_world",
+            "fs_far_water",
             &[Some(vertex_layout)],
             Some(wgpu::BlendState::ALPHA_BLENDING),
             false,
@@ -238,12 +328,17 @@ impl Renderer {
             sky,
             terrain,
             water,
+            far_terrain,
+            far_water,
             overlay,
             globals,
             bind_group,
             meshes: HashMap::new(),
+            far_meshes: HashMap::new(),
+            near_mask,
             adapter_name,
             triangles_drawn: 0,
+            far_triangles_drawn: 0,
         })
     }
 
@@ -270,31 +365,36 @@ impl Renderer {
             self.meshes.remove(&cpos);
             return;
         }
-        let make = |v: &[Vertex], i: &[u32]| {
-            if i.is_empty() {
-                return None;
-            }
-            let vb = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("chunk vertices"),
-                contents: bytemuck::cast_slice(v),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-            let ib = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("chunk indices"),
-                contents: bytemuck::cast_slice(i),
-                usage: wgpu::BufferUsages::INDEX,
-            });
-            Some((vb, ib, i.len() as u32))
-        };
         let size = crate::chunk::CHUNK as f32 * crate::block::VOXEL_SIZE;
         let min = cpos.as_vec3() * size;
-        self.meshes.insert(
-            cpos,
-            GpuMesh {
-                buffers: make(&mesh.vertices, &mesh.indices),
-                water: make(&mesh.water_vertices, &mesh.water_indices),
-                min,
-                max: min + Vec3::splat(size),
+        let gpu = make_mesh(&self.device, mesh, min, min + Vec3::splat(size));
+        self.meshes.insert(cpos, gpu);
+    }
+
+    /// Replaces the mesh of one far tile.
+    pub fn upload_far(&mut self, tile: IVec2, mesh: &MeshData) {
+        let size = crate::far::TILE_M;
+        let top = crate::terrain::WORLD_CHUNKS_Y as f32 * crate::chunk::CHUNK as f32 * crate::block::VOXEL_SIZE;
+        let min = Vec3::new(tile.x as f32 * size, 0.0, tile.y as f32 * size);
+        let gpu = make_mesh(&self.device, mesh, min, min + Vec3::new(size, top, size));
+        self.far_meshes.insert(tile, gpu);
+    }
+
+    /// Marks which chunk columns are covered by voxel meshes (one byte per column, row-major in z).
+    pub fn set_near_mask(&mut self, mask: &[u8]) {
+        let side = WORLD_CHUNKS_XZ as u32;
+        self.queue.write_texture(
+            self.near_mask.as_image_copy(),
+            mask,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(side),
+                rows_per_image: Some(side),
+            },
+            wgpu::Extent3d {
+                width: side,
+                height: side,
+                depth_or_array_layers: 1,
             },
         );
     }
@@ -325,9 +425,15 @@ impl Renderer {
             .values()
             .filter(|m| aabb_visible(&planes, m.min, m.max))
             .collect();
+        let far_visible: Vec<&GpuMesh> = self
+            .far_meshes
+            .values()
+            .filter(|m| aabb_visible(&planes, m.min, m.max))
+            .collect();
 
         let mut encoder = self.device.create_command_encoder(&Default::default());
         let mut triangles = 0;
+        let mut far_triangles = 0;
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("world"),
@@ -366,6 +472,25 @@ impl Renderer {
                     triangles += n / 3;
                 }
             }
+            pass.set_pipeline(&self.far_terrain);
+            for m in &far_visible {
+                if let Some((vb, ib, n)) = &m.buffers {
+                    pass.set_vertex_buffer(0, vb.slice(..));
+                    pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..*n, 0, 0..1);
+                    far_triangles += n / 3;
+                }
+            }
+            // Water blends, so the far water goes down before the near water in front of it.
+            pass.set_pipeline(&self.far_water);
+            for m in &far_visible {
+                if let Some((vb, ib, n)) = &m.water {
+                    pass.set_vertex_buffer(0, vb.slice(..));
+                    pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..*n, 0, 0..1);
+                    far_triangles += n / 3;
+                }
+            }
             pass.set_pipeline(&self.water);
             for m in &visible {
                 if let Some((vb, ib, n)) = &m.water {
@@ -379,6 +504,7 @@ impl Renderer {
             pass.draw(0..3, 0..1);
         }
         self.triangles_drawn = triangles;
+        self.far_triangles_drawn = far_triangles;
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
     }

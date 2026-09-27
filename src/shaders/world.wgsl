@@ -16,8 +16,11 @@ struct Globals {
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
+// One texel per 16 m chunk column, non-zero where voxel meshes are drawn.
+@group(0) @binding(1) var near_mask: texture_2d<u32>;
 
 const VOXEL: f32 = 0.5;
+const CHUNK_M: f32 = 16.0;
 
 fn hash3(p: vec3<f32>) -> f32 {
     var q = fract(p * vec3<f32>(0.1031, 0.1030, 0.0973));
@@ -89,8 +92,10 @@ fn finish(c: vec3<f32>) -> vec3<f32> {
 
 fn material_color(mat: u32, p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     let cell = floor(p / VOXEL + n * 0.01 - n * 0.5);
-    let jitter = hash3(cell) - 0.5;
-    let fine = fbm(p * 3.1);
+    // Per-voxel and fine detail shimmer at a distance, so it fades out there.
+    let calm = smoothstep(120.0, 500.0, distance(p, g.camera_pos.xyz));
+    let jitter = (hash3(cell) - 0.5) * (1.0 - calm);
+    let fine = mix(fbm(p * 3.1), 0.5, calm);
     let broad = fbm(p * 0.21);
     var c = vec3(1.0, 0.0, 1.0);
     switch mat {
@@ -143,8 +148,31 @@ fn vs_world(@location(0) pos: vec3<f32>, @location(1) data: u32) -> VOut {
     return o;
 }
 
+// True where a far-terrain fragment lies over a chunk column drawn in full voxels.
+// Walls are tested just behind their face so they belong to the cell they bound.
+fn under_near(p: vec3<f32>, n: vec3<f32>) -> bool {
+    let c = vec2<i32>(floor((p.xz - n.xz * 0.01) / CHUNK_M));
+    let size = vec2<i32>(textureDimensions(near_mask));
+    if (any(c < vec2(0)) || any(c >= size)) {
+        return false;
+    }
+    return textureLoad(near_mask, c, 0).r != 0u;
+}
+
 @fragment
 fn fs_terrain(i: VOut) -> @location(0) vec4<f32> {
+    return shade_terrain(i);
+}
+
+@fragment
+fn fs_far_terrain(i: VOut) -> @location(0) vec4<f32> {
+    if (under_near(i.world, NORMALS[i.info & 7u])) {
+        discard;
+    }
+    return shade_terrain(i);
+}
+
+fn shade_terrain(i: VOut) -> vec4<f32> {
     let n = NORMALS[i.info & 7u];
     let mat = (i.info >> 3u) & 255u;
     let base = material_color(mat, i.world, n);
@@ -174,6 +202,18 @@ fn fs_terrain(i: VOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_water(i: VOut) -> @location(0) vec4<f32> {
+    return shade_water(i);
+}
+
+@fragment
+fn fs_far_water(i: VOut) -> @location(0) vec4<f32> {
+    if (under_near(i.world, vec3(0.0))) {
+        discard;
+    }
+    return shade_water(i);
+}
+
+fn shade_water(i: VOut) -> vec4<f32> {
     let t = g.sun_dir.w;
     let p = i.world;
     var n = NORMALS[i.info & 7u];

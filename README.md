@@ -16,6 +16,10 @@ depends on:
   collapse to a single value when uniform.
 - Chunks stream in and out around the player within a per-frame time budget,
   so loading never stalls a frame.
+- The rest of the valley, out to the snow-capped rim 2 km away, is drawn as a
+  far field: blocky columns built from the terrain's height function in 64 m
+  tiles, with 2, 4 or 8 m cells depending on distance and box-shaped forests.
+  The shader hides far tiles wherever the full voxel meshes are drawn.
 - Meshing emits only visible faces, with per-corner ambient occlusion.
 - A wgpu renderer with a procedural sky, filmic tone mapping, distance fog,
   animated translucent water and textureless procedural materials. It uses
@@ -66,6 +70,7 @@ python3 -m http.server -d web 8080                  # then open http://localhost
 | `src/chunk.rs` | 32³ voxel chunks with uniform-chunk compression |
 | `src/world.rs` | Loaded chunks, streaming, edits and voxel ray casts |
 | `src/mesh.rs` | Face-culled meshing with ambient occlusion |
+| `src/far.rs` | Far-field tiles and their levels of detail |
 | `src/player.rs` | Movement and collision |
 | `src/renderer.rs` | wgpu setup, pipelines, per-chunk buffers, culling |
 | `src/shaders/world.wgsl` | Sky, procedural materials, water and crosshair |
@@ -74,14 +79,14 @@ python3 -m http.server -d web 8080                  # then open http://localhost
 | `src/web.rs` | Browser entry point |
 
 `cargo run --release --example worldgen_bench` reports how long generating
-and meshing the area around spawn takes.
+and meshing the area around spawn takes, and how long the far field takes.
+
+![The whole valley from above, voxels near and far field beyond](docs/far-field.png)
 
 ## Next steps
 
-1. Far-field level of detail, so the whole valley is visible without
-   meshing every chunk at full resolution.
-2. Generation and meshing on worker threads. Browsers need cross-origin
+1. Generation and meshing on worker threads. Browsers need cross-origin
    isolation headers for this.
-3. Flowing water that pools, floods and can be dammed.
-4. A day cycle, weather and seasons.
-5. Co-op: a second player joins from a link and sees every edit live.
+2. Flowing water that pools, floods and can be dammed.
+3. A day cycle, weather and seasons.
+4. Co-op: a second player joins from a link and sees every edit live.

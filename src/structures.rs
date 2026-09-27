@@ -9,12 +9,15 @@
 //! where there are no voxels, each is drawn as a few simple shapes.
 
 use crate::block::*;
-use crate::chunk::{local_index, CHUNK, CHUNK_VOLUME};
+use crate::chunk::{chunk_of, local_index, CHUNK, CHUNK_VOLUME};
+use crate::cottage::Cottage;
 use crate::far::{face, revolve};
 use crate::mesh::{smooth_data, MeshData, Vertex};
+use crate::model;
 use crate::noise::{hash2, unit};
 use crate::terrain::{Terrain, WATER_LEVEL_M};
 use glam::{IVec3, Vec2, Vec3};
+use std::collections::HashMap;
 
 /// Outer half-width of the bridge, parapets included.
 const BRIDGE_HALF_W: f32 = 2.5;
@@ -30,6 +33,8 @@ const BRIDGE_FLAT: f32 = 14.0;
 const BRIDGE_RAMP: f32 = 0.3;
 /// Fences stand this far from the road's centre line.
 const FENCE_OFFSET_M: f32 = 3.6;
+/// Distance between fence posts.
+const FENCE_POST_SPACING: f32 = 2.4;
 
 /// Snaps a coordinate so a span of `2 * half` metres covers whole voxels.
 fn snap(x: f32, half: f32) -> f32 {
@@ -175,298 +180,6 @@ impl Bridge {
                 Vec3::new(x + 1.0, self.deck, self.z + w),
                 MASONRY,
             );
-        }
-    }
-}
-
-/// A timber-framed cottage with lime plaster, a steep roof and warm windows.
-#[derive(Clone, Debug)]
-pub struct Cottage {
-    pub c: Vec2,
-    /// Whether the ridge runs along X (otherwise along Z).
-    pub along_x: bool,
-    pub half_len: f32,
-    pub half_wid: f32,
-    /// Height of the ground floor.
-    pub floor: f32,
-    pub storeys: u8,
-    /// Which long side has the door: +1 or -1 along the across axis.
-    pub front: f32,
-    /// Metres of plank deck on stilts behind the back wall; 0 for none.
-    pub deck: f32,
-    /// Lowest ground under the cottage, where the plinth starts.
-    pub base: f32,
-    pub seed: u32,
-}
-
-/// Roofs rise one voxel per voxel across (45 degrees): an even staircase
-/// the smooth mesher turns into a clean slope and straight gable edges.
-const PITCH: f32 = 1.0;
-const EAVE: f32 = 0.5;
-const ROOF_THICK: f32 = 1.3;
-
-impl Cottage {
-    #[allow(clippy::too_many_arguments)]
-    fn plan(t: &Terrain, x: f32, z: f32, along_x: bool, storeys: u8, front: f32, deck: f32, seed: u32) -> Self {
-        let (half_len, half_wid) = if storeys > 1 { (4.0, 3.25) } else { (4.0, 2.75) };
-        let (hx, hz) = if along_x {
-            (half_len, half_wid)
-        } else {
-            (half_wid, half_len)
-        };
-        let c = Vec2::new(snap(x, hx), snap(z, hz));
-        let (lo, hi) = ground_range(t, c - Vec2::new(hx, hz), c + Vec2::new(hx, hz));
-        // Floors sit a step above the ground, never below the flood line.
-        let floor = ((hi.min(lo + 2.0) + 0.5).max(WATER_LEVEL_M + 1.5) / VOXEL_SIZE).round() * VOXEL_SIZE;
-        Cottage {
-            c,
-            along_x,
-            half_len,
-            half_wid,
-            floor,
-            storeys,
-            front,
-            deck,
-            base: lo.min(WATER_LEVEL_M - 3.0 + if deck > 0.0 { 0.0 } else { 10.0 }),
-            seed,
-        }
-    }
-
-    fn wall_height(&self) -> f32 {
-        if self.storeys > 1 {
-            5.5
-        } else {
-            3.0
-        }
-    }
-
-    fn ridge(&self) -> f32 {
-        self.floor + self.wall_height() + (self.half_wid + EAVE) * PITCH
-    }
-
-    /// Converts world X/Z to (along, across) around the centre.
-    fn local(&self, x: f32, z: f32) -> (f32, f32) {
-        let d = Vec2::new(x, z) - self.c;
-        if self.along_x {
-            (d.x, d.y)
-        } else {
-            (d.y, d.x)
-        }
-    }
-
-    fn world(&self, a: f32, b: f32) -> Vec2 {
-        if self.along_x {
-            self.c + Vec2::new(a, b)
-        } else {
-            self.c + Vec2::new(b, a)
-        }
-    }
-
-    /// Outline of the land the cottage claims, deck and yard included.
-    fn bounds(&self) -> (Vec3, Vec3) {
-        let reach_b = self.half_wid + 1.5 + self.deck;
-        let reach_a = self.half_len + 1.5;
-        let (ex, ez) = if self.along_x {
-            (reach_a, reach_b)
-        } else {
-            (reach_b, reach_a)
-        };
-        (
-            Vec3::new(self.c.x - ex, self.base - 1.5, self.c.y - ez),
-            Vec3::new(self.c.x + ex, self.ridge() + 2.0, self.c.y + ez),
-        )
-    }
-
-    fn wall(&self, a: f32, b: f32, dy: f32) -> Block {
-        let (l, w, h) = (self.half_len, self.half_wid, self.wall_height());
-        let long_face = b.abs() > w - VOXEL_SIZE;
-        let end_face = a.abs() > l - VOXEL_SIZE;
-        if !(long_face || end_face) {
-            return PLASTER;
-        }
-        if long_face && end_face {
-            return WOOD;
-        }
-        if long_face && b * self.front > 0.0 && a.abs() < 0.5 && (0.5..2.5).contains(&dy) {
-            return PLANKS;
-        }
-        if dy < 0.5 || dy >= h - VOXEL_SIZE || (self.storeys > 1 && (2.5..3.0).contains(&dy)) {
-            return WOOD;
-        }
-        let (t, half) = if long_face { (a, l) } else { (b, w) };
-        let ti = ((t + half) / VOXEL_SIZE).floor() as i32;
-        if ti % 5 == 0 {
-            return WOOD;
-        }
-        let storey_dy = if dy >= 3.0 { dy - 3.0 } else { dy };
-        let bay = ti / 5;
-        let side = if long_face { b.signum() } else { 2.0 + a.signum() };
-        let lit = unit(hash2(self.seed, bay * 4 + side as i32, (dy >= 3.0) as i32)) < 0.8;
-        let near_door = long_face && b * self.front > 0.0 && dy < 3.0 && a.abs() < 1.5;
-        if (ti % 5 == 2 || ti % 5 == 3) && (1.0..2.0).contains(&storey_dy) && lit && !near_door {
-            return WINDOW;
-        }
-        PLASTER
-    }
-
-    fn block(&self, p: Vec3, ground: f32) -> Option<Block> {
-        let (a, b) = self.local(p.x, p.z);
-        let (l, w, h) = (self.half_len, self.half_wid, self.wall_height());
-        let top = self.floor + h;
-        let r = p.y - top;
-        // Chimney through the back slope.
-        let chimney = (a - l * 0.45).abs() < 0.5 && (b + self.front * w * 0.4).abs() < 0.5;
-        if chimney && p.y >= self.floor && r < (w + EAVE) * PITCH * 0.75 + 1.0 {
-            return Some(MASONRY);
-        }
-        if a.abs() <= l + EAVE && b.abs() <= w + EAVE {
-            let rt = (w + EAVE - b.abs()) * PITCH;
-            if r < rt && r >= rt - ROOF_THICK {
-                return Some(ROOF);
-            }
-        }
-        if a.abs() <= l && b.abs() <= w && p.y >= self.floor {
-            let rt = (w + EAVE - b.abs()) * PITCH;
-            if r < 0.0 {
-                return Some(self.wall(a, b, p.y - self.floor));
-            }
-            if r < rt - ROOF_THICK {
-                // Gables carry a timber tie beam and a king post.
-                return Some(if r < VOXEL_SIZE || a.abs() > l - VOXEL_SIZE && b.abs() < VOXEL_SIZE {
-                    WOOD
-                } else {
-                    PLASTER
-                });
-            }
-        }
-        if a.abs() <= l + 0.25 && b.abs() <= w + 0.25 && p.y < self.floor {
-            return (p.y >= self.base - 1.0).then_some(MASONRY);
-        }
-        let bb = -b * self.front;
-        // A lantern on a bracket beside the door.
-        if b * self.front > w && b * self.front <= w + VOXEL_SIZE && (0.75..1.25).contains(&a) {
-            let dy = p.y - self.floor;
-            if (2.0..2.5).contains(&dy) {
-                return Some(LANTERN);
-            }
-            if (2.5..3.0).contains(&dy) {
-                return Some(WOOD);
-            }
-        }
-        if self.deck > 0.0 && bb > w && bb <= w + self.deck && a.abs() <= l + 0.5 {
-            let dy = p.y - self.floor;
-            let outer = bb > w + self.deck - VOXEL_SIZE || a.abs() > l;
-            let ai = ((a + l + 0.5) / VOXEL_SIZE).floor() as i32;
-            let post = outer && (ai % 4 == 0 || a.abs() > l || bb > w + self.deck - VOXEL_SIZE && ai == 17);
-            if (-VOXEL_SIZE..0.0).contains(&dy) {
-                return Some(PLANKS);
-            }
-            if dy < -VOXEL_SIZE {
-                let stilt = ai % 6 == 0 && (outer || (bb - w - self.deck * 0.5).abs() < 0.25);
-                return (stilt && p.y >= ground - 1.0).then_some(WOOD);
-            }
-            if outer && (1.0..1.5).contains(&dy) {
-                return Some(WOOD);
-            }
-            if outer && post && dy < 1.0 {
-                return Some(WOOD);
-            }
-            let corner = a > l && bb > w + self.deck - VOXEL_SIZE;
-            if corner && (1.5..2.0).contains(&dy) {
-                return Some(LANTERN);
-            }
-            return (dy < 3.0).then_some(AIR);
-        }
-        // Clear a small yard of grass, trees and ground above the floor.
-        let yard = a.abs() <= l + 1.5 && b.abs() <= w + 1.5;
-        (yard && p.y >= self.floor && p.y < self.ridge() + 2.0).then_some(AIR)
-    }
-
-    fn far(&self, out: &mut MeshData) {
-        let (l, w) = (self.half_len, self.half_wid);
-        let top = self.floor + self.wall_height();
-        let lo = self.world(-l, -w);
-        let hi = self.world(l, w);
-        let (lo, hi) = (lo.min(hi), lo.max(hi));
-        boxed(
-            out,
-            Vec3::new(lo.x, self.base, lo.y),
-            Vec3::new(hi.x, top, hi.y),
-            PLASTER,
-        );
-        // Roof: two sloped planes and two gable triangles.
-        let (l, w) = (l + EAVE, w + EAVE);
-        let ridge = top + w * PITCH;
-        let p = |a: f32, b: f32, y: f32| {
-            let q = self.world(a, b);
-            Vec3::new(q.x, y, q.y)
-        };
-        for s in [-1.0f32, 1.0] {
-            let quad = [
-                p(-l, s * w, top - 0.3),
-                p(l, s * w, top - 0.3),
-                p(l, 0.0, ridge),
-                p(-l, 0.0, ridge),
-            ];
-            polygon(out, &quad, ROOF);
-            polygon(
-                out,
-                &[
-                    p(s * (l - EAVE), -w + EAVE, top),
-                    p(s * (l - EAVE), w - EAVE, top),
-                    p(s * (l - EAVE), 0.0, ridge - 0.5),
-                ],
-                PLASTER,
-            );
-        }
-        // Timber sill and wall plate, and the lit windows, so the cottage still
-        // reads as a cottage (and glows at dusk) from across the valley.
-        let (l, w) = (self.half_len, self.half_wid);
-        for (y0, y1) in [(self.floor, self.floor + 0.5), (top - 0.5, top)] {
-            let (lo, hi) = (self.world(-l - 0.05, -w - 0.05), self.world(l + 0.05, w + 0.05));
-            boxed(
-                out,
-                Vec3::new(lo.x.min(hi.x), y0, lo.y.min(hi.y)),
-                Vec3::new(lo.x.max(hi.x), y1, lo.y.max(hi.y)),
-                WOOD,
-            );
-        }
-        for dy in [1.25f32, 4.25] {
-            if dy > self.wall_height() {
-                continue;
-            }
-            for (long, side) in [(true, -1.0f32), (true, 1.0), (false, -1.0), (false, 1.0)] {
-                let half = if long { l } else { w };
-                let mut t = -half + 1.5;
-                while t < half {
-                    let (a, b) = if long { (t, side * w) } else { (side * l, t) };
-                    // Sample the voxel wall so far windows match the near ones.
-                    let (sa, sb) = if long {
-                        (a, b - side * 0.25)
-                    } else {
-                        (a - side * 0.25, b)
-                    };
-                    if self.wall(sa, sb, dy) == WINDOW {
-                        let out_dir = if long {
-                            self.world(0.0, side) - self.c
-                        } else {
-                            self.world(side, 0.0) - self.c
-                        };
-                        let along = if long {
-                            self.world(1.0, 0.0) - self.c
-                        } else {
-                            self.world(0.0, 1.0) - self.c
-                        };
-                        let n = Vec3::new(out_dir.x, 0.0, out_dir.y);
-                        let u = Vec3::new(along.x, 0.0, along.y) * 0.5;
-                        let q = self.world(a, b);
-                        let c = Vec3::new(q.x, self.floor + dy + 0.25, q.y) + n * 0.03;
-                        let v = Vec3::Y * 0.5;
-                        polygon(out, &[c - u - v, c + u - v, c + u + v, c - u + v], WINDOW);
-                    }
-                    t += 2.5;
-                }
-            }
         }
     }
 }
@@ -775,7 +488,7 @@ impl Fence {
         }
     }
 
-    /// Post-and-rail: posts every two metres and a rail at hip height.
+    /// Invisible collision along the fence line; the model draws it.
     fn block(&self, p: Vec3, ground: f32) -> Option<Block> {
         if p.z < self.z0 || p.z > self.z1 {
             return None;
@@ -785,9 +498,46 @@ impl Fence {
         if (p.x - fx).abs() > 0.26 + slope * 0.6 {
             return None;
         }
-        let dy = p.y - ground;
-        let post = ((p.z / VOXEL_SIZE).floor() as i32).rem_euclid(4) == 0 && (p.x - fx).abs() <= 0.26;
-        ((0.0..1.0).contains(&dy) && post || (1.0..1.5).contains(&dy)).then_some(WOOD)
+        (0.0..1.5).contains(&(p.y - ground)).then_some(BUILT)
+    }
+
+    /// Split-rail fence: rough posts every couple of metres with two rails
+    /// between them, following the road's curve and the slope of the ground.
+    fn model(&self, t: &Terrain, out: &mut MeshData) {
+        let seed = (self.z0 * 7.0) as i32 ^ (self.side as i32 * 131);
+        let n = (((self.z1 - self.z0) / FENCE_POST_SPACING).round() as usize).max(1);
+        let step = (self.z1 - self.z0) / n as f32;
+        let foot = |k: usize| {
+            let z = self.z0 + k as f32 * step;
+            let row = (((z - self.z0) / VOXEL_SIZE) as usize).min(self.line.len() - 1);
+            let x = self.line[row].0;
+            Vec3::new(x, t.height_at(x, z).0, z)
+        };
+        let feet: Vec<Vec3> = (0..=n).map(foot).collect();
+        for (k, &f) in feet.iter().enumerate() {
+            let r = |j: i32| unit(hash2(seed as u32, k as i32, j)) - 0.5;
+            let lean = Vec3::new(r(1) * 0.08, 0.0, r(2) * 0.08);
+            let h = 1.35 + r(3) * 0.12;
+            model::beam(out, f - Vec3::Y * 0.4, f + Vec3::Y * h + lean, 0.09, WOOD);
+            // A little cap so the post top reads as cut timber.
+            model::block(
+                out,
+                f + lean + Vec3::new(-0.1, h, -0.1),
+                f + lean + Vec3::new(0.1, h + 0.04, 0.1),
+                OAK,
+            );
+        }
+        for (k, pair) in feet.windows(2).enumerate() {
+            let (a, b) = (pair[0], pair[1]);
+            for (j, y) in [0.55f32, 1.05].iter().enumerate() {
+                let r = |i: i32| unit(hash2(seed as u32 ^ 77, k as i32, i + j as i32 * 5)) - 0.5;
+                // Rails overlap the posts a little and sag or rise a hand's width.
+                let d = (b - a).normalize_or_zero() * 0.12;
+                let a1 = a - d + Vec3::new(0.0, y + r(0) * 0.06, 0.0);
+                let b1 = b + d + Vec3::new(0.0, y + r(1) * 0.06, 0.0);
+                model::beam(out, a1, b1, 0.055 + r(2) * 0.01, OAK);
+            }
+        }
     }
 }
 
@@ -804,6 +554,8 @@ pub enum Structure {
 #[derive(Default)]
 pub struct Structures {
     list: Vec<(Vec3, Vec3, Structure)>,
+    /// Authored models, cut up by the chunk each triangle's centre falls in.
+    models: HashMap<IVec3, MeshData>,
 }
 
 impl Structures {
@@ -913,7 +665,50 @@ impl Structures {
         ) {
             s.add(Structure::Castle(Castle::plan(t, c.x, c.y, seed ^ 40)));
         }
+        s.build_models(t);
         s
+    }
+
+    /// Builds the authored models and cuts them up by chunk, each triangle
+    /// going to the chunk its centre lies in.
+    fn build_models(&mut self, t: &Terrain) {
+        let mut all = MeshData::default();
+        for (_, _, st) in &self.list {
+            match st {
+                Structure::Cottage(c) => c.model(t, &mut all),
+                Structure::Fence(f) => f.model(t, &mut all),
+                _ => {}
+            }
+        }
+        let mut remap: HashMap<(IVec3, u32), u32> = HashMap::new();
+        for tri in all.indices.chunks(3) {
+            let centre = tri
+                .iter()
+                .map(|&i| Vec3::from(all.vertices[i as usize].pos))
+                .sum::<Vec3>()
+                / 3.0;
+            let cpos = chunk_of((centre / VOXEL_SIZE).floor().as_ivec3());
+            let dst = self.models.entry(cpos).or_default();
+            for &i in tri {
+                let j = *remap.entry((cpos, i)).or_insert_with(|| {
+                    dst.vertices.push(all.vertices[i as usize]);
+                    dst.vertices.len() as u32 - 1
+                });
+                dst.indices.push(j);
+            }
+        }
+    }
+
+    /// Adds the model pieces that fall in chunk `cpos`, in metres like the chunk mesh.
+    pub fn append_models(&self, cpos: IVec3, out: &mut MeshData) {
+        if let Some(m) = self.models.get(&cpos) {
+            model::append(out, m);
+        }
+    }
+
+    /// Whether any model piece falls in chunk `cpos`.
+    pub fn has_models(&self, cpos: IVec3) -> bool {
+        self.models.contains_key(&cpos)
     }
 
     fn add(&mut self, st: Structure) {
@@ -1151,41 +946,6 @@ mod tests {
         assert_eq!(t.structures.block_at(deck, 21.0), Some(MASONRY));
         let under = Vec3::new(b.centre + 0.25, WATER_LEVEL_M + 0.25, b.z + 0.25);
         assert_eq!(t.structures.block_at(under, 21.0), None);
-    }
-
-    #[test]
-    fn cottages_have_lit_windows_and_a_roof() {
-        let t = world();
-        let c = t
-            .structures
-            .iter()
-            .find_map(|s| match s {
-                Structure::Cottage(c) => Some(c.clone()),
-                _ => None,
-            })
-            .unwrap();
-        let mut windows = 0;
-        let mut roof = 0;
-        let (lo, hi) = c.bounds();
-        let mut p = lo + 0.25;
-        while p.y < hi.y {
-            p.z = lo.z + 0.25;
-            while p.z < hi.z {
-                p.x = lo.x + 0.25;
-                while p.x < hi.x {
-                    match c.block(p, c.base) {
-                        Some(WINDOW) => windows += 1,
-                        Some(ROOF) => roof += 1,
-                        _ => {}
-                    }
-                    p.x += VOXEL_SIZE;
-                }
-                p.z += VOXEL_SIZE;
-            }
-            p.y += VOXEL_SIZE;
-        }
-        assert!(windows >= 8, "{windows} window voxels");
-        assert!(roof > 100, "{roof} roof voxels");
     }
 
     #[test]

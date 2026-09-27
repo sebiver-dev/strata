@@ -777,6 +777,31 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.emit = LAMP_COLOR * pane * (0.6 + 3.4 * lamp_on()) * room * flicker;
             wettable = false;
         }
+        case 22u: { // oak: dark planed timber with fine streaky grain
+            let grain = vnoise(q * vec3(2.0, 16.0, 2.0)) + vnoise(q * vec3(16.0, 2.0, 2.0)) + vnoise(q * vec3(2.0, 2.0, 16.0));
+            let g2 = smoothstep(0.9, 2.1, grain);
+            s.albedo = mix(vec3(0.17, 0.11, 0.07), vec3(0.30, 0.20, 0.12), g2) * (0.9 + 0.15 * broad);
+            s.rough = 0.75;
+            s.height = g2 * 0.004 * d_cm;
+            wettable = false;
+        }
+        case 23u: { // boards: warm floor planks with dark seams
+            let row = p.z * 4.0;
+            let seam = smoothstep(0.03, 0.07, min(fract(row), 1.0 - fract(row)));
+            let tone = 0.85 + 0.25 * hash3(vec3(floor(row), floor(p.x / 1.7 + hash3(vec3(floor(row), 0.0, 1.0))), 0.0));
+            let grain = vnoise(vec3(p.x * 3.0, p.z * 40.0, 0.5));
+            s.albedo = vec3(0.46, 0.32, 0.19) * tone * (0.85 + 0.2 * grain) * mix(0.45, 1.0, seam);
+            s.rough = 0.7;
+            s.height = seam * 0.003;
+            wettable = false;
+        }
+        case 24u: { // cloth: red wool blanket with a soft weave
+            let weave = 0.5 + 0.25 * (sin(p.x * 180.0) + sin(p.z * 180.0 + p.y * 180.0));
+            s.albedo = vec3(0.55, 0.12, 0.09) * (0.85 + 0.2 * weave) * (0.9 + 0.1 * fine);
+            s.rough = 1.0;
+            s.sss = 0.2;
+            wettable = false;
+        }
         default: {}
     }
 

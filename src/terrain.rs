@@ -4,6 +4,7 @@
 use crate::block::*;
 use crate::chunk::{local_index, Chunk, CHUNK, CHUNK_VOLUME};
 use crate::noise::{fbm2, hash2, ridged2, unit, value3};
+use crate::structures::Structures;
 use glam::{IVec2, IVec3, Vec3};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -61,15 +62,20 @@ struct Tree {
 
 pub struct Terrain {
     pub seed: u32,
+    /// Bridge, cottages, fences, watchtower and castle.
+    pub structures: Structures,
     columns: HashMap<IVec2, Arc<Vec<ColumnInfo>>>,
 }
 
 impl Terrain {
     pub fn new(seed: u32) -> Self {
-        Self {
+        let mut t = Self {
             seed,
+            structures: Structures::default(),
             columns: HashMap::new(),
-        }
+        };
+        t.structures = Structures::plan(&t);
+        t
     }
 
     /// X coordinate (metres) of the river's centre line at a given Z.
@@ -203,7 +209,7 @@ impl Terrain {
                 (x_m * 2.0) as i32,
                 (z_m * 2.0) as i32,
             ));
-            d < ROAD_HALF_WIDTH_M + 0.5 * fray
+            d < ROAD_HALF_WIDTH_M + 0.5 * fray || self.structures.path_at(self, x_m, z_m)
         } {
             (PATH, DIRT)
         } else {
@@ -251,8 +257,8 @@ impl Terrain {
         if info.surface != GRASS || info.height_m < WATER_LEVEL_M + 1.5 || info.height_m > 78.0 {
             return None;
         }
-        // Keep roads clear of trunks.
-        if self.road_distance(xm, zm) < 5.0 {
+        // Keep roads and buildings clear of trunks.
+        if self.road_distance(xm, zm) < 5.0 || self.structures.blocks_tree(xm, zm) {
             return None;
         }
         let conifer = info.height_m > 44.0 || unit(h.rotate_left(5)) < 0.25;
@@ -446,7 +452,10 @@ impl Terrain {
         let max_h = cols.iter().map(|c| c.height_m).fold(f32::MIN, f32::max);
         let min_h = cols.iter().map(|c| c.height_m).fold(f32::MAX, f32::min);
         let tree_top = max_h + TREE_MAX_HEIGHT_M;
-        if chunk_bottom_m > tree_top.max(WATER_LEVEL_M) {
+        let side = CHUNK as f32 * VOXEL_SIZE;
+        let lo_m = origin.as_vec3() * VOXEL_SIZE;
+        let built = self.structures.touches(lo_m, lo_m + side);
+        if chunk_bottom_m > tree_top.max(WATER_LEVEL_M) && !built {
             return Chunk::Uniform(AIR);
         }
 
@@ -500,7 +509,6 @@ impl Terrain {
                 }
             }
             let (ox, oz) = (origin.x as f32 * VOXEL_SIZE, origin.z as f32 * VOXEL_SIZE);
-            let side = CHUNK as f32 * VOXEL_SIZE;
             let reach = BOULDER_MAX_R_M * 1.3;
             let cell = |m: f32| (m / BOULDER_CELL_M).floor() as i32;
             for gz in cell(oz - reach)..=cell(oz + side + reach) {
@@ -515,6 +523,11 @@ impl Terrain {
             for (base, towards) in self.lanterns_in(ox - m, ox + side + m, oz - m, oz + side + m) {
                 stamp_lantern(base, towards, origin, &mut data);
             }
+        }
+
+        if built {
+            self.structures
+                .stamp(origin, |x, z| cols[(z * CHUNK + x) as usize].height_m, &mut data);
         }
 
         Chunk::from_dense(data)

@@ -105,7 +105,7 @@ impl FarField {
 }
 
 /// Emits one face of an axis-aligned box (used for flat water).
-fn face(verts: &mut Vec<Vertex>, idx: &mut Vec<u32>, lo: Vec3, hi: Vec3, fi: usize, mat: Block) {
+pub(crate) fn face(verts: &mut Vec<Vertex>, idx: &mut Vec<u32>, lo: Vec3, hi: Vec3, fi: usize, mat: Block) {
     let f = &FACES[fi];
     let size = hi - lo;
     let (n, u, v) = (f.n.as_vec3(), f.u.as_vec3(), f.v.as_vec3());
@@ -125,7 +125,14 @@ fn face(verts: &mut Vec<Vertex>, idx: &mut Vec<u32>, lo: Vec3, hi: Vec3, fi: usi
 /// (x and z), following `profile` as (height, radius) pairs from bottom to top.
 /// `wobble` gives each ring a slightly irregular outline so crowns do not look
 /// turned on a lathe.
-fn revolve(out: &mut MeshData, centre: Vec2, profile: &[(f32, f32)], segments: u32, mat: Block, wobble: u32) {
+pub(crate) fn revolve(
+    out: &mut MeshData,
+    centre: Vec2,
+    profile: &[(f32, f32)],
+    segments: u32,
+    mat: Block,
+    wobble: u32,
+) {
     let rings = profile.len();
     let start = out.vertices.len() as u32;
     for (r, &(y, radius)) in profile.iter().enumerate() {
@@ -333,6 +340,7 @@ pub fn build_tile(terrain: &Terrain, tile: IVec2, level: u8) -> MeshData {
             }
         }
     }
+    terrain.structures.far(&mut out, origin, origin + TILE_M);
     out
 }
 

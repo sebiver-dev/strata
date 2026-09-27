@@ -129,10 +129,11 @@ impl Padded {
     }
 }
 
-/// Blocks drawn as part of the smooth surface.
+/// Blocks drawn as part of the smooth surface. Lanterns and window panes stay
+/// crisp so their glass reads as glass.
 #[inline]
 fn is_smooth(b: Block) -> bool {
-    is_solid(b) && b != LANTERN && b != POST
+    is_solid(b) && b != LANTERN && b != POST && b != WINDOW
 }
 
 pub fn build(world: &World, cpos: IVec3) -> MeshData {

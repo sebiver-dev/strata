@@ -665,21 +665,20 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.rough = mix(0.95, 0.7, stone);
             s.height = stone * smoothstep(0.0, 0.3, gap) * 0.03 * d_dm + fine * 0.008;
         }
-        case 12u: { // lantern: dark iron frame around warm glass
-            // Coordinates across the lantern body (0..1), which sits centred in its voxel
-            // 0.04..0.32 m above the floor and 0.26 m wide (see mesh.rs).
-            let m = fract(p / VOXEL) * VOXEL;
-            let f = vec3((m.x - 0.12) / 0.26, (m.y - 0.04) / 0.28, (m.z - 0.12) / 0.26);
-            let a = select(select(f.xy, f.zy, abs(n.x) > 0.5), f.xz, abs(n.y) > 0.5);
-            let edge = min(min(a.x, 1.0 - a.x), min(a.y, 1.0 - a.y));
-            let glass = smoothstep(0.08, 0.12, edge);
-            let bar = 1.0 - smoothstep(0.02, 0.04, abs(a.x - 0.5));
-            let pane = glass * (1.0 - bar) * step(abs(n.y), 0.5);
-            s.albedo = mix(vec3(0.10, 0.09, 0.08), vec3(0.9, 0.7, 0.4), pane);
-            s.rough = mix(0.5, 0.15, pane);
+        case 12u: { // lantern glass: warm light through faintly rippled panes
+            let ripple = vnoise(q * 30.0);
+            s.albedo = vec3(0.9, 0.7, 0.4);
+            s.rough = 0.15;
             s.f0 = 0.04;
             let flicker = 0.9 + 0.1 * vnoise(vec3(g.sun_dir.w * 6.0, floor(p.x), floor(p.z)));
-            s.emit = LAMP_COLOR * pane * 4.5 * flicker;
+            s.emit = LAMP_COLOR * 4.5 * flicker * (0.85 + 0.3 * ripple);
+            wettable = false;
+        }
+        case 22u: { // wrought iron: dark, a little glossy, rusty in places
+            let rust = smoothstep(0.55, 0.8, vnoise(q * 9.0));
+            s.albedo = mix(vec3(0.07, 0.065, 0.06), vec3(0.22, 0.12, 0.07), rust * 0.6);
+            s.rough = mix(0.4, 0.8, rust);
+            s.f0 = 0.25;
             wettable = false;
         }
         case 15u: { // lupin spike: packed purple florets, paler towards the tip

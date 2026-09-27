@@ -41,7 +41,6 @@ const CHUNK_M: f32 = 16.0;
 // Matches terrain::WATER_LEVEL_M.
 const WATER_LEVEL: f32 = 24.5;
 const PI: f32 = 3.14159265;
-const SUN_COLOR = vec3<f32>(1.0, 0.90, 0.74);
 
 fn hash3(p: vec3<f32>) -> f32 {
     var q = fract(p * vec3<f32>(0.1031, 0.1030, 0.0973));
@@ -89,34 +88,107 @@ fn lin(c: vec3<f32>) -> vec3<f32> {
     return pow(max(c, vec3(0.0)), vec3(2.2));
 }
 
-fn sky_color(dir: vec3<f32>) -> vec3<f32> {
+// ---------------------------------------------------------------- atmosphere
+//
+// A small analytic stand-in for a scattering sky. Sunlight loses blue on its
+// long path through the air when the sun is low, so the same sun elevation
+// drives the colour of direct light, the sky, the haze and the ambient light,
+// and they always agree with each other.
+
+// Relative extinction of sunlight per colour channel (blue is lost most).
+const RAYLEIGH = vec3<f32>(0.17, 0.40, 1.0);
+// Relative scattering that colours the sky itself.
+const SKY_SCATTER = vec3<f32>(0.10, 0.32, 1.0);
+
+// Air mass along a direction: 1 straight up, large towards the horizon.
+fn air_mass(y: f32) -> f32 {
+    return 1.0 / (max(y, 0.0) + 0.5 * exp(-max(y, 0.0) * 12.0) + 0.012);
+}
+
+// Colour and strength of direct sunlight at the ground.
+fn sun_light() -> vec3<f32> {
+    let m = air_mass(g.sun_dir.y);
+    return vec3(1.0, 0.97, 0.92) * exp(-m * RAYLEIGH * 0.16) * 3.4;
+}
+
+// Henyey-Greenstein phase function: how much light scatters towards the
+// viewer at angle `mu` (cosine) from the sun. Larger g is more forward.
+fn hg(mu: f32, gg: f32) -> f32 {
+    let d = 1.0 + gg * gg - 2.0 * gg * mu;
+    return (1.0 - gg * gg) / (4.0 * PI * pow(max(d, 1e-4), 1.5));
+}
+
+// Sky colour in a direction, without the sun disc.
+fn sky_dome(dir: vec3<f32>) -> vec3<f32> {
     let sun = normalize(g.sun_dir.xyz);
-    let h = clamp(dir.y, -1.0, 1.0);
-    let zenith = lin(vec3(0.30, 0.52, 0.86));
-    let horizon = lin(vec3(0.74, 0.83, 0.92));
-    let ground = lin(vec3(0.40, 0.44, 0.46));
-    var c = mix(horizon, zenith, pow(max(h, 0.0), 0.55));
-    c = mix(c, ground, smoothstep(0.0, -0.25, h));
-    let s = max(dot(dir, sun), 0.0);
-    c += vec3(1.0, 0.85, 0.6) * (pow(s, 8.0) * 0.25 + pow(s, 900.0) * 6.0);
+    let mu = dot(dir, sun);
+    let y = max(dir.y, 0.0);
+    let light = sun_light();
+    // Blue from above; towards the horizon the long path through the air
+    // saturates the scattering and it turns pale and warm.
+    let m = air_mass(y);
+    let depth = 1.0 - exp(-m * SKY_SCATTER * 0.30);
+    let rayleigh = depth * (0.75 * (1.0 + mu * mu));
+    // Haze from larger particles: a broad bright glow around the sun.
+    let haze = (hg(mu, 0.76) * 0.35 + hg(mu, 0.2) * 0.25) * (1.0 - exp(-m * 0.12));
+    var c = light * (rayleigh + haze * vec3(1.0, 0.92, 0.80));
+    // A little warmth soaks into the whole horizon band on the sunny side.
+    c += light * vec3(0.10, 0.06, 0.03) * exp(-y * 9.0) * (0.5 + 0.5 * mu);
+    // And the horizon itself is pale with dust and moisture.
+    c += light * vec3(0.07, 0.068, 0.065) * exp(-y * 5.0);
     return c;
 }
 
-fn underwater_color() -> vec3<f32> {
-    return lin(vec3(0.10, 0.34, 0.40));
+fn sky_color(dir: vec3<f32>) -> vec3<f32> {
+    var c = sky_dome(vec3(dir.x, max(dir.y, 0.0), dir.z));
+    // Below the horizon: the haze over distant land, darker further down.
+    c *= mix(1.0, 0.55, smoothstep(0.0, -0.3, dir.y));
+    return c;
 }
 
+// The sun disc with a darker, warmer rim.
+fn sun_disc(dir: vec3<f32>) -> vec3<f32> {
+    let mu = dot(dir, normalize(g.sun_dir.xyz));
+    let r = sqrt(max(1.0 - mu * mu, 0.0)) / 0.0085;
+    let disc = 1.0 - smoothstep(0.9, 1.0, r);
+    let limb = mix(vec3(1.0), vec3(1.0, 0.75, 0.5), r * r);
+    return sun_light() * disc * limb * 14.0 * step(0.0, mu);
+}
+
+fn underwater_color() -> vec3<f32> {
+    return lin(vec3(0.10, 0.34, 0.40)) * (sun_light().g / 3.0);
+}
+
+// Aerial perspective: air between the camera and a point dims it and adds the
+// light the air scatters towards the eye. The air is densest low in the
+// valley and thins with height, so valleys fill with soft haze and distant
+// hills turn blue, warm towards the sun.
 fn apply_fog(c: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
     let to = world - g.camera_pos.xyz;
     let dist = length(to);
     let dir = to / max(dist, 0.0001);
-    var fog = 1.0 - exp(-pow(dist / g.params.x, 2.2));
-    var fog_col = sky_color(normalize(vec3(dir.x, max(dir.y, 0.02), dir.z)));
     if (g.params.z > 0.5) {
-        fog = 1.0 - exp(-dist / 9.0);
-        fog_col = underwater_color();
+        let f = 1.0 - exp(-dist / 9.0);
+        return mix(c, underwater_color(), f);
     }
-    return mix(c, fog_col, clamp(fog, 0.0, 1.0));
+    // Density falls off exponentially above the water line; integrate it along the ray.
+    let falloff = 1.0 / 38.0;
+    let h0 = g.camera_pos.y - WATER_LEVEL;
+    let dy = to.y * falloff;
+    let base = 0.0016 * exp(-max(h0, -20.0) * falloff);
+    let integral = select((1.0 - exp(-dy)) / dy, 1.0 - 0.5 * dy, abs(dy) < 1e-3);
+    let depth = base * dist * max(integral, 0.0);
+    // Every clear day still fades the far distance into the horizon sky.
+    let far = pow(dist / g.params.x, 2.2);
+    let trans = exp(-(depth * mix(vec3(1.0), RAYLEIGH * 1.8, 0.45) + far));
+
+    let horizon_dir = normalize(vec3(dir.x, max(dir.y, 0.0) * 0.5 + 0.02, dir.z));
+    let sun = normalize(g.sun_dir.xyz);
+    let light = sun_light();
+    // In-scattered light: the horizon sky, plus a forward glow when looking towards the sun.
+    let glow = light * hg(dot(dir, sun), 0.7) * 0.5 * vec3(1.0, 0.85, 0.65);
+    let air = sky_dome(horizon_dir) * 0.95 + glow;
+    return c * trans + air * (1.0 - trans);
 }
 
 fn finish(c: vec3<f32>) -> vec3<f32> {
@@ -435,17 +507,21 @@ fn shade_terrain(i: VOut) -> vec4<f32> {
     let wrap = surf.sss * 0.6;
     let ndl = max((dot(nb, sun) + wrap) / (1.0 + wrap), 0.0);
 
+    let light = sun_light();
     let sky = 0.5 + 0.5 * nb.y;
     // Skylight also reaches the undersides of thin layers through them.
     let under = 0.35 + 0.4 * surf.sss;
-    let skylight = lin(vec3(0.62, 0.74, 0.90)) * 0.75;
-    let ambient = (skylight * (sky + (1.0 - sky) * surf.sss * 0.6) + lin(vec3(0.50, 0.52, 0.40)) * (1.0 - sky) * under) * ao;
+    // Light from the open sky: the dome's colour straight up, bluer in the
+    // shade than the warm sun. Light bounced off the sunlit ground below is warm.
+    let skylight = sky_dome(vec3(0.0, 1.0, 0.0)) * 0.8 + sky_dome(normalize(vec3(-sun.z, 0.02, sun.x))) * 0.3;
+    let bounce = light * lin(vec3(0.52, 0.47, 0.36)) * 0.16 * max(sun.y, 0.0);
+    let ambient = (skylight * (sky + (1.0 - sky) * surf.sss * 0.6) + bounce * (1.0 - sky) * under) * ao;
     // Sunlight scattered through leaves and grass, strongest when looking towards the sun.
     let through = pow(max(dot(-v, sun), 0.0), 4.0) * 1.6 + 0.35 * max(dot(-n, sun), 0.0) + 0.06;
-    let trans = surf.sss * through * mix(0.25, 1.0, sh) * lin(vec3(0.85, 0.95, 0.45));
+    let trans = surf.sss * through * mix(0.25, 1.0, sh) * lin(vec3(0.85, 0.95, 0.45)) * (light / 2.6);
 
-    var c = surf.albedo * (SUN_COLOR * 2.6 * ndl * sh + ambient * mix(0.55, 1.0, ao) + trans * ao);
-    c += SUN_COLOR * 2.6 * sh * ggx_spec(nb, v, sun, surf.rough, surf.f0);
+    var c = surf.albedo * (light * ndl * sh + ambient * mix(0.55, 1.0, ao) + trans * ao);
+    c += light * sh * ggx_spec(nb, v, sun, surf.rough, surf.f0);
     // A hint of sky reflected on glossy (wet) surfaces.
     let fres = surf.f0 + (1.0 - surf.f0) * pow(1.0 - max(dot(nb, v), 0.0), 5.0);
     let gloss = 1.0 - surf.rough;
@@ -624,7 +700,7 @@ fn shade_water(i: VOut) -> vec4<f32> {
 
     let fresnel = 0.02 + 0.98 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
     var c = mix(body, refl, fresnel * (1.0 - foam * 0.7));
-    c += SUN_COLOR * 3.0 * sh * ggx_spec(n, v, sun, 0.07, 0.02) * (1.0 - foam);
+    c += sun_light() * 1.15 * sh * ggx_spec(n, v, sun, 0.07, 0.02) * (1.0 - foam);
     return vec4(apply_fog(c, p), 1.0);
 }
 
@@ -648,7 +724,7 @@ fn vs_fullscreen(@builtin(vertex_index) vi: u32) -> SkyOut {
 fn fs_sky(i: SkyOut) -> @location(0) vec4<f32> {
     let far = g.inv_view_proj * vec4(i.ndc, 0.5, 1.0);
     let dir = normalize(far.xyz / far.w - g.camera_pos.xyz);
-    var c = sky_color(dir);
+    var c = sky_color(dir) + sun_disc(dir);
     if (g.params.z > 0.5) {
         c = underwater_color();
     }
@@ -663,6 +739,11 @@ fn fs_post(i: SkyOut) -> @location(0) vec4<f32> {
     let q = i.ndc * 0.75;
     c *= 1.0 - 0.22 * dot(q, q);
     var m = finish(c);
+    // Grade: a touch more colour, and shadows leaning cool against the warm sun.
+    let l = dot(m, vec3(0.2126, 0.7152, 0.0722));
+    m = mix(vec3(l), m, 1.1);
+    m += vec3(-0.012, 0.0, 0.02) * (1.0 - l) * (1.0 - l);
+    m = clamp(m, vec3(0.0), vec3(1.0));
     // Dither away banding in the sky gradient.
     m += (hash2(i.clip.xy) - 0.5) / 255.0;
     return vec4(m, 1.0);

@@ -36,14 +36,14 @@ impl Default for Settings {
             Settings {
                 seed: 20260927,
                 view_radius: 7,
-                work_budget_ms: 4.0,
+                work_budget_ms: 6.0,
                 fog_m: 1000.0,
             }
         } else {
             Settings {
                 seed: 20260927,
                 view_radius: 10,
-                work_budget_ms: 6.0,
+                work_budget_ms: 8.0,
                 fog_m: 1300.0,
             }
         }
@@ -184,12 +184,12 @@ impl Game {
         let deadline = Deadline::new(budget);
         // Each stage may run until its share of the budget is used; later stages
         // always keep at least the remainder.
-        self.world.stream(self.player.pos, &deadline, 0.4);
+        self.world.stream(self.player.pos, &deadline, 0.5);
         let t_stream = lap();
         for c in self.world.removed.drain(..) {
             renderer.remove(c);
         }
-        self.remesh(renderer, &deadline, 0.8);
+        self.remesh(renderer, &deadline, 0.85);
         self.update_near_mask(renderer);
         let t_mesh = lap();
         self.far
@@ -334,8 +334,8 @@ impl Game {
         let proj = Mat4::perspective_infinite_reverse_rh(70f32.to_radians(), aspect, 0.05);
         let view = Mat4::look_to_rh(eye, self.player.look_dir(), Vec3::Y);
         let vp = proj * view;
-        // A mid-afternoon sun, low enough for trees to cast long shadows.
-        let sun = Vec3::new(0.50, 0.58, 0.30).normalize();
+        // A late-afternoon sun about 26 degrees up: warm light, long shadows.
+        let sun = Vec3::new(0.62, 0.36, 0.40).normalize();
         let fog = self.settings.fog_m;
         let underwater = self.world.get((eye / VOXEL_SIZE).floor().as_ivec3()) == WATER;
         let (hl, has) = match self.target {

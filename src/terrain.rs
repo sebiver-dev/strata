@@ -333,7 +333,10 @@ impl Terrain {
             let a = (k as f32 + 0.35 * hr(3 + k)) * std::f32::consts::TAU / n as f32;
             let out = r_vox * (0.5 + 0.15 * hr(9 + k));
             let lift = r_vox * (-0.2 + 0.5 * hr(17 + k));
-            clumps.push((Vec3::new(a.cos() * out, lift, a.sin() * out), r_vox * (0.4 + 0.14 * hr(25 + k))));
+            clumps.push((
+                Vec3::new(a.cos() * out, lift, a.sin() * out),
+                r_vox * (0.4 + 0.14 * hr(25 + k)),
+            ));
         }
         // Only visit the part of the crown that falls inside this chunk.
         let lo = origin - IVec3::new(tree.base.x, 0, tree.base.z);

@@ -1047,7 +1047,9 @@ fn shade_water(i: VOut) -> vec4<f32> {
     // Shore foam where the water is shallow.
     let depth_below = select(10.0, p.y - world_from_depth(uv, d0).y, d0 > 0.0);
     let foam_n = vnoise2(p.xz * 4.0 + vec2(t * 0.3, -t * 0.2)) * 0.6 + vnoise2(p.xz * 11.0 - t * 0.5) * 0.4;
-    let foam = (1.0 - smoothstep(0.0, 0.25, depth_below)) * smoothstep(0.35, 0.65, foam_n);
+    // Around rocks in the current the white water is broken into streaks.
+    let streak = vnoise2(vec2(p.x * 7.0, p.z * 1.5 - t * 1.4));
+    let foam = (1.0 - smoothstep(0.0, 0.45, depth_below)) * smoothstep(0.35, 0.65, foam_n * 0.7 + streak * 0.3);
     body = mix(body, lin(vec3(0.92, 0.95, 0.95)) * (0.5 + 0.8 * sh), foam * 0.7);
 
     // Reflection: screen-space first, the sky where the screen has no answer.

@@ -205,13 +205,24 @@ fn crown(out: &mut MeshData, lo: Vec3, hi: Vec3, seed: u32, level: u8) {
                 let a = i as f32 / rings as f32 * std::f32::consts::PI;
                 profile.push((at.y - rad * 0.85 * a.cos(), rad * a.sin()));
             }
-            revolve(out, Vec2::new(at.x, at.z), &profile, segs.min(7), LEAVES, (seed | 1).wrapping_add(k));
+            revolve(
+                out,
+                Vec2::new(at.x, at.z),
+                &profile,
+                segs.min(7),
+                LEAVES,
+                (seed | 1).wrapping_add(k),
+            );
         };
-        ball(out, Vec3::new(c.x, y0 + h * 0.58, c.y), r * 0.62, 0);
+        ball(out, Vec3::new(c.x, y0 + h * 0.5, c.y), r * 0.64, 0);
         for k in 0..around {
             let u = crate::noise::unit(crate::noise::hash3(seed, k as i32, 3, 9));
             let a = (k as f32 + 0.4 * u) * std::f32::consts::TAU / around as f32;
-            let at = Vec3::new(c.x + a.cos() * r * 0.5, y0 + h * (0.4 + 0.25 * u), c.y + a.sin() * r * 0.5);
+            let at = Vec3::new(
+                c.x + a.cos() * r * 0.5,
+                y0 + h * (0.3 + 0.25 * u),
+                c.y + a.sin() * r * 0.5,
+            );
             ball(out, at, r * (0.42 + 0.1 * u), k + 1);
         }
         return;
@@ -308,12 +319,14 @@ pub fn build_tile(terrain: &Terrain, tile: IVec2, level: u8) -> MeshData {
                 crown(&mut out, canopy.0, canopy.1, seed, level);
                 if level == 0 {
                     let c = Vec2::new((trunk.0.x + trunk.1.x) * 0.5, (trunk.0.z + trunk.1.z) * 0.5);
+                    let top = (trunk.1.y + 0.5).max(canopy.0.y + (canopy.1.y - canopy.0.y) * 0.5);
                     let profile = [
                         (trunk.0.y - 0.5, 0.0),
                         (trunk.0.y - 0.5, 0.55),
                         (trunk.0.y + 0.6, 0.42),
-                        (trunk.1.y + 0.5, 0.32),
-                        (trunk.1.y + 0.5, 0.0),
+                        // Up into the crown, so no gap shows between its clumps.
+                        (top, 0.3),
+                        (top, 0.0),
                     ];
                     revolve(&mut out, c, &profile, 6, WOOD, 0);
                 }

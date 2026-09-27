@@ -47,3 +47,31 @@ pub fn camera_from_url() -> Option<[f32; 5]> {
     let v: Vec<f32> = value.split(',').filter_map(|x| x.parse().ok()).collect();
     v.try_into().ok()
 }
+
+#[wasm_bindgen(
+    inline_js = "export function hud(state) { if (globalThis.strataHud) globalThis.strataHud(JSON.parse(state)); }"
+)]
+extern "C" {
+    fn hud(state: &str);
+}
+
+/// Hands the HUD state to the page, which draws the hotbar and brush panel.
+pub fn set_hud(h: &crate::game::Hud) {
+    use crate::block::{name, PLACEABLE};
+    let materials: Vec<String> = PLACEABLE.iter().map(|m| format!("\"{}\"", name(*m))).collect();
+    let target = match h.target {
+        Some(b) => format!("\"{}\"", name(b)),
+        None => "null".into(),
+    };
+    hud(&format!(
+        "{{\"materials\":[{}],\"selected\":{},\"brush\":{},\"width\":{},\"cube\":{},\"maxBrush\":{},\"flying\":{},\"target\":{}}}",
+        materials.join(","),
+        h.selected,
+        h.brush.radius,
+        h.brush.width_m(),
+        h.brush.cube,
+        crate::game::MAX_BRUSH,
+        h.flying,
+        target,
+    ));
+}

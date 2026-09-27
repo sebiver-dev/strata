@@ -1,6 +1,6 @@
 //! Window and event loop, shared by desktop and browser builds.
 
-use crate::game::{Game, Settings};
+use crate::game::{Game, Hud, Settings};
 use crate::renderer::Renderer;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
@@ -23,6 +23,7 @@ pub struct App {
     last_title: web_time::Instant,
     captured: bool,
     captured_at: web_time::Instant,
+    last_hud: Option<Hud>,
 }
 
 impl App {
@@ -36,6 +37,7 @@ impl App {
             last_title: web_time::Instant::now(),
             captured: false,
             captured_at: web_time::Instant::now(),
+            last_hud: None,
         }
     }
 
@@ -167,6 +169,12 @@ impl ApplicationHandler<UserEvent> for App {
                     let (width, height) = r.size();
                     let globals = self.game.globals(width, height, r.manual_srgb());
                     r.render(&globals);
+                    let hud = self.game.hud();
+                    if self.last_hud.as_ref() != Some(&hud) {
+                        #[cfg(target_arch = "wasm32")]
+                        crate::web::set_hud(&hud);
+                        self.last_hud = Some(hud);
+                    }
                     if (now - self.last_title).as_secs_f32() > 0.5 {
                         self.last_title = now;
                         let status = self.game.status(r);

@@ -18,9 +18,11 @@ struct Globals {
     // x: fog distance, y: 1.0 if the output needs manual sRGB encoding,
     // z: 1.0 if the camera is under water, w: unused
     params: vec4<f32>,
-    // xyz: targeted voxel min corner in metres, w: 1.0 if a voxel is targeted
+    // xyz: targeted voxel min corner in metres, w: 0 when nothing is targeted,
+    // otherwise 1 + the brush radius in voxels
     highlight: vec4<f32>,
-    // xy: framebuffer size in pixels, z: shadow map size in texels
+    // xy: framebuffer size in pixels, z: shadow map size in texels,
+    // w: brush shape (0 sphere, 1 cube)
     screen: vec4<f32>,
 };
 
@@ -413,6 +415,16 @@ fn fs_far_terrain(i: VOut) -> @location(0) vec4<f32> {
     return shade_terrain(i);
 }
 
+// Whether a voxel offset from the aimed-at voxel lies inside the edit brush.
+// Must match `Brush::contains` in game.rs.
+fn in_brush(d: vec3<f32>) -> bool {
+    let r = g.highlight.w - 1.0;
+    if (g.screen.w > 0.5) {
+        return all(abs(d) <= vec3(r));
+    }
+    return dot(d, d) <= (r + 0.35) * (r + 0.35);
+}
+
 fn shade_terrain(i: VOut) -> vec4<f32> {
     let n = NORMALS[i.info & 7u];
     let mat = (i.info >> 3u) & 255u;
@@ -441,15 +453,30 @@ fn shade_terrain(i: VOut) -> vec4<f32> {
     let gloss = 1.0 - surf.rough;
     c += sky_color(reflect(-v, nb)) * fres * gloss * gloss * gloss * 0.6 * ao;
 
-    // Outline the voxel the player is aiming at.
+    // Show the voxels the brush would dig: a tint over the whole brush volume
+    // and a bright line along its outer edge.
     if (g.highlight.w > 0.5) {
-        let lo = g.highlight.xyz - 0.01;
-        let hi = g.highlight.xyz + VOXEL + 0.01;
-        if (all(i.world >= lo) && all(i.world <= hi)) {
+        let center = floor(g.highlight.xyz / VOXEL + 0.5);
+        let cell = floor((i.world - n * 0.01) / VOXEL);
+        if (in_brush(cell - center)) {
             let f = fract(i.world / VOXEL);
-            let e = min(min(f, 1.0 - f), vec3(1.0)) + abs(n) * 10.0;
-            let edge = min(min(e.x, e.y), e.z);
-            c = mix(c, vec3(1.6), (1.0 - smoothstep(0.02, 0.06, edge)) * 0.8);
+            var edge = 1.0;
+            for (var a = 0; a < 3; a++) {
+                if (abs(n[a]) > 0.5) {
+                    continue;
+                }
+                var off = vec3(0.0);
+                off[a] = 1.0;
+                if (!in_brush(cell - center - off)) {
+                    edge = min(edge, f[a]);
+                }
+                if (!in_brush(cell - center + off)) {
+                    edge = min(edge, 1.0 - f[a]);
+                }
+            }
+            let pulse = 0.8 + 0.2 * sin(g.sun_dir.w * 5.0);
+            c = mix(c, c * 1.3 + vec3(0.05, 0.06, 0.07), 0.55 * pulse);
+            c = mix(c, vec3(1.6), (1.0 - smoothstep(0.03, 0.08, edge)) * 0.85);
         }
     }
     return vec4(apply_fog(c, i.world), 1.0);

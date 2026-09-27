@@ -58,6 +58,15 @@ pub const BOULDER: Block = 35;
 pub const LUPIN_PINK: Block = 40;
 pub const LUPIN_WHITE: Block = 41;
 
+// Plant materials (mesh only; see plants.rs).
+/// Dry, golden grass blades.
+pub const DRY_GRASS: Block = 30;
+/// Fresh yellow-green grass blades of the verges and banks.
+pub const FRESH_GRASS: Block = 31;
+/// Stems and leaves of wildflowers.
+pub const STEM: Block = 32;
+/// Deep purple lupin florets.
+pub const LUPIN_DEEP: Block = 33;
 // Tree models (mesh only; trunks collide through hidden BUILT voxels).
 /// Bark on trunks and boughs.
 pub const BARK: Block = 27;

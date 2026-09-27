@@ -636,7 +636,7 @@ fn clump(out: &mut MeshData, all: &[Clump], index: usize, canopy: Vec3, mesh: &I
             s += 0.07 * (value3(seed ^ 0x55, w.x * 2.3, w.y * 2.3, w.z * 2.3) - 0.5);
             let mut q = d * c.radii * s;
             if q.y < 0.0 {
-                q.y *= 0.8;
+                q.y *= 0.9;
             }
             c.centre + q
         })
@@ -654,7 +654,9 @@ fn clump(out: &mut MeshData, all: &[Clump], index: usize, canopy: Vec3, mesh: &I
     for (i, &p) in positions.iter().enumerate() {
         let own = normals[i].normalize_or_zero();
         let global = (p - canopy).normalize_or_zero();
-        let n = (own * 0.7 + global * 0.3).normalize_or_zero();
+        // A lift towards the sky lets undersides catch skylight instead of
+        // going black, as in painted foliage.
+        let n = (own * 0.7 + global * 0.3 + Vec3::Y * 0.35).normalize_or_zero();
         // Occlusion: undersides and the parts facing into the canopy are darker.
         let depth = ((p - canopy).length() / (size * 1.6)).min(1.0);
         let light = 0.5 + 0.5 * n.y;

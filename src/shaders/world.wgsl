@@ -684,15 +684,12 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.f0 = 0.25;
             wettable = false;
         }
-        case 15u, 40u, 41u: { // lupin florets: purple, pink or white, paler towards the tip
-            let florets = vnoise(q * 60.0);
-            let up = fract(p.y * 1.3);
-            var lo = vec3(0.30, 0.16, 0.56);
-            var hi = vec3(0.55, 0.40, 0.82);
-            if (mat == 40u) { lo = vec3(0.62, 0.22, 0.42); hi = vec3(0.90, 0.56, 0.70); }
-            if (mat == 41u) { lo = vec3(0.78, 0.76, 0.80); hi = vec3(0.95, 0.94, 0.92); }
-            var c = mix(lo, hi, florets * 0.7 + up * 0.3);
-            s.albedo = c * (0.85 + 0.3 * step(0.55, vnoise(q * 140.0)) * d_cm);
+        case 15u, 40u, 41u: { // lupin florets: violet, pink or white, each flower its own shade
+            var lo = vec3(0.28, 0.16, 0.62);
+            var hi = vec3(0.50, 0.36, 0.84);
+            if (mat == 40u) { lo = vec3(0.70, 0.30, 0.50); hi = vec3(0.92, 0.58, 0.74); }
+            if (mat == 41u) { lo = vec3(0.80, 0.78, 0.80); hi = vec3(0.96, 0.95, 0.92); }
+            s.albedo = mix(lo, hi, vnoise(q * 40.0));
             s.rough = 0.7;
             s.sss = 0.5;
             wettable = false;
@@ -808,6 +805,32 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.sss = 0.2;
             wettable = false;
         }
+        case 30u: { // dry grass blades: straw gold
+            s.albedo = mix(vec3(0.52, 0.42, 0.18), vec3(0.72, 0.60, 0.30), vnoise(p * 0.3));
+            s.rough = 0.65;
+            s.f0 = 0.04;
+            s.sss = 0.6;
+            wettable = false;
+        }
+        case 31u: { // fresh grass blades of the verges: bright yellow-green
+            s.albedo = mix(vec3(0.34, 0.54, 0.11), vec3(0.52, 0.64, 0.17), vnoise(p * 0.2));
+            s.rough = 0.55;
+            s.f0 = 0.04;
+            s.sss = 0.8;
+            wettable = false;
+        }
+        case 32u: { // wildflower stems and leaves: deep blue-green
+            s.albedo = mix(vec3(0.14, 0.27, 0.09), vec3(0.22, 0.36, 0.13), vnoise(q * 7.0));
+            s.rough = 0.6;
+            s.sss = 0.5;
+            wettable = false;
+        }
+        case 33u: { // deep purple lupin florets
+            s.albedo = mix(vec3(0.16, 0.06, 0.36), vec3(0.30, 0.13, 0.54), vnoise(q * 40.0));
+            s.rough = 0.7;
+            s.sss = 0.45;
+            wettable = false;
+        }
         case 35u: { // boulder: speckled grey granite with hairline cracks under a thick cap of moss
             let tone = vnoise(q * 0.35);
             var c = mix(vec3(0.42, 0.42, 0.43), vec3(0.57, 0.55, 0.51), tone) * (0.85 + 0.25 * fine);
@@ -835,11 +858,11 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.height = (1.0 - moss_m) * (fine * 0.03 - crack * 0.02) + moss_m * (0.03 + tuft * 0.012 * d_cm);
         }
         case 27u: { // bark: deep vertical fissures between plated ridges, moss on top
-            let ridge = vnoise(vec3(q.x * 11.0, q.y * 1.4, q.z * 11.0)) * 0.6 + vnoise(vec3(q.x * 27.0, q.y * 3.5, q.z * 27.0)) * 0.4;
-            // Narrow dark fissures between broad plates of bark.
-            let plate = smoothstep(0.3, 0.45, ridge);
-            let crack = smoothstep(0.52, 0.6, vnoise(vec3(q.x * 7.0, q.y * 6.0, q.z * 7.0))) * plate;
-            var c = mix(vec3(0.12, 0.09, 0.07), mix(vec3(0.30, 0.24, 0.18), vec3(0.40, 0.33, 0.25), vnoise(q * 1.7)), plate);
+            let ridge = vnoise(vec3(q.x * 16.0, q.y * 0.9, q.z * 16.0)) * 0.6 + vnoise(vec3(q.x * 38.0, q.y * 2.5, q.z * 38.0)) * 0.4;
+            // Long narrow fissures between plates of grey-brown bark.
+            let plate = smoothstep(0.28, 0.55, ridge);
+            let crack = smoothstep(0.55, 0.62, vnoise(vec3(q.x * 9.0, q.y * 7.0, q.z * 9.0))) * plate;
+            var c = mix(vec3(0.10, 0.08, 0.065), mix(vec3(0.25, 0.21, 0.17), vec3(0.33, 0.28, 0.22), vnoise(q * 1.7)), plate);
             c = mix(c, c * 0.65, crack * d_dm);
             c *= 0.85 + 0.3 * fine;
             // Moss settles on the upper sides of roots and boughs.
@@ -964,7 +987,7 @@ const PLANT_RANGE: f32 = 70.0;
 
 // Grass blades and wildflowers: thin, wind-bent, left out of the shadow map.
 fn is_plant(mat: u32) -> bool {
-    return mat == 13u || (mat >= 15u && mat <= 17u) || mat == 40u || mat == 41u;
+    return mat == 13u || (mat >= 15u && mat <= 17u) || (mat >= 30u && mat <= 33u) || mat == 40u || mat == 41u;
 }
 
 // Leaves sway a few centimetres in the wind. The offset depends only on the
@@ -1071,7 +1094,7 @@ fn shade_terrain(i: VOut) -> vec4<f32> {
     let mat = (i.info >> 3u) & 255u;
     let pix = length(fwidth(i.world)) * 0.7;
     var surf = material(mat, i.world, n, pix);
-    if (mat == 13u) {
+    if (mat == 13u || mat == 30u || mat == 31u) {
         // Blades darken towards the ground and dry out a little at the tips.
         surf.albedo *= mix(0.45, 1.1, i.ao);
         surf.albedo = mix(surf.albedo, surf.albedo * vec3(1.25, 1.1, 0.7), i.ao * i.ao * 0.5);

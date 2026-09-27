@@ -555,31 +555,8 @@ fn flat(out: &mut MeshData, pts: &[Vec3], centre: Vec3, mat: Block) {
     }
 }
 
-/// A closed box from `lo` to `hi`.
-fn cuboid(out: &mut MeshData, lo: Vec3, hi: Vec3, mat: Block) {
-    let c = (lo + hi) * 0.5;
-    let v = |x: bool, y: bool, z: bool| {
-        Vec3::new(
-            if x { hi.x } else { lo.x },
-            if y { hi.y } else { lo.y },
-            if z { hi.z } else { lo.z },
-        )
-    };
-    let (f, t) = (false, true);
-    for face in [
-        [v(f, f, f), v(t, f, f), v(t, t, f), v(f, t, f)],
-        [v(f, f, t), v(t, f, t), v(t, t, t), v(f, t, t)],
-        [v(f, f, f), v(f, t, f), v(f, t, t), v(f, f, t)],
-        [v(t, f, f), v(t, t, f), v(t, t, t), v(t, f, t)],
-        [v(f, f, f), v(t, f, f), v(t, f, t), v(f, f, t)],
-        [v(f, t, f), v(t, t, f), v(t, t, t), v(f, t, t)],
-    ] {
-        flat(out, &face, c, mat);
-    }
-}
-
 /// Half the thickness of a lantern post in metres.
-const POST_RADIUS: f32 = 0.08;
+const POST_RADIUS: f32 = 0.085;
 
 /// A straight timber of square section `half` from `a` to `b`.
 fn beam(out: &mut MeshData, a: Vec3, b: Vec3, half: f32, mat: Block) {
@@ -616,100 +593,187 @@ fn beam(out: &mut MeshData, a: Vec3, b: Vec3, half: f32, mat: Block) {
     );
 }
 
-/// One voxel's length of a square wooden lantern post. The top voxel gets a
-/// cap, and when a lantern hangs beside the voxel below it, an arm reaching
-/// out over it with a diagonal brace.
+/// Corners of a horizontal regular polygon around `c`.
+fn ring(c: Vec3, r: f32, sides: usize, phase: f32) -> Vec<Vec3> {
+    (0..sides)
+        .map(|k| {
+            let a = phase + k as f32 / sides as f32 * std::f32::consts::TAU;
+            c + Vec3::new(a.cos() * r, 0.0, a.sin() * r)
+        })
+        .collect()
+}
+
+/// The side walls between two rings with the same number of corners.
+fn loft(out: &mut MeshData, a: &[Vec3], b: &[Vec3], mat: Block) {
+    let n = a.len() as f32 * 2.0;
+    let axis = (a.iter().chain(b).copied().sum::<Vec3>()) / n;
+    for k in 0..a.len() {
+        let j = (k + 1) % a.len();
+        let mid = (a[k] + a[j] + b[j] + b[k]) * 0.25;
+        // Measure outward from the axis at the quad's own height.
+        let centre = Vec3::new(axis.x, mid.y, axis.z);
+        flat(out, &[a[k], a[j], b[j], b[k]], centre, mat);
+    }
+}
+
+/// A ring closed to a point above or below it.
+fn cone(out: &mut MeshData, base: &[Vec3], apex: Vec3, mat: Block) {
+    let mid = base.iter().copied().sum::<Vec3>() / base.len() as f32;
+    let centre = mid + (mid - apex) * 0.5;
+    for k in 0..base.len() {
+        flat(out, &[base[k], base[(k + 1) % base.len()], apex], centre, mat);
+    }
+}
+
+/// A bent bar through `pts`, of square section `half`.
+fn bar(out: &mut MeshData, pts: &[Vec3], half: f32, mat: Block) {
+    for w in pts.windows(2) {
+        beam(out, w[0], w[1], half, mat);
+    }
+}
+
+/// One voxel's length of a lantern post: an eight-sided timber on a stone
+/// plinth. The top voxel gets a carved cap, and when a lantern hangs beside
+/// the voxel below it, a curved iron arm with a scroll bracket reaches out
+/// over it.
 fn post(out: &mut MeshData, pad: &Padded, origin: IVec3, p: IVec3) {
     let centre = (origin + p).as_vec3() * VOXEL_SIZE + Vec3::new(VOXEL_SIZE * 0.5, 0.0, VOXEL_SIZE * 0.5);
     let r = POST_RADIUS;
     let above = pad.get(p + IVec3::Y);
     let top = above != POST && above != LANTERN;
     let height = if top { ARM_HEIGHT + 0.08 } else { VOXEL_SIZE };
-    cuboid(
-        out,
-        centre + Vec3::new(-r, 0.0, -r),
-        centre + Vec3::new(r, height, r),
-        WOOD,
-    );
+    let oct = |y: f32, r: f32| ring(centre + Vec3::Y * y, r, 8, std::f32::consts::PI / 8.0);
+    loft(out, &oct(0.0, r), &oct(height, r), WOOD);
+    if pad.get(p - IVec3::Y) != POST {
+        // Stone plinth, sunk a little into the ground.
+        let (a, b, c) = (oct(-0.12, 0.17), oct(0.26, 0.14), oct(0.34, r + 0.01));
+        loft(out, &a, &b, STONE);
+        loft(out, &b, &c, STONE);
+        flat(out, &c, centre, STONE);
+    }
     if !top {
         return;
     }
-    let cap = r + 0.025;
-    cuboid(
-        out,
-        centre + Vec3::new(-cap, height, -cap),
-        centre + Vec3::new(cap, height + 0.04, cap),
-        WOOD,
-    );
+    // Cap: a moulded collar and a small pointed finial.
+    let c0 = oct(height, r + 0.03);
+    let c1 = oct(height + 0.05, r + 0.03);
+    loft(out, &c0, &c1, WOOD);
+    flat(out, &c0, centre + Vec3::Y * (height + 0.1), WOOD);
+    cone(out, &c1, centre + Vec3::Y * (height + 0.2), WOOD);
     for d in [IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z] {
         if pad.get(p + d - IVec3::Y) != LANTERN {
             continue;
         }
         let out_dir = d.as_vec3();
         let arm_y = centre + Vec3::Y * ARM_HEIGHT;
-        let end = arm_y + out_dir * (VOXEL_SIZE + 0.1);
-        beam(out, arm_y - out_dir * r, end, 0.045, WOOD);
-        // Brace from lower on the post up to the middle of the arm.
-        let low = centre + Vec3::Y * (ARM_HEIGHT - 0.42) + out_dir * r * 0.5;
-        beam(out, low, arm_y + out_dir * 0.36 - Vec3::Y * 0.03, 0.03, WOOD);
+        // An iron band holds the arm to the post.
+        loft(
+            out,
+            &oct(ARM_HEIGHT - 0.05, r + 0.012),
+            &oct(ARM_HEIGHT + 0.05, r + 0.012),
+            IRON,
+        );
+        // The arm bows up a little and ends in a hook over the lantern.
+        let reach = VOXEL_SIZE;
+        let mut arm: Vec<Vec3> = (0..=8)
+            .map(|k| {
+                let t = k as f32 / 8.0;
+                arm_y + out_dir * (r + (reach - r + 0.04) * t) + Vec3::Y * (0.07 * (t * std::f32::consts::PI).sin())
+            })
+            .collect();
+        arm.push(arm_y + out_dir * (reach + 0.07) - Vec3::Y * 0.03);
+        arm.push(arm_y + out_dir * (reach + 0.06) - Vec3::Y * 0.07);
+        bar(out, &arm, 0.018, IRON);
+        // Scroll bracket: a quarter circle from the post up to the arm, curling in at its foot.
+        let sr = 0.3;
+        let hub = arm_y + out_dir * (r + sr) - Vec3::Y * sr;
+        let scroll: Vec<Vec3> = (0..=10)
+            .map(|k| {
+                let a = std::f32::consts::PI * (1.0 - 0.5 * k as f32 / 10.0);
+                hub + out_dir * (a.cos() * sr) + Vec3::Y * (a.sin() * sr)
+            })
+            .collect();
+        bar(out, &scroll, 0.013, IRON);
+        let curl: Vec<Vec3> = (0..=8)
+            .map(|k| {
+                let t = k as f32 / 8.0;
+                let a = std::f32::consts::PI * (1.0 + 1.3 * t);
+                let rr = 0.07 * (1.0 - 0.5 * t);
+                hub - out_dir * (sr - 0.07) + out_dir * (a.cos() * rr) + Vec3::Y * (a.sin() * rr)
+            })
+            .collect();
+        bar(out, &curl, 0.011, IRON);
     }
 }
 
 /// Height above the top post voxel's floor at which the lantern arm runs.
 const ARM_HEIGHT: f32 = 0.2;
 
-/// A lantern: a glass body with an iron frame (drawn by the shader) under a
-/// small pointed iron roof. Standing on a post it gets a collar that grips
-/// the post; otherwise it hangs by a hook from the arm above.
+/// A lantern: six tapering panes of warm glass in an iron frame, an iron cup
+/// below and a flared iron roof above with a ring on top. Standing on a post
+/// it gets a collar that grips the post; otherwise it hangs by a rod from the
+/// arm above.
 fn lantern(out: &mut MeshData, origin: IVec3, p: IVec3, on_post: bool) {
     let floor = (origin + p).as_vec3() * VOXEL_SIZE + Vec3::new(VOXEL_SIZE * 0.5, 0.0, VOXEL_SIZE * 0.5);
-    let at = |dx: f32, y: f32, dz: f32| floor + Vec3::new(dx, y, dz);
+    let at = |y: f32| floor + Vec3::Y * y;
     let (b0, b1) = LANTERN_BODY;
     let hw = LANTERN_HALF_WIDTH;
+    let hex = |y: f32, r: f32| ring(at(y), r, 6, 0.0);
+    let (bottom_r, top_r) = (hw * 0.7, hw);
+    // Glass, and the iron bands and corner bars that frame it.
+    loft(out, &hex(b0, bottom_r), &hex(b1, top_r), LANTERN);
+    let (lo, hi) = (hex(b0, bottom_r + 0.012), hex(b1, top_r + 0.012));
+    for k in 0..6 {
+        beam(out, lo[k], hi[k], 0.01, IRON);
+    }
+    loft(
+        out,
+        &hex(b0 - 0.02, bottom_r + 0.015),
+        &hex(b0 + 0.015, bottom_r + 0.015),
+        IRON,
+    );
+    loft(
+        out,
+        &hex(b1 - 0.015, top_r + 0.015),
+        &hex(b1 + 0.01, top_r + 0.015),
+        IRON,
+    );
+    // Cup and drop finial below.
+    cone(out, &hex(b0 - 0.02, bottom_r + 0.015), at(b0 - 0.09), IRON);
+    // Roof: a flared hood up to a small ring.
+    let eave = hex(b1 + 0.01, top_r + 0.05);
+    let neck = hex(b1 + 0.1, 0.035);
+    flat(out, &eave, at(b1 + 0.1), IRON);
+    loft(out, &eave, &neck, IRON);
+    cone(out, &neck, at(b1 + 0.14), IRON);
     if on_post {
         // Collar: slightly wider than the post and overlapping its top.
         let r = POST_RADIUS + 0.03;
-        cuboid(out, at(-r, -0.04, -r), at(r, b0, r), WOOD);
+        loft(out, &ring(at(-0.04), r, 8, 0.0), &ring(at(b0), r, 8, 0.0), IRON);
     } else {
-        // Base plate, then the hook up to the arm in the voxel above.
-        cuboid(
-            out,
-            at(-hw - 0.015, b0 - 0.025, -hw - 0.015),
-            at(hw + 0.015, b0, hw + 0.015),
-            LANTERN,
-        );
+        // Hanging ring and rod up to the hook on the arm above.
+        let top = at(b1 + 0.14);
+        let ring_pts: Vec<Vec3> = (0..=10)
+            .map(|k| {
+                let a = k as f32 / 10.0 * std::f32::consts::TAU;
+                top + Vec3::new(a.sin() * 0.03, 0.03 - a.cos() * 0.03, 0.0)
+            })
+            .collect();
+        bar(out, &ring_pts, 0.006, IRON);
         beam(
             out,
-            at(0.0, b1 + 0.15, 0.0),
-            at(0.0, VOXEL_SIZE + ARM_HEIGHT, 0.0),
-            0.012,
-            LANTERN,
+            top + Vec3::Y * 0.06,
+            at(VOXEL_SIZE + ARM_HEIGHT - 0.07),
+            0.007,
+            IRON,
         );
     }
-    cuboid(out, at(-hw, b0, -hw), at(hw, b1, hw), LANTERN);
-    // Roof: a low pyramid with an overhang.
-    let o = hw + 0.05;
-    let eave = b1 + 0.02;
-    let apex = at(0.0, b1 + 0.16, 0.0);
-    let corners = [at(-o, eave, -o), at(o, eave, -o), at(o, eave, o), at(-o, eave, o)];
-    let centre = at(0.0, eave + 0.04, 0.0);
-    for k in 0..4 {
-        flat(out, &[corners[k], corners[(k + 1) % 4], apex], centre, LANTERN);
-    }
-    flat(out, &corners, centre, LANTERN);
-    // Thin iron plate joining the body to the roof.
-    cuboid(
-        out,
-        at(-hw - 0.01, b1, -hw - 0.01),
-        at(hw + 0.01, eave, hw + 0.01),
-        LANTERN,
-    );
 }
 
 /// The lantern body's bottom and top above its voxel floor, in metres.
-pub const LANTERN_BODY: (f32, f32) = (0.04, 0.32);
+pub const LANTERN_BODY: (f32, f32) = (0.06, 0.34);
 /// Half the width of the lantern body in metres.
-pub const LANTERN_HALF_WIDTH: f32 = 0.13;
+pub const LANTERN_HALF_WIDTH: f32 = 0.14;
 
 #[allow(clippy::too_many_arguments)]
 fn emit(
@@ -890,7 +954,7 @@ mod tests {
             .iter()
             .filter(|v| mat(v) == WOOD as u32 && v.pos[1] < floor - 0.05)
         {
-            let r = (v.pos[0] - centre).abs().max((v.pos[2] - centre).abs());
+            let r = (v.pos[0] - centre).hypot(v.pos[2] - centre);
             assert!(r <= POST_RADIUS + 1e-4, "{r}");
         }
     }
@@ -909,22 +973,29 @@ mod tests {
         let mat = |v: &Vertex| (v.data >> 3) & 255;
         let arm_y = 10.0 * VOXEL_SIZE + ARM_HEIGHT;
         let lamp_x = 6.5 * VOXEL_SIZE;
-        // The arm reaches past the lantern's centre at arm height.
+        // The iron arm reaches past the lantern's centre at arm height.
         let reach = m
             .vertices
             .iter()
-            .filter(|v| mat(v) == WOOD as u32 && (v.pos[1] - arm_y).abs() < 0.06)
+            .filter(|v| mat(v) == IRON as u32 && (v.pos[1] - arm_y).abs() < 0.1)
             .map(|v| v.pos[0])
             .fold(f32::MIN, f32::max);
         assert!(reach > lamp_x, "arm ends at {reach}");
-        // The hook climbs from the lantern roof to the arm.
-        let hook_top = m
+        // The rod climbs from the lantern roof to the hook at the arm's end.
+        let rod_top = m
             .vertices
             .iter()
-            .filter(|v| mat(v) == LANTERN as u32)
+            .filter(|v| mat(v) == IRON as u32 && (v.pos[0] - lamp_x).abs() < 0.02 && v.pos[1] < arm_y)
             .map(|v| v.pos[1])
             .fold(f32::MIN, f32::max);
-        assert!((hook_top - arm_y).abs() < 1e-3, "hook reaches {hook_top}");
+        assert!((rod_top - (arm_y - 0.07)).abs() < 1e-3, "rod reaches {rod_top}");
+        let hook_bottom = m
+            .vertices
+            .iter()
+            .filter(|v| mat(v) == IRON as u32 && v.pos[0] > lamp_x + 0.03)
+            .map(|v| v.pos[1])
+            .fold(f32::MAX, f32::min);
+        assert!(hook_bottom <= arm_y - 0.07 + 0.02, "hook ends at {hook_bottom}");
     }
 
     #[test]

@@ -50,6 +50,8 @@ pub const BOARDS: Block = 23;
 pub const CLOTH: Block = 24;
 /// Collision inside built models. Solid but never drawn: the model is.
 pub const BUILT: Block = 25;
+/// Wrought iron: lantern frames, arms and chains (mesh only).
+pub const IRON: Block = 26;
 
 /// Materials the player can place, in hotbar order (keys 1..).
 pub const PLACEABLE: [Block; 8] = [STONE, DIRT, GRASS, SAND, GRAVEL, WOOD, PLANKS, SNOW];
@@ -79,6 +81,7 @@ pub fn name(b: Block) -> &'static str {
         CLOTH => "cloth",
         BUILT => "building",
         POST => "post",
+        IRON => "iron",
         _ => "unknown",
     }
 }

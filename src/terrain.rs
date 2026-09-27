@@ -271,12 +271,12 @@ impl Terrain {
         // The spawn view is composed: the rise, the gorge, the knoll and the hills.
         h = vista::before_channel(s, x_m, z_m, rx, h);
 
-        let (c0, c1) = vista::channel_edges(z_m);
+        let (c0, c1) = vista::channel_edges(x_m, z_m, rx);
         let channel = 1.0 - smoothstep(c0, c1, d);
         let bed = water_level(x_m, z_m) - 2.8 + 0.8 * fbm2(s.wrapping_add(6), x_m / 12.0, z_m / 12.0, 2);
         h += (bed - h) * channel;
         // The castle bluff stands straight out of the water.
-        h = vista::after_channel(s, x_m, z_m, rx, h);
+        h = vista::after_channel(s, x_m, z_m, rx, h, || self.road_distance(x_m, z_m));
 
         (
             h.clamp(3.0, (WORLD_CHUNKS_Y * CHUNK) as f32 * VOXEL_SIZE - 6.0),
@@ -319,7 +319,7 @@ impl Terrain {
                 (z_m * 2.0) as i32,
             ));
             d < ROAD_HALF_WIDTH_M + 0.5 * fray
-                || vista::path_distance(x_m, z_m) < vista::PATH_HALF_WIDTH_M + 0.4 * fray
+                || vista::on_path(x_m, z_m, fray)
                 || self.structures.path_at(self, x_m, z_m)
         } {
             (PATH, DIRT)
@@ -675,7 +675,7 @@ impl Terrain {
 
     /// Where the player arrives: on the composed spawn rise above the river.
     pub fn spawn_point(&self) -> glam::Vec3 {
-        let (x, _, z) = vista::SPAWN;
+        let (x, z) = vista::ARRIVAL;
         glam::Vec3::new(x, self.height_at(x, z).0 + 1.0, z)
     }
 }

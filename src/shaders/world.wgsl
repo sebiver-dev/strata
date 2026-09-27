@@ -70,7 +70,7 @@ const CLIFF_FALL_COUNT: u32 = 3u;
 // (CliffFall::foot, x and z in metres).
 fn cliff_fall(k: u32) -> vec2<f32> {
     var feet = array<vec2<f32>, 3>(
-        vec2(1044.0, 677.0), vec2(1069.0, 677.0), vec2(1023.0, 655.0),
+        vec2(1062.6, 679.9), vec2(1045.8, 681.6), vec2(1019.7, 649.4),
     );
     return feet[k];
 }

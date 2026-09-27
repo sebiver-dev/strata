@@ -1,5 +1,5 @@
-//! The player's body, built from boxes every frame: a procedurally posed
-//! figure with a walk cycle, a head that follows the view, and whatever tool
+//! The player's body, built every frame from smooth rounded forms (tapered
+//! ellipsoids and softened boxes): a procedurally posed figure with a walk cycle, a head that follows the view, and whatever tool
 //! is selected held in the right hand. First person shows only the right arm
 //! and the tool at the edge of the view; the whole body still casts a shadow.
 
@@ -140,100 +140,223 @@ impl Rig {
     }
 
     fn body(&self, d: &mut ActorDraw, p: &PoseInput) {
+        use std::f32::consts::{FRAC_PI_2, PI};
         // Local frame: +Z forward, +Y up, +X the figure's left.
-        let root = Mat4::from_translation(p.pos) * Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2 - p.yaw);
+        let root = Mat4::from_translation(p.pos) * Mat4::from_rotation_y(FRAC_PI_2 - p.yaw);
         let s = self.stride;
         let swing = self.phase.sin() * 0.55 * s;
         let bob = (self.phase * 2.0).cos().abs() * 0.03 * s + (self.time * 1.8).sin() * 0.004;
         let air = !p.on_ground && !p.in_water && !p.flying;
         let hips = root * Mat4::from_translation(Vec3::new(0.0, bob, 0.0));
 
-        // Legs, hinged at the hips; knees are implied by the boots.
-        for (side, phase) in [(1.0, swing), (-1.0, -swing)] {
-            let mut a = phase;
+        // Legs: thigh, knee, shin and boot. The knee bends as the foot swings forward.
+        for (side, leg_phase) in [(1.0, self.phase), (-1.0, self.phase + PI)] {
+            let (mut a, mut bend) = (leg_phase.sin() * 0.55 * s, s * (0.12 + 0.75 * leg_phase.cos().max(0.0)));
             if air {
-                a = side * 0.35;
+                (a, bend) = (side * 0.35, 0.5);
             }
             if p.flying {
-                a = -0.25 + side * 0.05;
+                (a, bend) = (-0.25 + side * 0.05, 0.35);
             }
             let hip = hips * Mat4::from_translation(Vec3::new(0.095 * side, 0.86, 0.0)) * Mat4::from_rotation_x(-a);
-            part(
+            blob(
                 d,
                 hip,
-                Vec3::new(0.0, -0.33, 0.0),
-                Vec3::new(0.075, 0.33, 0.085),
+                Vec3::new(0.0, -0.2, 0.0),
+                Vec3::new(0.078, 0.23, 0.085),
+                ROUND,
+                1.2,
                 TROUSERS,
             );
-            part(d, hip, Vec3::new(0.0, -0.76, 0.025), Vec3::new(0.08, 0.1, 0.11), BOOTS);
+            let knee = hip * Mat4::from_translation(Vec3::new(0.0, -0.4, 0.0)) * Mat4::from_rotation_x(bend);
+            blob(
+                d,
+                knee,
+                Vec3::new(0.0, -0.18, 0.0),
+                Vec3::new(0.06, 0.21, 0.066),
+                ROUND,
+                1.15,
+                TROUSERS,
+            );
+            let ankle = knee * Mat4::from_translation(Vec3::new(0.0, -0.38, 0.0)) * Mat4::from_rotation_x(-bend * 0.5);
+            blob(
+                d,
+                ankle,
+                Vec3::new(0.0, -0.03, 0.035),
+                Vec3::new(0.066, 0.056, 0.115),
+                (2.6, 2.2),
+                1.0,
+                BOOTS,
+            );
+            blob(
+                d,
+                ankle,
+                Vec3::new(0.0, 0.05, 0.0),
+                Vec3::new(0.064, 0.06, 0.07),
+                ROUND,
+                1.0,
+                BOOTS,
+            );
         }
 
         // Torso leans a little into the walk and while flying.
         let lean = s * 0.06 + if p.flying { 0.25 } else { 0.0 };
         let torso = hips * Mat4::from_translation(Vec3::new(0.0, 0.84, 0.0)) * Mat4::from_rotation_x(lean);
-        part(d, torso, Vec3::new(0.0, 0.29, 0.0), Vec3::new(0.19, 0.28, 0.11), TUNIC);
-        part(d, torso, Vec3::new(0.0, 0.05, 0.0), Vec3::new(0.2, 0.09, 0.12), TUNIC);
-        part(
+        blob(
             d,
             torso,
-            Vec3::new(0.0, 0.09, 0.0),
-            Vec3::new(0.205, 0.035, 0.125),
+            Vec3::new(0.0, 0.03, 0.0),
+            Vec3::new(0.165, 0.1, 0.11),
+            ROUND,
+            1.0,
+            TROUSERS,
+        );
+        blob(
+            d,
+            torso,
+            Vec3::new(0.0, 0.3, 0.0),
+            Vec3::new(0.19, 0.27, 0.12),
+            (2.6, 2.3),
+            1.12,
+            TUNIC,
+        );
+        blob(
+            d,
+            torso,
+            Vec3::new(0.0, 0.06, 0.0),
+            Vec3::new(0.2, 0.08, 0.132),
+            ROUND,
+            0.95,
+            TUNIC,
+        );
+        blob(
+            d,
+            torso,
+            Vec3::new(0.0, 0.11, 0.0),
+            Vec3::new(0.196, 0.03, 0.128),
+            (5.0, 2.2),
+            1.0,
             BELT,
         );
-        part(
+        blob(
             d,
             torso,
-            Vec3::new(0.0, 0.09, 0.126),
-            Vec3::new(0.035, 0.03, 0.006),
+            Vec3::new(0.0, 0.11, 0.128),
+            Vec3::new(0.028, 0.024, 0.012),
+            ROUND,
+            1.0,
             METAL,
         );
-        part(
+        blob(
             d,
             torso,
-            Vec3::new(0.0, 0.555, 0.0),
-            Vec3::new(0.2, 0.025, 0.12),
+            Vec3::new(0.0, 0.545, 0.0),
+            Vec3::new(0.12, 0.035, 0.092),
+            (3.0, 2.0),
+            1.0,
             TUNIC_TRIM,
         );
+        for x in [0.2, -0.2] {
+            blob(d, torso, Vec3::new(x, 0.49, 0.0), Vec3::splat(0.075), ROUND, 1.0, TUNIC);
+        }
 
         // Head follows the view pitch.
         let neck =
-            torso * Mat4::from_translation(Vec3::new(0.0, 0.58, 0.0)) * Mat4::from_rotation_x(-p.pitch * 0.6 - lean);
-        part(d, neck, Vec3::new(0.0, 0.02, 0.0), Vec3::new(0.06, 0.04, 0.06), SKIN);
-        let head = neck * Mat4::from_translation(Vec3::new(0.0, 0.17, 0.0));
-        part(d, head, Vec3::ZERO, Vec3::new(0.13, 0.14, 0.13), SKIN);
-        part(d, head, Vec3::new(0.0, 0.12, -0.01), Vec3::new(0.14, 0.04, 0.145), HAIR);
-        part(d, head, Vec3::new(0.0, 0.02, -0.12), Vec3::new(0.14, 0.12, 0.025), HAIR);
-        for x in [0.13, -0.13] {
-            part(d, head, Vec3::new(x, 0.05, -0.04), Vec3::new(0.012, 0.07, 0.09), HAIR);
-        }
-        for x in [0.05, -0.05] {
-            part(d, head, Vec3::new(x, 0.02, 0.131), Vec3::new(0.018, 0.016, 0.004), EYES);
-        }
-        part(
+            torso * Mat4::from_translation(Vec3::new(0.0, 0.56, 0.0)) * Mat4::from_rotation_x(-p.pitch * 0.6 - lean);
+        blob(
+            d,
+            neck,
+            Vec3::new(0.0, 0.04, 0.0),
+            Vec3::new(0.05, 0.06, 0.05),
+            ROUND,
+            1.0,
+            SKIN,
+        );
+        let head = neck * Mat4::from_translation(Vec3::new(0.0, 0.18, 0.0));
+        blob(d, head, Vec3::ZERO, Vec3::new(0.105, 0.125, 0.115), ROUND, 1.0, SKIN);
+        blob(
             d,
             head,
-            Vec3::new(0.0, -0.02, 0.14),
-            Vec3::new(0.015, 0.03, 0.012),
+            Vec3::new(0.0, -0.06, 0.02),
+            Vec3::new(0.08, 0.07, 0.09),
+            ROUND,
+            1.0,
+            SKIN,
+        );
+        blob(
+            d,
+            head,
+            Vec3::new(0.0, 0.045, -0.028),
+            Vec3::new(0.116, 0.11, 0.12),
+            ROUND,
+            1.0,
+            HAIR,
+        );
+        for x in [0.042, -0.042] {
+            blob(
+                d,
+                head,
+                Vec3::new(x, 0.012, 0.103),
+                Vec3::new(0.015, 0.017, 0.01),
+                ROUND,
+                1.0,
+                EYES,
+            );
+        }
+        for x in [0.104, -0.104] {
+            blob(
+                d,
+                head,
+                Vec3::new(x, -0.005, -0.005),
+                Vec3::new(0.018, 0.032, 0.024),
+                ROUND,
+                1.0,
+                SKIN,
+            );
+        }
+        blob(
+            d,
+            head,
+            Vec3::new(0.0, -0.025, 0.118),
+            Vec3::new(0.016, 0.024, 0.02),
+            ROUND,
+            1.0,
             SKIN,
         );
 
         // Arms swing against the legs. The right arm holds the tool out front
         // and chops with it on each edit.
-        let shoulder_y = 0.54;
+        let shoulder_y = 0.49;
         let left = torso
-            * Mat4::from_translation(Vec3::new(0.25, shoulder_y, 0.0))
+            * Mat4::from_translation(Vec3::new(0.23, shoulder_y, 0.0))
             * Mat4::from_rotation_x(swing * 0.8)
-            * Mat4::from_rotation_z(0.06 + if air { 0.3 } else { 0.0 });
-        arm(d, left);
-        let raise = 0.75 + p.pitch.clamp(-0.8, 0.8) * 0.6 - self.chop() * 0.9 - swing * 0.2;
+            * Mat4::from_rotation_z(0.08 + if air { 0.3 } else { 0.0 });
+        let left_hand = arm(d, left, 0.25 + s * 0.15);
+        blob(
+            d,
+            left_hand,
+            Vec3::ZERO,
+            Vec3::new(0.042, 0.05, 0.038),
+            ROUND,
+            1.0,
+            SKIN,
+        );
+        let raise = 0.45 + p.pitch.clamp(-0.8, 0.8) * 0.5 - self.chop() * 0.7 - swing * 0.2;
         let right = torso
-            * Mat4::from_translation(Vec3::new(-0.25, shoulder_y, 0.0))
+            * Mat4::from_translation(Vec3::new(-0.23, shoulder_y, 0.0))
             * Mat4::from_rotation_x(-raise)
-            * Mat4::from_rotation_z(-0.06);
-        arm(d, right);
-        let grip = right
-            * Mat4::from_translation(Vec3::new(0.0, -0.56, 0.02))
-            * Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2 - 0.3);
+            * Mat4::from_rotation_z(-0.08);
+        let right_hand = arm(d, right, 0.55 + self.chop() * 0.3);
+        blob(
+            d,
+            right_hand,
+            Vec3::ZERO,
+            Vec3::new(0.045, 0.05, 0.042),
+            ROUND,
+            1.0,
+            SKIN,
+        );
+        let grip = right_hand * Mat4::from_rotation_x(FRAC_PI_2 - 0.2);
         tool(d, grip, p.tool, 0);
     }
 
@@ -254,15 +377,25 @@ impl Rig {
         let start = d.vertices.len();
         // Forearm reaching in from below the view, then the tool in the fist.
         let arm = hand * Mat4::from_rotation_x(0.6);
-        part(d, arm, Vec3::new(0.0, -0.2, 0.0), Vec3::new(0.05, 0.2, 0.055), TUNIC);
-        part(
+        blob(
             d,
             arm,
-            Vec3::new(0.0, -0.395, 0.0),
-            Vec3::new(0.052, 0.02, 0.057),
+            Vec3::new(0.0, -0.2, 0.0),
+            Vec3::new(0.048, 0.2, 0.052),
+            ROUND,
+            1.2,
+            TUNIC,
+        );
+        blob(
+            d,
+            arm,
+            Vec3::new(0.0, -0.06, 0.0),
+            Vec3::new(0.052, 0.022, 0.056),
+            (3.0, 2.0),
+            1.0,
             TUNIC_TRIM,
         );
-        part(d, arm, Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.045, 0.05, 0.05), SKIN);
+        blob(d, arm, Vec3::ZERO, Vec3::new(0.045, 0.05, 0.043), ROUND, 1.0, SKIN);
         // Slightly smaller than life so the tool does not fill the view.
         let grip = hand * Mat4::from_translation(Vec3::new(0.0, 0.0, 0.02)) * Mat4::from_scale(Vec3::splat(0.8));
         tool(d, grip, p.tool, 0);
@@ -272,112 +405,174 @@ impl Rig {
     }
 }
 
-fn arm(d: &mut ActorDraw, shoulder: Mat4) {
-    part(
+/// Upper arm, elbow bent by `elbow` radians, forearm and cuff; returns the wrist frame.
+fn arm(d: &mut ActorDraw, shoulder: Mat4, elbow: f32) -> Mat4 {
+    blob(
         d,
         shoulder,
-        Vec3::new(0.0, -0.2, 0.0),
-        Vec3::new(0.06, 0.2, 0.065),
+        Vec3::new(0.0, -0.15, 0.0),
+        Vec3::new(0.055, 0.17, 0.058),
+        ROUND,
+        1.1,
         TUNIC,
     );
-    part(
+    let fore = shoulder * Mat4::from_translation(Vec3::new(0.0, -0.3, 0.0)) * Mat4::from_rotation_x(-elbow);
+    blob(
         d,
-        shoulder,
-        Vec3::new(0.0, -0.405, 0.0),
-        Vec3::new(0.062, 0.025, 0.067),
+        fore,
+        Vec3::new(0.0, -0.12, 0.0),
+        Vec3::new(0.047, 0.15, 0.05),
+        ROUND,
+        1.15,
+        TUNIC,
+    );
+    blob(
+        d,
+        fore,
+        Vec3::new(0.0, -0.23, 0.0),
+        Vec3::new(0.05, 0.022, 0.053),
+        (3.0, 2.0),
+        1.0,
         TUNIC_TRIM,
     );
-    part(
-        d,
-        shoulder,
-        Vec3::new(0.0, -0.49, 0.0),
-        Vec3::new(0.05, 0.065, 0.055),
-        SKIN,
-    );
+    fore * Mat4::from_translation(Vec3::new(0.0, -0.29, 0.0))
 }
 
 /// The held tool, gripped at `grip` with its working end along local +Y.
 fn tool(d: &mut ActorDraw, grip: Mat4, tool: Tool, flags: u32) {
     match tool {
         Tool::Block(m) => {
-            // A block the size of a fist, tilted so three faces show.
+            // A softened block the size of a fist, tilted so three sides show.
             let at = grip
-                * Mat4::from_translation(Vec3::new(0.0, 0.09, 0.02))
+                * Mat4::from_translation(Vec3::new(0.0, 0.1, 0.02))
                 * Mat4::from_quat(Quat::from_euler(glam::EulerRot::YXZ, 0.6, 0.35, 0.0));
-            // Textured like a whole building block, so its faces show the grid.
-            block_box(d, at, Vec3::splat(0.085), m, flags, BLOCK_VOXELS as f32 * VOXEL_SIZE);
+            // Textured like a whole building block.
+            stuff(
+                d,
+                at,
+                Vec3::splat(0.085),
+                (4.0, 4.0),
+                m,
+                flags,
+                BLOCK_VOXELS as f32 * VOXEL_SIZE,
+            );
         }
         Tool::Brush(m, b) => {
-            // A wooden handle with a shaped head of the material, bigger for bigger brushes.
-            part(d, grip, Vec3::new(0.0, 0.12, 0.0), Vec3::new(0.018, 0.2, 0.018), HANDLE);
-            part(d, grip, Vec3::new(0.0, 0.31, 0.0), Vec3::new(0.03, 0.015, 0.03), METAL);
+            // A turned wooden handle with a head of the material, bigger for bigger brushes.
+            blob(
+                d,
+                grip,
+                Vec3::new(0.0, 0.12, 0.0),
+                Vec3::new(0.017, 0.2, 0.017),
+                (6.0, 2.0),
+                1.15,
+                HANDLE,
+            );
+            blob(
+                d,
+                grip,
+                Vec3::new(0.0, 0.31, 0.0),
+                Vec3::new(0.027, 0.02, 0.027),
+                (3.0, 2.0),
+                1.0,
+                METAL,
+            );
             let r = 0.055 + 0.012 * b.radius as f32;
-            let head = grip * Mat4::from_translation(Vec3::new(0.0, 0.33 + r, 0.0));
-            if b.shape == Shape::Cube {
-                block_box(d, head, Vec3::splat(r), m, flags, VOXEL_SIZE);
-            } else {
-                // A rounded head: three crossed slabs read as a ball at hand size.
-                let t = r * 0.62;
-                block_box(d, head, Vec3::new(r, t, t), m, flags, VOXEL_SIZE);
-                block_box(d, head, Vec3::new(t, r, t), m, flags, VOXEL_SIZE);
-                block_box(d, head, Vec3::new(t, t, r), m, flags, VOXEL_SIZE);
-            }
+            let head = grip * Mat4::from_translation(Vec3::new(0.0, 0.32 + r, 0.0));
+            let round = if b.shape == Shape::Cube { (4.0, 4.0) } else { ROUND };
+            stuff(d, head, Vec3::splat(r), round, m, flags, VOXEL_SIZE);
         }
     }
 }
 
-/// A box of terrain material whose largest side shows `span` metres of it.
-fn block_box(d: &mut ActorDraw, at: Mat4, half: Vec3, m: Block, flags: u32, span: f32) {
-    let scale = span * 0.5 / half.max_element();
-    cuboid(
+/// Exponents of a plain ellipsoid; larger values square a shape off.
+const ROUND: (f32, f32) = (2.0, 2.0);
+
+/// A smooth coloured part: an ellipsoid with radii `radii` about `center`,
+/// squared off by `round` (vertical, around) and scaled by `taper` towards its top.
+fn blob(d: &mut ActorDraw, at: Mat4, center: Vec3, radii: Vec3, round: (f32, f32), taper: f32, color: [u8; 3]) {
+    surface(d, at, center, radii, round, taper, color, 0, (0.0, 0.0));
+}
+
+/// A smooth part made of terrain material whose width shows `span` metres of it.
+fn stuff(d: &mut ActorDraw, at: Mat4, radii: Vec3, round: (f32, f32), m: Block, flags: u32, span: f32) {
+    let scale = span * 0.5 / radii.max_element();
+    let tex = (scale, span * 0.5);
+    surface(
         d,
         at,
         Vec3::ZERO,
-        half,
+        radii,
+        round,
+        1.0,
         [255, 255, 255],
         flags | (m as u32) << 8,
-        (scale, span * 0.5),
+        tex,
     );
 }
 
-fn part(d: &mut ActorDraw, at: Mat4, center: Vec3, half: Vec3, color: [u8; 3]) {
-    cuboid(d, at, center, half, color, 0, (0.0, 0.0));
+/// `w` raised to `e`, keeping its sign.
+fn spow(w: f32, e: f32) -> f32 {
+    w.signum() * w.abs().powf(e)
 }
 
-/// Unit face directions and in-face axes, in the terrain's face order.
-const FACES: [(Vec3, Vec3, Vec3); 6] = [
-    (Vec3::X, Vec3::Y, Vec3::Z),
-    (Vec3::NEG_X, Vec3::Z, Vec3::Y),
-    (Vec3::Y, Vec3::Z, Vec3::X),
-    (Vec3::NEG_Y, Vec3::X, Vec3::Z),
-    (Vec3::Z, Vec3::X, Vec3::Y),
-    (Vec3::NEG_Z, Vec3::Y, Vec3::X),
-];
-
-/// Appends a box with half extents `half` centred at `center` in `at`'s frame.
-/// Lower corners get a little occlusion so parts read as solid forms.
-/// Texture coordinates are the local position times `tex.0`, plus `tex.1`.
-fn cuboid(d: &mut ActorDraw, at: Mat4, center: Vec3, half: Vec3, color: [u8; 3], flags: u32, tex: (f32, f32)) {
-    for (face, (n, u, v)) in FACES.iter().enumerate() {
-        let base = d.vertices.len() as u32;
-        let normal = at.transform_vector3(*n).normalize();
-        for (a, b) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
-            let local = *n + *u * a + *v * b;
-            let p = center + local * half;
-            // Occlusion from the corner's height within the part.
-            let ao = if local.y < 0.0 { 200u32 } else { 255 };
-            let uvw = (center + local * half) * tex.0 + Vec3::splat(tex.1);
+/// Appends a superellipsoid with smooth normals. Lower parts get a little
+/// occlusion so forms read as solid. Texture coordinates are the local
+/// position times `tex.0`, plus `tex.1`.
+#[allow(clippy::too_many_arguments)]
+fn surface(
+    d: &mut ActorDraw,
+    at: Mat4,
+    center: Vec3,
+    radii: Vec3,
+    round: (f32, f32),
+    taper: f32,
+    color: [u8; 3],
+    flags: u32,
+    tex: (f32, f32),
+) {
+    use std::f32::consts::{PI, TAU};
+    // Fewer facets on small parts; they cover a few pixels.
+    let (rings, segs) = if radii.max_element() < 0.035 { (5, 8) } else { (9, 16) };
+    let (e1, e2) = (2.0 / round.0, 2.0 / round.1);
+    let base = d.vertices.len() as u32;
+    for i in 0..=rings {
+        let th = -PI / 2.0 + PI * i as f32 / rings as f32;
+        let (st, ct) = th.sin_cos();
+        let y = spow(st, e1);
+        // Width at this height: 1 at the bottom, `taper` at the top.
+        let k = 1.0 + (taper - 1.0) * (y + 1.0) * 0.5;
+        for j in 0..=segs {
+            let ph = TAU * j as f32 / segs as f32;
+            let (sp, cp) = ph.sin_cos();
+            let unit = Vec3::new(spow(ct, e1) * spow(cp, e2) * k, y, spow(ct, e1) * spow(sp, e2) * k);
+            let grad = Vec3::new(
+                spow(ct, 2.0 - e1) * spow(cp, 2.0 - e2) / (radii.x * k),
+                spow(st, 2.0 - e1) / radii.y,
+                spow(ct, 2.0 - e1) * spow(sp, 2.0 - e2) / (radii.z * k),
+            );
+            let local_n = grad.normalize_or(Vec3::new(0.0, st.signum(), 0.0));
+            let pos = center + unit * radii;
+            let axis = local_n.abs().max_position();
+            let face = axis as u32 * 2 + (local_n[axis] < 0.0) as u32;
+            let ao = 190 + (65.0 * (y + 1.0) * 0.5) as u32;
             d.vertices.push(ActorVertex {
-                pos: at.transform_point3(p).to_array(),
-                normal: normal.to_array(),
-                tex: uvw.to_array(),
+                pos: at.transform_point3(pos).to_array(),
+                normal: at.transform_vector3(local_n).normalize().to_array(),
+                tex: (pos * tex.0 + Vec3::splat(tex.1)).to_array(),
                 color: color[0] as u32 | (color[1] as u32) << 8 | (color[2] as u32) << 16 | ao << 24,
-                flags: flags | (face as u32) << 1,
+                flags: flags | face << 1,
             });
         }
-        // u x v = n for every face, so (0, 1, 2) winds counter-clockwise seen from outside.
-        d.indices
-            .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+    let row = segs + 1;
+    for i in 0..rings {
+        for j in 0..segs {
+            let a = base + i * row + j;
+            let (b, c) = (a + row, a + 1);
+            // Counter-clockwise seen from outside.
+            d.indices.extend_from_slice(&[a, b, c, c, b, b + 1]);
+        }
     }
 }
 
@@ -400,9 +595,41 @@ mod tests {
     }
 
     #[test]
-    fn faces_wind_outwards() {
-        for (n, u, v) in FACES {
-            assert!(u.cross(v).abs_diff_eq(n, 1e-6), "{n}");
+    fn surfaces_wind_outwards_with_smooth_normals() {
+        for round in [ROUND, (4.0, 4.0), (6.0, 2.0)] {
+            let mut d = ActorDraw::default();
+            let radii = Vec3::new(0.2, 0.3, 0.1);
+            surface(
+                &mut d,
+                Mat4::IDENTITY,
+                Vec3::ZERO,
+                radii,
+                round,
+                1.0,
+                [0; 3],
+                0,
+                (0.0, 0.0),
+            );
+            for t in d.indices.chunks(3) {
+                let [a, b, c] = [t[0], t[1], t[2]].map(|i| Vec3::from(d.vertices[i as usize].pos));
+                let n = (b - a).cross(c - a);
+                // Slivers at the poles, where a ring shrinks to a point, have no direction.
+                let shortest = [(a, b), (b, c), (c, a)]
+                    .map(|(p, q)| p.distance(q))
+                    .into_iter()
+                    .fold(1.0, f32::min);
+                if shortest > 1e-3 {
+                    assert!(
+                        n.dot(a + b + c) > 0.0,
+                        "inward triangle in {round:?}: {a} {b} {c} n={n}"
+                    );
+                }
+            }
+            for v in &d.vertices {
+                let (p, n) = (Vec3::from(v.pos), Vec3::from(v.normal));
+                assert!((n.length() - 1.0).abs() < 1e-3);
+                assert!(n.dot(p) >= -1e-4, "normal points in at {p}");
+            }
         }
     }
 

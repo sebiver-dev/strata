@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strata</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0e1412; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; outline: none; }
+  .hud { position: fixed; left: 12px; font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; color: #e8eee9; text-shadow: 0 1px 2px #000a; pointer-events: none; }
+  #status { top: 10px; }
+  #help { bottom: 10px; opacity: .85; }
+  #error { display: none; position: fixed; inset: 30% 10% auto; padding: 16px 20px; background: #2a1414; color: #fbe9e9; font: 15px/1.5 system-ui, sans-serif; border-radius: 8px; }
+</style>
+</head>
+<body>
+<div id="status" class="hud">Loading Strata...</div>
+<div id="help" class="hud">Click to play · WASD move · Space jump · Shift sprint · F fly · Left click dig · Right click build · 1-8 or wheel pick material · [ ] brush size · Esc release mouse</div>
+<div id="error"></div>
+<script type="module">
+  import init from "./pkg/strata.js";
+  init().catch((e) => {
+    // winit uses an exception to hand control to the browser's event loop; that one is expected.
+    if (!String(e).includes("Using exceptions for control flow")) {
+      const el = document.getElementById("error");
+      el.textContent = "Strata could not start: " + e;
+      el.style.display = "block";
+    }
+  });
+</script>
+</body>
+</html>

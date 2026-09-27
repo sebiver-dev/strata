@@ -397,7 +397,7 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             green = mix(green, vec3(0.50, 0.52, 0.24), smoothstep(0.55, 0.75, meadow) * 0.6);
             let blades = vnoise2(q.xz * 41.0) * 0.6 + vnoise2(q.xz * 97.0) * 0.4;
             green *= 0.8 + 0.25 * fine + (blades - 0.5) * 0.45 * d_cm;
-            if (top) {
+            {
                 var c = green;
                 // Daisies and buttercups, a couple of centimetres across.
                 let fc = floor(q.xz * 7.0);
@@ -413,11 +413,9 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
                     if (r < 0.005 && kind <= 0.6) { fl = vec3(0.98, 0.80, 0.25); }
                     c = mix(c, fl, petal);
                 }
-                s.albedo = c;
-            } else {
-                let lip = fract(p.y / VOXEL);
+                // Steep banks show the soil under the turf.
                 let dirt = vec3(0.40, 0.28, 0.19) * (0.8 + 0.4 * fine);
-                s.albedo = mix(dirt, green, smoothstep(0.62, 0.75, lip + fine * 0.2 + (blades - 0.5) * 0.15));
+                s.albedo = mix(dirt, c, smoothstep(0.42, 0.72, n.y + (fine - 0.5) * 0.25 + (blades - 0.5) * 0.1));
             }
             s.rough = 0.85;
             s.sss = 0.2;
@@ -573,7 +571,25 @@ struct VOut {
     @location(0) world: vec3<f32>,
     @location(1) @interpolate(flat) info: u32,
     @location(2) ao: f32,
+    @location(3) normal: vec3<f32>,
 };
+
+// Face 7 marks a vertex of the smooth surface, whose normal is packed in
+// octahedral form in bits 13..31 (see `smooth_data` in mesh.rs).
+fn vertex_normal(info: u32) -> vec3<f32> {
+    let face = info & 7u;
+    if (face < 6u) {
+        return NORMALS[face];
+    }
+    let q = vec2(f32((info >> 13u) & 511u), f32((info >> 22u) & 511u)) / 511.0 * 2.0 - 1.0;
+    var n = vec3(q.x, 1.0 - abs(q.x) - abs(q.y), q.y);
+    if (n.y < 0.0) {
+        let sx = select(-1.0, 1.0, q.x >= 0.0);
+        let sz = select(-1.0, 1.0, q.y >= 0.0);
+        n = vec3((1.0 - abs(q.y)) * sx, n.y, (1.0 - abs(q.x)) * sz);
+    }
+    return normalize(n);
+}
 
 // Leaves sway a few centimetres in the wind. The offset depends only on the
 // position, so neighbouring faces move together and no cracks open.
@@ -605,6 +621,7 @@ fn vs_world(@location(0) pos: vec3<f32>, @location(1) data: u32) -> VOut {
     o.world = pos;
     o.info = data;
     o.ao = f32((data >> 11u) & 3u) / 3.0;
+    o.normal = vertex_normal(data);
     return o;
 }
 
@@ -635,7 +652,7 @@ fn fs_terrain(i: VOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_far_terrain(i: VOut) -> @location(0) vec4<f32> {
-    if (under_near(i.world, NORMALS[i.info & 7u])) {
+    if (under_near(i.world, normalize(i.normal))) {
         discard;
     }
     return shade_terrain(i);
@@ -666,7 +683,7 @@ fn sd_round_box(p: vec3<f32>, half: vec3<f32>, rad: f32) -> f32 {
 }
 
 fn shade_terrain(i: VOut) -> vec4<f32> {
-    let n = NORMALS[i.info & 7u];
+    let n = normalize(i.normal);
     let mat = (i.info >> 3u) & 255u;
     let pix = length(fwidth(i.world)) * 0.7;
     var surf = material(mat, i.world, n, pix);

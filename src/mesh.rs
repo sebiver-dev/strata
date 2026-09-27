@@ -1,19 +1,23 @@
-//! Turns a chunk of voxels into triangles. Only faces between a block and a
-//! see-through neighbour are emitted, each corner shaded by ambient occlusion.
+//! Turns a chunk of voxels into triangles. Solid ground, rock, trees and built
+//! pieces are drawn as one smooth surface (surface nets over a lightly blurred
+//! occupancy field), so nothing in the world reads as a cube. Water, lanterns
+//! and grass blades keep their own shapes.
 
 use crate::block::*;
 use crate::chunk::CHUNK;
 use crate::world::World;
 use bytemuck::{Pod, Zeroable};
-use glam::IVec3;
+use glam::{IVec3, Vec3};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Vertex {
     /// World position in metres.
     pub pos: [f32; 3],
-    /// Bits 0..3 face direction, 3..11 material, 11..13 ambient occlusion (0 darkest).
-    /// Grass blades use the occlusion bits for height along the blade (3 at the tip).
+    /// Bits 0..3 face direction (7: smooth surface), 3..11 material, 11..13 ambient
+    /// occlusion (0 darkest), and for smooth surfaces 13..31 the normal in
+    /// octahedral form (9 bits per axis). Grass blades use the occlusion bits for
+    /// height along the blade (3 at the tip).
     pub data: u32,
 }
 
@@ -71,16 +75,22 @@ pub(crate) const FACES: [Face; 6] = [
     },
 ];
 
-const P: i32 = CHUNK + 2;
+/// Voxels of border gathered around a chunk: one for the blur, one for the
+/// surface cells that straddle the chunk's edge.
+const BORDER: i32 = 2;
+const P: i32 = CHUNK + 2 * BORDER;
 
-/// A copy of the chunk plus a one-voxel border from its neighbours.
+/// Face value marking a vertex of the smooth surface.
+pub const SMOOTH_FACE: u32 = 7;
+
+/// A copy of the chunk plus a two-voxel border from its neighbours.
 struct Padded {
     data: Vec<Block>,
 }
 
 impl Padded {
     fn gather(world: &World, cpos: IVec3) -> Self {
-        let origin = cpos * CHUNK - IVec3::ONE;
+        let origin = cpos * CHUNK - IVec3::splat(BORDER);
         let mut data = vec![AIR; (P * P * P) as usize];
         // Look up the 27 chunks once instead of hashing every voxel.
         let mut near: [Option<&crate::chunk::Chunk>; 27] = [None; 27];
@@ -111,18 +121,28 @@ impl Padded {
         Self { data }
     }
 
-    /// Local coordinates in -1..=CHUNK.
+    /// Local coordinates in -BORDER..CHUNK + BORDER.
     #[inline]
     fn get(&self, p: IVec3) -> Block {
-        let q = p + IVec3::ONE;
+        let q = p + IVec3::splat(BORDER);
         self.data[((q.y * P + q.z) * P + q.x) as usize]
     }
 }
 
+/// Blocks drawn as part of the smooth surface.
+#[inline]
+fn is_smooth(b: Block) -> bool {
+    is_solid(b) && b != LANTERN
+}
+
 pub fn build(world: &World, cpos: IVec3) -> MeshData {
+    let air_beyond = |d: IVec3| world.chunks.get(&(cpos + d)).is_none_or(|n| n.is_uniform(AIR));
     match world.chunks.get(&cpos) {
         None => return MeshData::default(),
-        Some(c) if c.is_uniform(AIR) => return MeshData::default(),
+        // An empty chunk still owns the surface against solid chunks on its +X, +Y and +Z sides.
+        Some(c) if c.is_uniform(AIR) && [IVec3::X, IVec3::Y, IVec3::Z].into_iter().all(air_beyond) => {
+            return MeshData::default()
+        }
         Some(c) => {
             if let crate::chunk::Chunk::Uniform(b) = c {
                 let buried = [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z]
@@ -154,6 +174,9 @@ pub fn build(world: &World, cpos: IVec3) -> MeshData {
                     grass_blades(&mut out, origin, p);
                     continue;
                 }
+                if is_smooth(b) {
+                    continue;
+                }
                 for (fi, f) in FACES.iter().enumerate() {
                     let nb = pad.get(p + f.n);
                     if b == WATER {
@@ -170,15 +193,181 @@ pub fn build(world: &World, cpos: IVec3) -> MeshData {
                                 true,
                             );
                         }
-                    } else if !is_opaque(nb) {
+                    } else if !is_opaque(nb) || is_smooth(nb) {
                         emit(&pad, &mut out.vertices, &mut out.indices, origin, p, fi, f, b, false);
                     }
                 }
             }
         }
     }
+    smooth_surface(&pad, origin, &mut out);
     out
 }
+
+/// Packs a smooth-surface vertex's material, occlusion and normal.
+pub fn smooth_data(mat: Block, ao: u32, n: Vec3) -> u32 {
+    let n = n / (n.x.abs() + n.y.abs() + n.z.abs()).max(1e-6);
+    let (mut u, mut v) = (n.x, n.z);
+    if n.y < 0.0 {
+        let sign = |a: f32| if a >= 0.0 { 1.0 } else { -1.0 };
+        (u, v) = ((1.0 - v.abs()) * sign(u), (1.0 - u.abs()) * sign(v));
+    }
+    let q = |a: f32| ((a * 0.5 + 0.5) * 511.0).round().clamp(0.0, 511.0) as u32;
+    SMOOTH_FACE | ((mat as u32) << 3) | (ao.min(3) << 11) | (q(u) << 13) | (q(v) << 22)
+}
+
+/// Surface nets over the chunk. Occupancy is blurred with a 1-2-1 kernel so
+/// steps and corners round off, but every solid voxel keeps at least a small
+/// rounded body and every empty one stays open, so thin trunks, posts and
+/// single placed voxels never vanish or fuse shut.
+fn smooth_surface(pad: &Padded, origin: IVec3, out: &mut MeshData) {
+    let idx = |x: i32, y: i32, z: i32| ((y * P + z) * P + x) as usize;
+    let mut a: Vec<f32> = pad.data.iter().map(|b| is_smooth(*b) as u8 as f32).collect();
+    if a.iter().all(|v| *v == 0.0) {
+        return;
+    }
+    let solid: Vec<bool> = a.iter().map(|v| *v > 0.5).collect();
+    // Separable blur; the outermost ring keeps its raw value and is never read as a cell corner.
+    let mut b = a.clone();
+    for axis in 0..3 {
+        // idx() lays voxels out x fastest, then z, then y.
+        let step = [1, P * P, P][axis] as usize;
+        for y in 0..P {
+            for z in 0..P {
+                for x in 0..P {
+                    let c = [x, y, z][axis];
+                    if c == 0 || c == P - 1 {
+                        continue;
+                    }
+                    let i = idx(x, y, z);
+                    b[i] = (a[i - step] + 2.0 * a[i] + a[i + step]) * 0.25;
+                }
+            }
+        }
+        std::mem::swap(&mut a, &mut b);
+    }
+    let d: Vec<f32> = a
+        .iter()
+        .zip(&solid)
+        .map(|(v, s)| if *s { v.max(0.56) } else { v.min(0.44) })
+        .collect();
+
+    // One vertex per cell (a cube between eight voxel centres) that the surface crosses.
+    // Cells start one voxel before the chunk so quads on its low faces can reach them.
+    const C: i32 = CHUNK + 1;
+    let cell_of = |c: IVec3| ((c.y + 1) * C * C + (c.z + 1) * C + (c.x + 1)) as usize;
+    let mut cell_vertex = vec![u32::MAX; (C * C * C) as usize];
+    let at = |v: IVec3| {
+        let q = v + IVec3::splat(BORDER);
+        idx(q.x, q.y, q.z)
+    };
+    // Cell vertices are made on first use, so cells no quad touches cost nothing.
+    let mut vertex = |c: IVec3, out: &mut MeshData| -> u32 {
+        let slot = &mut cell_vertex[cell_of(c)];
+        if *slot != u32::MAX {
+            return *slot;
+        }
+        let mut corner = [0.0f32; 8];
+        for (k, v) in corner.iter_mut().enumerate() {
+            let o = IVec3::new(k as i32 & 1, (k as i32 >> 1) & 1, k as i32 >> 2);
+            *v = d[at(c + o)];
+        }
+        // Average of where the surface crosses the cell's twelve edges.
+        let mut sum = Vec3::ZERO;
+        let mut crossings = 0.0;
+        for (e0, e1) in CELL_EDGES {
+            let (v0, v1) = (corner[e0], corner[e1]);
+            if (v0 > 0.5) != (v1 > 0.5) {
+                let t = (v0 - 0.5) / (v0 - v1);
+                sum += corner_pos(e0).lerp(corner_pos(e1), t);
+                crossings += 1.0;
+            }
+        }
+        let l = sum / crossings;
+        // Density gradient by trilinear differences; the surface faces down it.
+        let lerp2 = |a: f32, b: f32, c: f32, d: f32, s: f32, t: f32| {
+            (a * (1.0 - s) + b * s) * (1.0 - t) + (c * (1.0 - s) + d * s) * t
+        };
+        let k = &corner;
+        let gx = lerp2(k[1] - k[0], k[3] - k[2], k[5] - k[4], k[7] - k[6], l.y, l.z);
+        let gy = lerp2(k[2] - k[0], k[3] - k[1], k[6] - k[4], k[7] - k[5], l.x, l.z);
+        let gz = lerp2(k[4] - k[0], k[5] - k[1], k[6] - k[2], k[7] - k[3], l.x, l.y);
+        let g = Vec3::new(gx, gy, gz);
+        let n = if g.length_squared() > 1e-8 {
+            -g.normalize()
+        } else {
+            Vec3::Y
+        };
+        // Material of the highest solid corner, so grass tops win over dirt below.
+        let mut mat = STONE;
+        let mut best = i32::MIN;
+        for (k, v) in corner.iter().enumerate() {
+            let o = IVec3::new(k as i32 & 1, (k as i32 >> 1) & 1, k as i32 >> 2);
+            if *v > 0.5 && o.y > best {
+                best = o.y;
+                mat = pad.get(c + o);
+            }
+        }
+        // More solid around the cell means a more enclosed, darker spot.
+        let fill = corner.iter().sum::<f32>() / 8.0;
+        let ao = ((1.0 - (fill - 0.5) * 2.6).clamp(0.0, 1.0) * 3.0).round() as u32;
+        let pos = ((origin + c).as_vec3() + 0.5 + l) * VOXEL_SIZE;
+        *slot = out.vertices.len() as u32;
+        out.vertices.push(Vertex {
+            pos: pos.to_array(),
+            data: smooth_data(mat, ao, n),
+        });
+        *slot
+    };
+
+    // One quad for every voxel edge the surface crosses, owned by the edge's lower end.
+    // (u, v) are chosen so u x v points along the axis, which makes the quad
+    // counter-clockwise seen from outside when the lower voxel is the solid one.
+    const AXES: [(IVec3, IVec3, IVec3); 3] = [
+        (IVec3::X, IVec3::Y, IVec3::Z),
+        (IVec3::Y, IVec3::Z, IVec3::X),
+        (IVec3::Z, IVec3::X, IVec3::Y),
+    ];
+    for y in 0..CHUNK {
+        for z in 0..CHUNK {
+            for x in 0..CHUNK {
+                let p = IVec3::new(x, y, z);
+                let here = d[at(p)] > 0.5;
+                for (axis, u, v) in AXES {
+                    if here == (d[at(p + axis)] > 0.5) {
+                        continue;
+                    }
+                    let [a, b, c, e] = [p - u - v, p - v, p, p - u].map(|c| vertex(c, out));
+                    if here {
+                        out.indices.extend_from_slice(&[a, b, c, a, c, e]);
+                    } else {
+                        out.indices.extend_from_slice(&[a, c, b, a, e, c]);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Corner k of a cell: bit 0 is +X, bit 1 is +Y, bit 2 is +Z.
+fn corner_pos(k: usize) -> Vec3 {
+    Vec3::new((k & 1) as f32, ((k >> 1) & 1) as f32, (k >> 2) as f32)
+}
+
+const CELL_EDGES: [(usize, usize); 12] = [
+    (0, 1),
+    (2, 3),
+    (4, 5),
+    (6, 7),
+    (0, 2),
+    (1, 3),
+    (4, 6),
+    (5, 7),
+    (0, 4),
+    (1, 5),
+    (2, 6),
+    (3, 7),
+];
 
 /// Blades per tall grass voxel.
 const BLADES: u32 = 5;
@@ -188,7 +377,8 @@ const BLADES: u32 = 5;
 /// little its own way. Both windings are emitted so blades show from either side.
 fn grass_blades(out: &mut MeshData, origin: IVec3, p: IVec3) {
     let w = origin + p;
-    let floor = w.as_vec3() * VOXEL_SIZE;
+    // Rooted a little below the voxel floor, since the smooth ground can dip there.
+    let floor = w.as_vec3() * VOXEL_SIZE - glam::Vec3::Y * 0.12;
     let patch = crate::noise::fbm2(97, w.x as f32 / 9.0, w.z as f32 / 9.0, 2);
     let tall = 0.22 + 0.95 * patch * patch;
     let data = |ao: u32| 2 | ((TALL_GRASS as u32) << 3) | (ao << 11);
@@ -265,33 +455,79 @@ mod tests {
     use crate::chunk::Chunk;
 
     #[test]
-    fn single_block_has_six_faces() {
+    fn single_voxel_is_a_small_rounded_body() {
         let mut w = World::new(1, 1);
         let mut c = Chunk::default();
         c.set(5, 5, 5, STONE);
         w.chunks.insert(IVec3::ZERO, c);
         let m = build(&w, IVec3::ZERO);
-        assert_eq!(m.vertices.len(), 24);
+        // Eight surface cells around it, one quad per face.
+        assert_eq!(m.vertices.len(), 8);
         assert_eq!(m.indices.len(), 36);
-        // Unoccluded faces are fully lit.
-        assert!(m.vertices.iter().all(|v| (v.data >> 11) & 3 == 3));
+        let centre = glam::Vec3::splat(5.5 * VOXEL_SIZE);
+        for v in &m.vertices {
+            assert_eq!(v.data & 7, SMOOTH_FACE);
+            // Corners are pulled in from the cube's corners, so it reads as round.
+            let r = (glam::Vec3::from(v.pos) - centre).abs();
+            assert!(r.max_element() < 0.25 && r.min_element() > 0.02, "{r:?}");
+        }
     }
 
     #[test]
-    fn tall_grass_is_blades_and_does_not_hide_the_ground() {
+    fn smooth_normals_round_trip_through_the_packing() {
+        for n in [Vec3::Y, Vec3::NEG_Y, Vec3::X, Vec3::new(0.3, -0.8, 0.5).normalize()] {
+            let d = smooth_data(STONE, 3, n);
+            let q = |s: u32| ((d >> s) & 511) as f32 / 511.0 * 2.0 - 1.0;
+            let (u, v) = (q(13), q(22));
+            let mut m = Vec3::new(u, 1.0 - u.abs() - v.abs(), v);
+            if m.y < 0.0 {
+                let sign = |a: f32| if a >= 0.0 { 1.0 } else { -1.0 };
+                (m.x, m.z) = ((1.0 - v.abs()) * sign(u), (1.0 - u.abs()) * sign(v));
+            }
+            assert!(m.normalize().dot(n) > 0.995, "{n:?} -> {m:?}");
+        }
+    }
+
+    #[test]
+    fn flat_ground_is_flat_and_faces_up() {
+        let mut w = World::new(1, 1);
+        let mut c = Chunk::default();
+        for z in 0..CHUNK {
+            for x in 0..CHUNK {
+                for y in 0..4 {
+                    c.set(x, y, z, GRASS);
+                }
+            }
+        }
+        w.chunks.insert(IVec3::ZERO, c);
+        let m = build(&w, IVec3::ZERO);
+        // Away from the chunk's open edges, every vertex sits on the top of the
+        // fourth voxel layer with an upward normal.
+        for v in m
+            .vertices
+            .iter()
+            .filter(|v| v.pos[0] > 3.0 && v.pos[0] < 12.0 && v.pos[2] > 3.0 && v.pos[2] < 12.0)
+        {
+            assert!((v.pos[1] - 2.0).abs() < 0.02, "{:?}", v.pos);
+            assert_eq!((v.data >> 3) & 255, GRASS as u32);
+            assert_eq!(v.data >> 13 & 511, 256);
+        }
+    }
+
+    #[test]
+    fn tall_grass_is_blades_over_smooth_ground() {
         let mut w = World::new(1, 1);
         let mut c = Chunk::default();
         c.set(5, 5, 5, GRASS);
         c.set(5, 6, 5, TALL_GRASS);
         w.chunks.insert(IVec3::ZERO, c);
         let m = build(&w, IVec3::ZERO);
-        // Six faces for the grass block, including its top under the blades.
-        let blocks = m
+        let ground = m
             .vertices
             .iter()
             .filter(|v| (v.data >> 3) & 255 == GRASS as u32)
             .count();
-        assert_eq!(blocks, 24);
+        assert_eq!(ground, 8);
         let blades = m
             .vertices
             .iter()

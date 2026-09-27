@@ -85,17 +85,14 @@ impl World {
         if old == LANTERN || b == LANTERN {
             self.index_lanterns(c);
         }
-        // Neighbours share faces and ambient occlusion with voxels on the border.
-        for dz in -1..=1 {
-            for dy in -1..=1 {
-                for dx in -1..=1 {
-                    let off = IVec3::new(dx, dy, dz);
-                    let edge = (l + off).cmplt(IVec3::ZERO).any() || (l + off).cmpge(IVec3::splat(CHUNK)).any();
-                    if off == IVec3::ZERO || edge {
-                        let n = chunk_of(v + off);
-                        if self.chunks.contains_key(&n) {
-                            self.dirty.insert(n);
-                        }
+        // The smooth surface near a voxel depends on voxels up to three away
+        // (blur, surface cell, quad), so every chunk within that reach remeshes.
+        for dz in [-3, 0, 3] {
+            for dy in [-3, 0, 3] {
+                for dx in [-3, 0, 3] {
+                    let n = chunk_of(v + IVec3::new(dx, dy, dz));
+                    if self.chunks.contains_key(&n) {
+                        self.dirty.insert(n);
                     }
                 }
             }

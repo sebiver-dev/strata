@@ -140,6 +140,7 @@ pub fn build(world: &World, cpos: IVec3) -> MeshData {
     let mut out = build_voxels(world, cpos);
     // Buildings and fences are authored models; their voxels only give collision.
     world.terrain.structures.append_models(cpos, &mut out);
+    crate::rocks::append(&world.terrain, cpos, &mut out);
     crate::trees::append(&world.terrain, cpos, &mut out);
     out
 }

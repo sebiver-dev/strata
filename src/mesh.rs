@@ -179,6 +179,15 @@ pub fn build(world: &World, cpos: IVec3) -> MeshData {
                     post(&mut out, &pad, origin, p);
                     continue;
                 }
+                if b == LEAVES {
+                    // Tufts on the crown's outside, facing the open air.
+                    for f in FACES.iter() {
+                        if pad.get(p + f.n) == AIR {
+                            leaf_tuft(&mut out, origin, p, f.n.as_vec3());
+                            break;
+                        }
+                    }
+                }
                 if b == LANTERN {
                     lantern(&mut out, origin, p, pad.get(p - IVec3::Y) == POST);
                     continue;
@@ -468,26 +477,8 @@ fn flowers(out: &mut MeshData, floor: Vec3, w: IVec3, seed: u32) {
     let at = floor + Vec3::new(0.1 + 0.3 * r(3), -0.1, 0.1 + 0.3 * r(7));
     let angle = r(11) * std::f32::consts::TAU;
     let across = Vec3::new(angle.cos(), 0.0, angle.sin());
-    let across2 = Vec3::new(-across.z, 0.0, across.x);
-    if lupins > 0.55 && r(0) < 0.6 {
-        // A stem, then a tapering spike of florets on its top half, as two crossed planes.
-        let height = 0.7 + 0.55 * r(15);
-        let lean = Vec3::new(r(19) - 0.5, 0.0, r(23) - 0.5) * 0.12;
-        let spike = at + lean * 0.5 + Vec3::Y * height * 0.45;
-        let top = at + lean + Vec3::Y * height;
-        plant_tri(
-            out,
-            [(at - across * 0.012, 0), (at + across * 0.012, 0), (spike, 1)],
-            TALL_GRASS,
-        );
-        let wide = 0.07 + 0.03 * r(27);
-        for side in [across, across2] {
-            plant_tri(
-                out,
-                [(spike - side * wide, 1), (spike + side * wide, 1), (top, 3)],
-                LUPIN,
-            );
-        }
+    if lupins > 0.55 && r(0) < 0.45 {
+        lupin(out, at, angle, &r);
     } else if r(0) < 0.03 + 0.1 * meadow {
         // A daisy: a thin stem with a white flower head facing the sky.
         let height = 0.22 + 0.25 * r(15);
@@ -521,6 +512,85 @@ fn flowers(out: &mut MeshData, floor: Vec3, w: IVec3, seed: u32) {
                 DAISY_HEART,
             );
         }
+    }
+}
+
+/// A lupin: a rosette of fingered leaves low down, a stem, and a tapering spike
+/// of small pea-like florets, mostly purple with some pink and white ones.
+fn lupin(out: &mut MeshData, at: Vec3, angle: f32, r: &dyn Fn(u32) -> f32) {
+    use std::f32::consts::TAU;
+    let dir = |a: f32| Vec3::new(a.cos(), 0.0, a.sin());
+    let height = 0.55 + 0.75 * r(15);
+    let lean = Vec3::new(r(19) - 0.5, 0.0, r(23) - 0.5) * 0.14;
+    // Leaves: six narrow leaflets fanning out and drooping at their tips.
+    let hub = at + Vec3::Y * (0.22 + 0.06 * r(21));
+    for k in 0..6 {
+        let d = dir(angle + k as f32 * TAU / 6.0 + 0.3 * r(40 + k));
+        let side = Vec3::new(-d.z, 0.0, d.x) * 0.035;
+        let len = 0.2 + 0.06 * r(47 + k);
+        let mid = hub + d * len * 0.5 + Vec3::Y * 0.035;
+        let tip = hub + d * len + Vec3::Y * 0.005;
+        plant_tri(out, [(hub, 0), (mid + side, 1), (tip, 1)], TALL_GRASS);
+        plant_tri(out, [(hub, 0), (tip, 1), (mid - side, 1)], TALL_GRASS);
+    }
+    let spike0 = at + lean * 0.4 + Vec3::Y * height * 0.42;
+    let top = at + lean + Vec3::Y * height;
+    let stem = dir(angle) * 0.01;
+    plant_tri(out, [(at - stem, 0), (at + stem, 0), (spike0, 1)], TALL_GRASS);
+    let mat = match r(31) {
+        t if t < 0.68 => LUPIN,
+        t if t < 0.86 => LUPIN_PINK,
+        _ => LUPIN_WHITE,
+    };
+    // Florets in whorls of four, overlapping into a dense cone, largest at the
+    // bottom and closing to a bud at the tip.
+    let whorls = 12;
+    let base_size = 0.07 + 0.02 * r(27);
+    for i in 0..whorls {
+        let t = i as f32 / (whorls - 1) as f32;
+        let axis = spike0.lerp(top, t);
+        let size = base_size * (1.0 - 0.75 * t);
+        let tip = (1 + (t * 2.0).round() as u32).min(3);
+        for j in 0..4 {
+            let d = dir(angle + (j as f32 + 0.5 * (i % 2) as f32) * TAU / 4.0);
+            let side = Vec3::new(-d.z, 0.0, d.x);
+            plant_tri(
+                out,
+                [
+                    (axis - Vec3::Y * size * 0.3, tip),
+                    (axis + d * size + side * size * 0.7 + Vec3::Y * size * 0.55, tip),
+                    (axis + d * size - side * size * 0.7 + Vec3::Y * size * 0.1, tip),
+                ],
+                mat,
+            );
+        }
+    }
+}
+
+/// A small tuft of leaves on the outside of a crown, standing out from its
+/// surface in the direction `out_dir`, so the crown's edge reads as foliage.
+fn leaf_tuft(out: &mut MeshData, origin: IVec3, p: IVec3, out_dir: Vec3) {
+    let w = origin + p;
+    let h = crate::noise::hash3(0x1eaf, w.x, w.y, w.z);
+    let r = |shift: u32| crate::noise::unit(h.rotate_left(shift));
+    if r(0) > 0.45 {
+        return;
+    }
+    let centre = (w.as_vec3() + 0.5) * VOXEL_SIZE + out_dir * 0.1;
+    let up = if out_dir.y.abs() > 0.9 { Vec3::X } else { Vec3::Y };
+    let t1 = out_dir.cross(up).normalize();
+    let t2 = out_dir.cross(t1);
+    for k in 0..3 {
+        let a = (k as f32 + r(3)) * std::f32::consts::TAU / 3.0;
+        let spread = t1 * a.cos() + t2 * a.sin();
+        let d = (out_dir + spread * 0.9 + Vec3::Y * 0.2).normalize();
+        let side = d.cross(out_dir + Vec3::Y * 0.01).normalize_or_zero() * (0.07 + 0.03 * r(7 + k));
+        let len = 0.22 + 0.12 * r(11 + k);
+        let base = centre + spread * 0.05;
+        let mid = base + d * len * 0.5;
+        let tip = base + d * len;
+        plant_tri(out, [(base, 3), (mid + side, 3), (tip, 3)], LEAVES);
+        plant_tri(out, [(base, 3), (tip, 3), (mid - side, 3)], LEAVES);
     }
 }
 

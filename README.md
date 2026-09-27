@@ -14,16 +14,21 @@ depends on:
   and conifer trees.
 - Half-metre voxels, twice as fine as Minecraft's, stored in 32³ chunks that
   collapse to a single value when uniform.
-- Chunks stream in and out around the player within a per-frame time budget,
-  so loading never stalls a frame.
+- Chunks stream in and out around the player. Generating, meshing and far
+  tiles share one fixed slice of each frame (6 ms in the browser, 8 ms
+  native), and a job starts only when its measured cost fits, so loading
+  never causes a frame spike.
 - The rest of the valley, out to the snow-capped rim 2 km away, is drawn as a
   far field: blocky columns built from the terrain's height function in 64 m
   tiles, with 2, 4 or 8 m cells depending on distance and box-shaped forests.
   The shader hides far tiles wherever the full voxel meshes are drawn.
 - Meshing emits only visible faces, with per-corner ambient occlusion.
-- A wgpu renderer with a procedural sky, sun shadows, HDR rendering with
-  filmic tone mapping, and distance fog. It uses reverse-Z depth and frustum
-  culling.
+- A wgpu renderer with sun shadows, HDR rendering with filmic tone mapping
+  and a light colour grade. It uses reverse-Z depth and frustum culling.
+- An analytic atmosphere under a low afternoon sun: the sun's colour, the
+  sky, the ambient light and the haze all come from the same scattering
+  model, so they always agree. Haze is densest low in the valley and thins
+  with height, turning distant hills blue and glowing warm towards the sun.
 - Textureless procedural materials, each with its own colour, relief,
   roughness and translucency: lichen and cracks on stone, pebbles in dirt,
   wind ripples in sand, clumped leaves that glow when backlit and sway in the

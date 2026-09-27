@@ -8,7 +8,7 @@ fn main() {
     let mut world = World::new(20260927, 12);
     let spawn = world.terrain.spawn_point();
     let t = std::time::Instant::now();
-    world.stream(spawn, f64::INFINITY);
+    world.stream(spawn, &strata::budget::Deadline::new(f64::INFINITY), 1.0);
     let gen = t.elapsed();
     let chunks = world.chunks.len();
 
@@ -40,10 +40,16 @@ fn main() {
     let t = std::time::Instant::now();
     let mut far = strata::far::FarField::default();
     let (mut far_tris, mut tiles) = (0, 0);
-    far.update(&world.terrain, spawn, f64::INFINITY, |_, m| {
-        far_tris += (m.indices.len() + m.water_indices.len()) / 3;
-        tiles += 1;
-    });
+    far.update(
+        &world.terrain,
+        spawn,
+        &strata::budget::Deadline::new(f64::INFINITY),
+        1.0,
+        |_, m| {
+            far_tris += (m.indices.len() + m.water_indices.len()) / 3;
+            tiles += 1;
+        },
+    );
     let far_time = t.elapsed();
     println!(
         "built {tiles} far tiles ({far_tris} triangles) in {far_time:.2?} ({:.3} ms each)",

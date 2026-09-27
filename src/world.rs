@@ -2,6 +2,7 @@
 //! voxel edits and ray casts.
 
 use crate::block::*;
+use crate::budget::{Cost, Deadline};
 use crate::chunk::{chunk_of, local_of, Chunk, CHUNK};
 use crate::terrain::{Terrain, WORLD_CHUNKS_Y};
 use glam::{IVec3, Vec3};
@@ -16,6 +17,12 @@ pub struct World {
     pub removed: Vec<IVec3>,
     /// Horizontal load radius in chunks.
     pub view_radius: i32,
+    /// Chunks to keep loaded around `wanted_center`, nearest first. Rebuilt only
+    /// when the player crosses into another chunk.
+    wanted: Vec<IVec3>,
+    wanted_center: Option<IVec3>,
+    /// How long generating one chunk takes.
+    pub gen_cost: Cost,
 }
 
 pub struct RayHit {
@@ -33,6 +40,9 @@ impl World {
             dirty: HashSet::new(),
             removed: Vec::new(),
             view_radius,
+            wanted: Vec::new(),
+            wanted_center: None,
+            gen_cost: Cost::default(),
         }
     }
 
@@ -105,37 +115,49 @@ impl World {
         out
     }
 
-    /// Generates missing chunks near the player within a time budget and drops far ones.
-    /// Returns the number of chunks generated.
-    pub fn stream(&mut self, player: Vec3, budget_ms: f64) -> usize {
-        let start = web_time::Instant::now();
+    /// Generates missing chunks near the player while the frame's work budget
+    /// allows, and drops far ones. Returns the number of chunks generated.
+    pub fn stream(&mut self, player: Vec3, deadline: &Deadline, share: f64) -> usize {
         let center = chunk_of((player / VOXEL_SIZE).floor().as_ivec3());
         // Load one ring further than we mesh so border faces are known.
         let load_r = self.view_radius + 1;
 
-        let unload_r2 = (load_r + 2) * (load_r + 2);
-        let far: Vec<IVec3> = self
-            .chunks
-            .keys()
-            .filter(|c| {
-                let d = **c - center;
-                d.x * d.x + d.z * d.z > unload_r2
-            })
-            .copied()
-            .collect();
-        for c in far {
-            self.chunks.remove(&c);
-            self.dirty.remove(&c);
-            self.removed.push(c);
+        if self.wanted_center != Some(center) {
+            self.wanted_center = Some(center);
+            self.wanted = self.wanted(center, load_r);
+            let unload_r2 = (load_r + 2) * (load_r + 2);
+            let far: Vec<IVec3> = self
+                .chunks
+                .keys()
+                .filter(|c| {
+                    let d = **c - center;
+                    d.x * d.x + d.z * d.z > unload_r2
+                })
+                .copied()
+                .collect();
+            for c in far {
+                self.chunks.remove(&c);
+                self.dirty.remove(&c);
+                self.removed.push(c);
+            }
         }
 
         let mut generated = 0;
-        for c in self.wanted(center, load_r) {
+        let mut done = 0;
+        while done < self.wanted.len() {
+            let c = self.wanted[done];
             if self.chunks.contains_key(&c) {
+                done += 1;
                 continue;
             }
+            if !deadline.fits(&self.gen_cost, share, generated == 0) {
+                break;
+            }
+            done += 1;
+            let t = web_time::Instant::now();
             let chunk = self.terrain.generate(c);
             self.chunks.insert(c, chunk);
+            self.gen_cost.record(t.elapsed().as_secs_f64() * 1000.0);
             generated += 1;
             // A new chunk may complete the neighbourhood of chunks around it.
             for d in [
@@ -151,10 +173,9 @@ impl World {
                     self.dirty.insert(c + d);
                 }
             }
-            if start.elapsed().as_secs_f64() * 1000.0 > budget_ms {
-                break;
-            }
         }
+        // Everything before `done` is loaded now; skip it from the next frame on.
+        self.wanted.drain(..done);
         generated
     }
 

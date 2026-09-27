@@ -3,6 +3,7 @@
 
 pub mod app;
 pub mod block;
+pub mod budget;
 pub mod chunk;
 pub mod far;
 pub mod game;

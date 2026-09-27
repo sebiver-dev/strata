@@ -25,6 +25,8 @@ struct Globals {
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
+// One texel per 16 m chunk column, non-zero where voxel meshes are drawn.
+@group(0) @binding(1) var near_mask: texture_2d<u32>;
 @group(1) @binding(0) var shadow_map: texture_depth_2d;
 @group(1) @binding(1) var shadow_sampler: sampler_comparison;
 @group(1) @binding(2) var scene_color: texture_2d<f32>;
@@ -33,6 +35,7 @@ struct Globals {
 @group(1) @binding(5) var hdr_input: texture_2d<f32>;
 
 const VOXEL: f32 = 0.5;
+const CHUNK_M: f32 = 16.0;
 // Matches terrain::WATER_LEVEL_M.
 const WATER_LEVEL: f32 = 24.5;
 const PI: f32 = 3.14159265;
@@ -166,8 +169,10 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
     // their frequencies are whole numbers per metre, so the wrap has no seam.
     let q = p - floor(p / 64.0) * 64.0;
     let cell = floor(p / VOXEL + n * 0.01 - n * 0.5);
-    let jitter = hash3(cell) - 0.5;
-    let fine = fbm(p * 3.1);
+    // Per-voxel and fine detail shimmer at a distance, so it fades out there.
+    let calm = smoothstep(120.0, 500.0, distance(p, g.camera_pos.xyz));
+    let jitter = (hash3(cell) - 0.5) * (1.0 - calm);
+    let fine = mix(fbm(p * 3.1), 0.5, calm);
     let broad = fbm(p * 0.21);
     let d_cm = 1.0 - smoothstep(0.006, 0.02, pix);   // centimetre detail
     let d_dm = 1.0 - smoothstep(0.02, 0.08, pix);    // decimetre detail
@@ -384,8 +389,31 @@ fn vs_shadow(@location(0) pos: vec3<f32>, @location(1) data: u32) -> @builtin(po
     return g.sun_view_proj * vec4(sway(pos, data), 1.0);
 }
 
+// True where a far-terrain fragment lies over a chunk column drawn in full voxels.
+// Walls are tested just behind their face so they belong to the cell they bound.
+fn under_near(p: vec3<f32>, n: vec3<f32>) -> bool {
+    let c = vec2<i32>(floor((p.xz - n.xz * 0.01) / CHUNK_M));
+    let size = vec2<i32>(textureDimensions(near_mask));
+    if (any(c < vec2(0)) || any(c >= size)) {
+        return false;
+    }
+    return textureLoad(near_mask, c, 0).r != 0u;
+}
+
 @fragment
 fn fs_terrain(i: VOut) -> @location(0) vec4<f32> {
+    return shade_terrain(i);
+}
+
+@fragment
+fn fs_far_terrain(i: VOut) -> @location(0) vec4<f32> {
+    if (under_near(i.world, NORMALS[i.info & 7u])) {
+        discard;
+    }
+    return shade_terrain(i);
+}
+
+fn shade_terrain(i: VOut) -> vec4<f32> {
     let n = NORMALS[i.info & 7u];
     let mat = (i.info >> 3u) & 255u;
     let pix = length(fwidth(i.world)) * 0.7;
@@ -520,6 +548,18 @@ fn trace_reflection(origin: vec3<f32>, dir: vec3<f32>, dist: f32) -> vec4<f32> {
 
 @fragment
 fn fs_water(i: VOut) -> @location(0) vec4<f32> {
+    return shade_water(i);
+}
+
+@fragment
+fn fs_far_water(i: VOut) -> @location(0) vec4<f32> {
+    if (under_near(i.world, vec3(0.0))) {
+        discard;
+    }
+    return shade_water(i);
+}
+
+fn shade_water(i: VOut) -> vec4<f32> {
     let t = g.sun_dir.w;
     let p = i.world;
     let face_n = NORMALS[i.info & 7u];

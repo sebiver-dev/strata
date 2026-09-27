@@ -4,6 +4,7 @@
 pub mod app;
 pub mod block;
 pub mod chunk;
+pub mod far;
 pub mod game;
 pub mod mesh;
 pub mod noise;

@@ -77,6 +77,8 @@ fn fs_actor(i: ActorOut) -> @location(0) vec4<f32> {
 
     var c = albedo * (light * ndl * sh + ambient);
     c += light * sh * ggx_spec(n, v, sun, rough, f0);
+    // Nearby lanterns light characters as they light the ground.
+    c += albedo * lamp_light(i.world + n * 0.05, n);
     // A soft sky rim keeps the figure readable against dark ground.
     let rim = pow(1.0 - max(dot(n, v), 0.0), 3.0);
     c += skylight * albedo * rim * 0.35 * ao;

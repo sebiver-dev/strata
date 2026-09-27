@@ -23,6 +23,8 @@ pub struct World {
     wanted_center: Option<IVec3>,
     /// How long generating one chunk takes.
     pub gen_cost: Cost,
+    /// Lantern voxels in each loaded chunk that has any.
+    pub lanterns: HashMap<IVec3, Vec<IVec3>>,
 }
 
 pub struct RayHit {
@@ -43,6 +45,7 @@ impl World {
             wanted: Vec::new(),
             wanted_center: None,
             gen_cost: Cost::default(),
+            lanterns: HashMap::new(),
         }
     }
 
@@ -74,10 +77,14 @@ impl World {
             return false;
         };
         let l = local_of(v);
-        if chunk.get(l.x, l.y, l.z) == b {
+        let old = chunk.get(l.x, l.y, l.z);
+        if old == b {
             return false;
         }
         chunk.set(l.x, l.y, l.z, b);
+        if old == LANTERN || b == LANTERN {
+            self.index_lanterns(c);
+        }
         // Neighbours share faces and ambient occlusion with voxels on the border.
         for dz in -1..=1 {
             for dy in -1..=1 {
@@ -93,7 +100,33 @@ impl World {
                 }
             }
         }
+        // Tall grass cannot float once the ground under it is gone.
+        if !is_solid(b) && self.get(v + IVec3::Y) == TALL_GRASS {
+            self.set(v + IVec3::Y, AIR);
+        }
         true
+    }
+
+    fn index_lanterns(&mut self, c: IVec3) {
+        let found = self.chunks.get(&c).map(|ch| ch.find(c, LANTERN)).unwrap_or_default();
+        if found.is_empty() {
+            self.lanterns.remove(&c);
+        } else {
+            self.lanterns.insert(c, found);
+        }
+    }
+
+    /// Centres (metres) of up to `max` loaded lanterns nearest to `p`, nearest first.
+    pub fn nearest_lanterns(&self, p: Vec3, max: usize) -> Vec<Vec3> {
+        let mut all: Vec<Vec3> = self
+            .lanterns
+            .values()
+            .flatten()
+            .map(|v| (v.as_vec3() + 0.5) * VOXEL_SIZE)
+            .collect();
+        all.sort_by(|a, b| a.distance_squared(p).total_cmp(&b.distance_squared(p)));
+        all.truncate(max);
+        all
     }
 
     /// Chunk coordinates within the view radius, nearest first.
@@ -137,6 +170,7 @@ impl World {
                 .collect();
             for c in far {
                 self.chunks.remove(&c);
+                self.lanterns.remove(&c);
                 self.dirty.remove(&c);
                 self.removed.push(c);
             }
@@ -157,6 +191,7 @@ impl World {
             let t = web_time::Instant::now();
             let chunk = self.terrain.generate(c);
             self.chunks.insert(c, chunk);
+            self.index_lanterns(c);
             self.gen_cost.record(t.elapsed().as_secs_f64() * 1000.0);
             generated += 1;
             // A new chunk may complete the neighbourhood of chunks around it.

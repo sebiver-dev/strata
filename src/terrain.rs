@@ -357,12 +357,17 @@ impl Terrain {
             crate::structures::Structure::Tower(t) => t.c.distance(Vec2::new(xm, zm)) < 70.0,
             _ => false,
         });
-        let conifer = info.height_m > slope_line || (by_tower && unit(h.rotate_left(5)) < 0.7) || unit(h.rotate_left(5)) < 0.1;
+        let conifer =
+            info.height_m > slope_line || (by_tower && unit(h.rotate_left(5)) < 0.7) || unit(h.rotate_left(5)) < 0.1;
         let size = unit(h.rotate_left(17));
         Some(Tree {
             base: Vec3::new(xm, info.height_m, zm),
             height: if conifer { 14.0 + size * 9.0 } else { 9.0 + size * 5.5 },
-            kind: if conifer { TreeKind::Conifer } else { TreeKind::Broadleaf },
+            kind: if conifer {
+                TreeKind::Conifer
+            } else {
+                TreeKind::Broadleaf
+            },
             seed: h,
             hero: None,
         })
@@ -397,7 +402,7 @@ impl Terrain {
         let yaw = crate::structures::SPAWN_YAW;
         let fwd = Vec2::new(yaw.cos(), yaw.sin());
         let right = Vec2::new(-fwd.y, fwd.x);
-        for (ahead, left) in [(3.0, 7.0), (1.0, 8.0), (5.0, 8.5), (-1.0, 7.5), (3.0, 10.0), (6.0, 11.0)] {
+        for (ahead, left) in [(4.0, 4.5), (3.0, 5.5), (5.0, 6.0), (2.0, 6.5), (4.0, 8.0), (6.0, 9.0)] {
             let p = Vec2::new(spawn.x, spawn.z) + fwd * ahead - right * left;
             let info = self.column_info(p.x, p.y);
             if info.surface != GRASS
@@ -407,14 +412,13 @@ impl Terrain {
             {
                 continue;
             }
-            // The long bough points back over the start and on down the view.
-            let to_start = (Vec2::new(spawn.x, spawn.z) - p).normalize();
             return Some(Tree {
                 base: Vec3::new(p.x, info.height_m, p.y),
                 height: 15.0,
                 kind: TreeKind::Broadleaf,
                 seed: self.seed ^ 0x0a4_7ee,
-                hero: Some((to_start + fwd * 0.35).normalize()),
+                // The long bough reaches across the top of the first view.
+                hero: Some((right + fwd * 0.6).normalize()),
             });
         }
         None

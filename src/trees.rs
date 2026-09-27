@@ -108,7 +108,7 @@ impl Tree {
         let h = self.height;
         let r0 = self.trunk_radius();
         let lean = self.lean();
-        let fork = h * (0.36 + 0.1 * self.rand(3));
+        let fork = h * (0.26 + 0.08 * self.rand(3));
         // The trunk: a gentle curve up to the fork, with a slight kink.
         let side = Vec3::new(-lean.z, 0.0, lean.x).normalize_or_zero();
         let wig = (self.rand(4) - 0.5) * 0.3 * r0;
@@ -133,7 +133,7 @@ impl Tree {
         };
         let phase = self.rand(6) * TAU;
         let lean_dir = Vec2::new(lean.x, lean.z).normalize_or_zero();
-        let cr = h * 0.24;
+        let cr = h * 0.25;
         let mut ends = Vec::new();
         for k in 0..count {
             let hero_bough = self.hero.is_some() && k == 0;
@@ -144,8 +144,8 @@ impl Tree {
             let out = Vec2::new(a.cos(), a.sin());
             // Boughs reach a little further on the side the tree leans to.
             let long = 1.0 + 0.25 * out.dot(lean_dir);
-            let mut length = h * (0.3 + 0.12 * self.rand(20 + k as u32)) * long;
-            let mut rise = 0.55 + 0.45 * self.rand(30 + k as u32);
+            let mut length = h * (0.36 + 0.12 * self.rand(20 + k as u32)) * long;
+            let mut rise = 0.35 + 0.4 * self.rand(30 + k as u32);
             if hero_bough {
                 length = h * 0.72;
                 rise = 0.3;
@@ -206,6 +206,23 @@ impl Tree {
             }
         }
         let canopy = clumps.iter().map(|c| c.centre).sum::<Vec3>() / clumps.len() as f32;
+        // Smaller puffs of leaves bulge out of each clump's upper side, so the
+        // crown's outline breaks into many rounded masses like a painted oak.
+        let big = clumps.len();
+        for i in 0..big {
+            let (c, radii) = (clumps[i].centre, clumps[i].radii);
+            let away = (c - canopy).normalize_or_zero();
+            for k in 0..2u32 {
+                let a = self.rand(200 + i as u32 * 4 + k) * TAU;
+                let side = Vec3::new(a.cos(), 0.0, a.sin());
+                let d = (away * 0.9 + side * 0.8 + Vec3::Y * (0.5 + 0.4 * k as f32)).normalize();
+                clumps.push(Clump {
+                    centre: c + d * radii * 0.9,
+                    radii: radii * (0.46 + 0.1 * self.rand(300 + i as u32 * 4 + k)),
+                    seed: self.seed.wrapping_add(500 + i as u32 * 4 + k),
+                });
+            }
+        }
         Shape {
             trunk: Limb { spine, radii },
             flare: if self.hero.is_some() { 1.4 } else { 1.0 },
@@ -258,8 +275,10 @@ impl Tree {
         for l in &s.limbs {
             tube(out, l, 7, 3);
         }
+        let big = s.clumps.iter().map(|c| c.radii.x).fold(0.0, f32::max) * 0.6;
         for (i, c) in s.clumps.iter().enumerate() {
-            clump(out, &s.clumps, i, s.canopy, ico(2), c.seed);
+            let mesh = if c.radii.x > big { ico(2) } else { ico(1) };
+            clump(out, &s.clumps, i, s.canopy, mesh, c.seed);
         }
         for t in &s.tiers {
             tier(out, self, t, 14, &s);
@@ -445,7 +464,15 @@ fn trunk(out: &mut MeshData, l: &Limb, flare: f32, sides: u32, seed: u32) {
     }
     let n = ring_at.len();
     let start = out.vertices.len() as u32;
-    let bark_ao = |y: f32| if y < base.y + 0.3 { 1 } else if y < base.y + 1.2 { 2 } else { 3 };
+    let bark_ao = |y: f32| {
+        if y < base.y + 0.3 {
+            1
+        } else if y < base.y + 1.2 {
+            2
+        } else {
+            3
+        }
+    };
     for (i, &(p, r, f)) in ring_at.iter().enumerate() {
         let next = ring_at[(i + 1).min(n - 1)].0;
         let prev = ring_at[i.saturating_sub(1)].0;
@@ -462,7 +489,11 @@ fn trunk(out: &mut MeshData, l: &Limb, flare: f32, sides: u32, seed: u32) {
             let swell = 1.0 + flare * f * (0.25 + 0.8 * lobe);
             let radial = u * a.cos() + v * a.sin();
             // Roots dip into the ground as they spread.
-            let dip = if p.y <= base.y + 0.01 { 0.0 } else { -f * f * lobe * r0 * 0.25 * flare };
+            let dip = if p.y <= base.y + 0.01 {
+                0.0
+            } else {
+                -f * f * lobe * r0 * 0.25 * flare
+            };
             let pos = p + radial * r * swell + Vec3::Y * dip;
             // Normals tilt up where the foot spreads out.
             let normal = (radial + Vec3::Y * (f * flare * (0.5 + lobe) * 0.8)).normalize();
@@ -578,7 +609,10 @@ fn clump(out: &mut MeshData, all: &[Clump], index: usize, canopy: Vec3, mesh: &I
             let a = r(k) * TAU;
             let y = -0.2 + 1.2 * r(k + 10);
             let s = (1.0 - y * y).max(0.0).sqrt();
-            (Vec3::new(a.cos() * s, y.min(1.0), a.sin() * s).normalize(), 0.14 + 0.12 * r(k + 20))
+            (
+                Vec3::new(a.cos() * s, y.min(1.0), a.sin() * s).normalize(),
+                0.14 + 0.12 * r(k + 20),
+            )
         })
         .collect();
     let positions: Vec<Vec3> = mesh
@@ -617,7 +651,7 @@ fn clump(out: &mut MeshData, all: &[Clump], index: usize, canopy: Vec3, mesh: &I
         // Occlusion: undersides and the parts facing into the canopy are darker.
         let depth = ((p - canopy).length() / (size * 1.6)).min(1.0);
         let light = 0.5 + 0.5 * n.y;
-        let ao = ((light * 0.7 + depth * 0.5) * 3.0).round().clamp(0.0, 3.0) as u32;
+        let ao = ((light * 0.7 + depth * 0.5) * 3.0).round().clamp(1.0, 3.0) as u32;
         out.vertices.push(Vertex {
             pos: p.to_array(),
             data: smooth_data(FOLIAGE, ao, n),
@@ -756,7 +790,11 @@ mod tests {
                     *m.entry((out.vertices[tri[0] as usize].data >> 3) & 255).or_default() += 1;
                     m
                 });
-            assert!(good as f32 > total as f32 * 0.97, "{:?}: {good} of {total} {bad:?}", t.kind);
+            assert!(
+                good as f32 > total as f32 * 0.97,
+                "{:?}: {good} of {total} {bad:?}",
+                t.kind
+            );
         }
     }
 

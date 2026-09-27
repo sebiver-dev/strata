@@ -69,7 +69,7 @@ pub struct Brush {
 
 impl Brush {
     /// Whether a voxel at offset `d` from the brush centre is inside the brush.
-    /// Must match `in_brush` in the terrain shader, which previews it.
+    /// The terrain shader's `brush_distance` previews the same shapes.
     pub fn contains(&self, d: IVec3) -> bool {
         let r = self.radius;
         match self.shape {

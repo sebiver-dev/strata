@@ -17,9 +17,12 @@ pub const WORLD_CHUNKS_Y: i32 = 8;
 /// Height of the river and lake surfaces in metres.
 pub const WATER_LEVEL_M: f32 = 24.5;
 
+// Trees are sized like real ones (broadleaf 9 to 14 m, conifers 15 to 23 m)
+// so a 1.75 m player reads at the right scale against them.
 /// Trees sit on a jittered grid with this spacing in metres.
-pub const TREE_CELL_M: f32 = 7.0;
-const TREE_REACH_M: f32 = 4.5;
+pub const TREE_CELL_M: f32 = 9.0;
+const TREE_REACH_M: f32 = 7.5;
+const TREE_MAX_HEIGHT_M: f32 = 26.0;
 
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
@@ -160,11 +163,11 @@ impl Terrain {
         Some(Tree {
             base,
             trunk_voxels: if conifer {
-                12 + (size * 8.0) as i32
+                30 + (size * 14.0) as i32
             } else {
-                8 + (size * 6.0) as i32
+                14 + (size * 8.0) as i32
             },
-            canopy_r: 2.4 + size * 1.4,
+            canopy_r: if conifer { 3.0 + size * 1.2 } else { 3.8 + size * 2.0 },
             conifer,
         })
     }
@@ -182,23 +185,41 @@ impl Terrain {
         };
         let r_vox = tree.canopy_r / VOXEL_SIZE;
         let top = tree.base.y + tree.trunk_voxels;
-        let ri = r_vox.ceil() as i32 + 1;
+        let ri = (r_vox * 1.2).ceil() as i32 + 1;
+        // Broadleaf crowns sit partly around the upper trunk, like real ones.
+        let crown = top - (r_vox * 0.35) as i32;
         let (y0, y1) = if tree.conifer {
             (tree.base.y + tree.trunk_voxels / 3, top + 3)
         } else {
-            (top - ri + 1, top + ri)
+            (crown - ri + 1, crown + ri)
         };
-        for y in y0..=y1 {
-            for dz in -ri..=ri {
-                for dx in -ri..=ri {
+        // Only visit the part of the crown that falls inside this chunk.
+        let lo = origin - IVec3::new(tree.base.x, 0, tree.base.z);
+        let hi = lo + IVec3::splat(CHUNK - 1);
+        let (dx0, dx1) = ((-ri).max(lo.x), ri.min(hi.x));
+        let (dz0, dz1) = ((-ri).max(lo.z), ri.min(hi.z));
+        for y in y0.max(origin.y)..=y1.min(origin.y + CHUNK - 1) {
+            for dz in dz0..=dz1 {
+                for dx in dx0..=dx1 {
                     let p = IVec3::new(tree.base.x + dx, y, tree.base.z + dz);
                     let (fx, fz) = (dx as f32 + 0.5, dz as f32 + 0.5);
                     let inside = if tree.conifer {
                         let t = (y - y0) as f32 / (y1 - y0) as f32;
                         (fx * fx + fz * fz).sqrt() < r_vox * (1.0 - t) + 0.6
                     } else {
-                        let fy = (y - top) as f32 * 1.25;
-                        (fx * fx + fy * fy + fz * fz).sqrt() < r_vox
+                        // A lumpy, slightly flattened crown instead of a clean ball.
+                        let fy = (y - crown) as f32 * 1.15;
+                        let d = (fx * fx + fy * fy + fz * fz).sqrt();
+                        d < r_vox * 0.78
+                            || (d < r_vox * 1.18 && {
+                                let lump = value3(
+                                    self.seed.wrapping_add(23),
+                                    p.x as f32 * 0.22,
+                                    p.y as f32 * 0.22,
+                                    p.z as f32 * 0.22,
+                                );
+                                d < r_vox * (0.78 + 0.4 * lump)
+                            })
                     };
                     let hole = unit(crate::noise::hash3(self.seed, p.x, p.y, p.z)) < 0.12;
                     if inside && !hole {
@@ -226,10 +247,12 @@ impl Terrain {
             let h = r * 0.62;
             (Vec3::new(cx - h, y0, cz - h), Vec3::new(cx + h, top + 4.0, cz + h))
         } else {
-            let (h, v) = (r * 0.86, r / 1.25 * 0.86);
+            // Matches the crown in `stamp_tree`: centred below the trunk top.
+            let crown = top - (r * 0.35).floor();
+            let (h, v) = (r * 0.86, r / 1.15 * 0.86);
             (
-                Vec3::new(cx - h, top + 0.5 - v, cz - h),
-                Vec3::new(cx + h, top + 0.5 + v, cz + h),
+                Vec3::new(cx - h, crown + 0.5 - v, cz - h),
+                Vec3::new(cx + h, crown + 0.5 + v, cz + h),
             )
         };
         let trunk_lo = Vec3::new(cx - 1.0, t.base.y as f32, cz - 1.0);
@@ -260,7 +283,7 @@ impl Terrain {
 
         let max_h = cols.iter().map(|c| c.height_m).fold(f32::MIN, f32::max);
         let min_h = cols.iter().map(|c| c.height_m).fold(f32::MAX, f32::min);
-        let tree_top = max_h + 12.0;
+        let tree_top = max_h + TREE_MAX_HEIGHT_M;
         if chunk_bottom_m > tree_top.max(WATER_LEVEL_M) {
             return Chunk::Uniform(AIR);
         }

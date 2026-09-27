@@ -1,5 +1,7 @@
-//! GPU side: one wgpu device, a sky pass, opaque terrain, blended water and a
-//! crosshair overlay. Runs on Vulkan, Metal, DirectX 12 and browser WebGPU.
+//! GPU side: one wgpu device and a small frame graph. A sun shadow pass,
+//! then sky and terrain into an HDR target, then water (which reads a copy of
+//! that target for refraction and reflections), then tone mapping and the
+//! crosshair onto the screen. Runs on Vulkan, Metal, DirectX 12 and browser WebGPU.
 
 use crate::mesh::{MeshData, Vertex};
 use crate::terrain::WORLD_CHUNKS_XZ;
@@ -11,17 +13,37 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// Shadow map resolution in texels per side.
+pub const SHADOW_SIZE: u32 = 2048;
+/// Half the width of the square area around the player that casts sun shadows.
+pub const SHADOW_RANGE_M: f32 = 72.0;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct Globals {
     pub view_proj: [[f32; 4]; 4],
     pub inv_view_proj: [[f32; 4]; 4],
+    pub sun_view_proj: [[f32; 4]; 4],
     pub camera_pos: [f32; 4],
     pub sun_dir: [f32; 4],
     pub params: [f32; 4],
     pub highlight: [f32; 4],
     pub screen: [f32; 4],
+}
+
+/// Orthographic view-projection for the sun's shadow map, centred on `center`.
+/// The centre is snapped to whole texels so shadow edges do not crawl as the
+/// player moves.
+pub fn sun_view_proj(center: Vec3, sun: Vec3) -> Mat4 {
+    let up = if sun.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
+    let view = Mat4::look_to_rh(Vec3::ZERO, -sun, up);
+    let texel = 2.0 * SHADOW_RANGE_M / SHADOW_SIZE as f32;
+    let c = view.transform_point3(center);
+    let (x, y) = ((c.x / texel).floor() * texel, (c.y / texel).floor() * texel);
+    let r = SHADOW_RANGE_M;
+    let proj = Mat4::orthographic_rh(x - r, x + r, y - r, y + r, -c.z - 250.0, -c.z + 250.0);
+    proj * view
 }
 
 struct GpuMesh {
@@ -31,16 +53,35 @@ struct GpuMesh {
     max: Vec3,
 }
 
+/// Screen-sized render targets, rebuilt on resize.
+struct Targets {
+    hdr: wgpu::Texture,
+    hdr_view: wgpu::TextureView,
+    depth: wgpu::Texture,
+    depth_view: wgpu::TextureView,
+    scene_copy: wgpu::Texture,
+    depth_copy: wgpu::Texture,
+    scene_bind: wgpu::BindGroup,
+    post_bind: wgpu::BindGroup,
+}
+
 pub struct Renderer {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     manual_srgb: bool,
-    depth: wgpu::TextureView,
+    shadow_view: wgpu::TextureView,
+    shadow_sampler: wgpu::Sampler,
+    linear_sampler: wgpu::Sampler,
+    scene_layout: wgpu::BindGroupLayout,
+    post_layout: wgpu::BindGroupLayout,
+    targets: Targets,
+    shadow: wgpu::RenderPipeline,
     sky: wgpu::RenderPipeline,
     terrain: wgpu::RenderPipeline,
     water: wgpu::RenderPipeline,
+    post: wgpu::RenderPipeline,
     far_terrain: wgpu::RenderPipeline,
     far_water: wgpu::RenderPipeline,
     overlay: wgpu::RenderPipeline,
@@ -81,23 +122,69 @@ fn make_mesh(device: &wgpu::Device, mesh: &MeshData, min: Vec3, max: Vec3) -> Gp
     }
 }
 
-fn create_depth(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
-    device
-        .create_texture(&wgpu::TextureDescriptor {
-            label: Some("depth"),
-            size: wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        })
-        .create_view(&wgpu::TextureViewDescriptor::default())
+fn texture(
+    device: &wgpu::Device,
+    label: &str,
+    w: u32,
+    h: u32,
+    format: wgpu::TextureFormat,
+    usage: wgpu::TextureUsages,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage,
+        view_formats: &[],
+    })
+}
+
+fn pass_desc<'a>(
+    label: &'a str,
+    color: &'a [Option<wgpu::RenderPassColorAttachment<'a>>],
+    depth: Option<wgpu::RenderPassDepthStencilAttachment<'a>>,
+) -> wgpu::RenderPassDescriptor<'a> {
+    wgpu::RenderPassDescriptor {
+        label: Some(label),
+        color_attachments: color,
+        depth_stencil_attachment: depth,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    }
+}
+
+fn view(t: &wgpu::Texture) -> wgpu::TextureView {
+    t.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+fn texture_entry(binding: u32, sample_type: wgpu::TextureSampleType) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type,
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
+
+fn sampler_entry(binding: u32, ty: wgpu::SamplerBindingType) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Sampler(ty),
+        count: None,
+    }
 }
 
 impl Renderer {
@@ -208,9 +295,33 @@ impl Renderer {
                 },
             ],
         });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("world"),
+        let scene_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("scene inputs"),
+            entries: &[
+                texture_entry(0, wgpu::TextureSampleType::Depth),
+                sampler_entry(1, wgpu::SamplerBindingType::Comparison),
+                texture_entry(2, wgpu::TextureSampleType::Float { filterable: true }),
+                texture_entry(3, wgpu::TextureSampleType::Depth),
+                sampler_entry(4, wgpu::SamplerBindingType::Filtering),
+            ],
+        });
+        let post_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("post inputs"),
+            entries: &[texture_entry(5, wgpu::TextureSampleType::Float { filterable: false })],
+        });
+        let shadow_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("shadow"),
             bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
+        });
+        let world_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("world"),
+            bind_group_layouts: &[Some(&bgl), Some(&scene_layout)],
+            immediate_size: 0,
+        });
+        let post_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("post"),
+            bind_group_layouts: &[Some(&bgl), Some(&post_layout)],
             immediate_size: 0,
         });
 
@@ -220,114 +331,209 @@ impl Renderer {
             attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Uint32],
         };
 
-        let pipeline = |label: &str,
-                        vs: &str,
-                        fs: &str,
-                        buffers: &[Option<wgpu::VertexBufferLayout>],
-                        blend: Option<wgpu::BlendState>,
-                        depth_write: bool,
-                        depth_compare: wgpu::CompareFunction,
-                        cull: Option<wgpu::Face>| {
+        struct Desc<'a> {
+            label: &'a str,
+            layout: &'a wgpu::PipelineLayout,
+            vs: &'a str,
+            fs: Option<&'a str>,
+            buffers: &'a [Option<wgpu::VertexBufferLayout<'a>>],
+            target: Option<wgpu::TextureFormat>,
+            blend: Option<wgpu::BlendState>,
+            depth: Option<(bool, wgpu::CompareFunction)>,
+            bias: wgpu::DepthBiasState,
+            cull: Option<wgpu::Face>,
+        }
+        let pipeline = |d: Desc| {
+            let targets = [d.target.map(|format| wgpu::ColorTargetState {
+                format,
+                blend: d.blend,
+                write_mask: wgpu::ColorWrites::ALL,
+            })];
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&layout),
+                label: Some(d.label),
+                layout: Some(d.layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
-                    entry_point: Some(vs),
+                    entry_point: Some(d.vs),
                     compilation_options: Default::default(),
-                    buffers,
+                    buffers: d.buffers,
                 },
                 primitive: wgpu::PrimitiveState {
-                    cull_mode: cull,
+                    cull_mode: d.cull,
                     ..Default::default()
                 },
-                depth_stencil: Some(wgpu::DepthStencilState {
+                depth_stencil: d.depth.map(|(write, compare)| wgpu::DepthStencilState {
                     format: DEPTH_FORMAT,
-                    depth_write_enabled: Some(depth_write),
-                    depth_compare: Some(depth_compare),
+                    depth_write_enabled: Some(write),
+                    depth_compare: Some(compare),
                     stencil: Default::default(),
-                    bias: Default::default(),
+                    bias: d.bias,
                 }),
                 multisample: Default::default(),
-                fragment: Some(wgpu::FragmentState {
+                fragment: d.fs.map(|fs| wgpu::FragmentState {
                     module: &shader,
                     entry_point: Some(fs),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
+                    targets: &targets,
                 }),
                 multiview_mask: None,
                 cache: None,
             })
         };
 
-        use wgpu::CompareFunction::{Always, Greater, GreaterEqual};
-        let sky = pipeline("sky", "vs_fullscreen", "fs_sky", &[], None, false, Always, None);
-        let terrain = pipeline(
-            "terrain",
-            "vs_world",
-            "fs_terrain",
-            &[Some(vertex_layout.clone())],
-            None,
-            true,
-            Greater,
-            Some(wgpu::Face::Back),
-        );
-        let far_terrain = pipeline(
-            "far terrain",
-            "vs_world",
-            "fs_far_terrain",
-            &[Some(vertex_layout.clone())],
-            None,
-            true,
-            Greater,
-            Some(wgpu::Face::Back),
-        );
-        let water = pipeline(
-            "water",
-            "vs_world",
-            "fs_water",
-            &[Some(vertex_layout.clone())],
-            Some(wgpu::BlendState::ALPHA_BLENDING),
-            false,
-            GreaterEqual,
-            None,
-        );
-        let far_water = pipeline(
-            "far water",
-            "vs_world",
-            "fs_far_water",
-            &[Some(vertex_layout)],
-            Some(wgpu::BlendState::ALPHA_BLENDING),
-            false,
-            GreaterEqual,
-            None,
-        );
-        let overlay = pipeline(
-            "overlay",
-            "vs_fullscreen",
-            "fs_overlay",
-            &[],
-            Some(wgpu::BlendState::ALPHA_BLENDING),
-            false,
-            Always,
-            None,
-        );
+        use wgpu::CompareFunction::{Always, Greater, GreaterEqual, LessEqual};
+        let world_buffers = [Some(vertex_layout)];
+        let shadow = pipeline(Desc {
+            label: "shadow",
+            layout: &shadow_pipeline_layout,
+            vs: "vs_shadow",
+            fs: None,
+            buffers: &world_buffers,
+            target: None,
+            blend: None,
+            depth: Some((true, LessEqual)),
+            bias: wgpu::DepthBiasState {
+                constant: 2,
+                slope_scale: 2.0,
+                clamp: 0.0,
+            },
+            cull: None,
+        });
+        let sky = pipeline(Desc {
+            label: "sky",
+            layout: &world_pipeline_layout,
+            vs: "vs_fullscreen",
+            fs: Some("fs_sky"),
+            buffers: &[],
+            target: Some(HDR_FORMAT),
+            blend: None,
+            depth: Some((false, Always)),
+            bias: Default::default(),
+            cull: None,
+        });
+        let terrain = pipeline(Desc {
+            label: "terrain",
+            layout: &world_pipeline_layout,
+            vs: "vs_world",
+            fs: Some("fs_terrain"),
+            buffers: &world_buffers,
+            target: Some(HDR_FORMAT),
+            blend: None,
+            depth: Some((true, Greater)),
+            bias: Default::default(),
+            cull: Some(wgpu::Face::Back),
+        });
+        // Water is opaque: it composites the scene behind it itself.
+        let water = pipeline(Desc {
+            label: "water",
+            layout: &world_pipeline_layout,
+            vs: "vs_world",
+            fs: Some("fs_water"),
+            buffers: &world_buffers,
+            target: Some(HDR_FORMAT),
+            blend: None,
+            depth: Some((true, GreaterEqual)),
+            bias: Default::default(),
+            cull: None,
+        });
+        let far_terrain = pipeline(Desc {
+            label: "far terrain",
+            layout: &world_pipeline_layout,
+            vs: "vs_world",
+            fs: Some("fs_far_terrain"),
+            buffers: &world_buffers,
+            target: Some(HDR_FORMAT),
+            blend: None,
+            depth: Some((true, Greater)),
+            bias: Default::default(),
+            cull: Some(wgpu::Face::Back),
+        });
+        let far_water = pipeline(Desc {
+            label: "far water",
+            layout: &world_pipeline_layout,
+            vs: "vs_world",
+            fs: Some("fs_far_water"),
+            buffers: &world_buffers,
+            target: Some(HDR_FORMAT),
+            blend: None,
+            depth: Some((true, GreaterEqual)),
+            bias: Default::default(),
+            cull: None,
+        });
+        let post = pipeline(Desc {
+            label: "post",
+            layout: &post_pipeline_layout,
+            vs: "vs_fullscreen",
+            fs: Some("fs_post"),
+            buffers: &[],
+            target: Some(format),
+            blend: None,
+            depth: None,
+            bias: Default::default(),
+            cull: None,
+        });
+        let overlay = pipeline(Desc {
+            label: "overlay",
+            layout: &post_pipeline_layout,
+            vs: "vs_fullscreen",
+            fs: Some("fs_overlay"),
+            buffers: &[],
+            target: Some(format),
+            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+            depth: None,
+            bias: Default::default(),
+            cull: None,
+        });
 
-        let depth = create_depth(&device, config.width, config.height);
+        let shadow_view = view(&texture(
+            &device,
+            "sun shadow map",
+            SHADOW_SIZE,
+            SHADOW_SIZE,
+            DEPTH_FORMAT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        ));
+        let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("shadow"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            compare: Some(wgpu::CompareFunction::LessEqual),
+            ..Default::default()
+        });
+        let linear_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("linear"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        let targets = Self::create_targets(
+            &device,
+            &scene_layout,
+            &post_layout,
+            &shadow_view,
+            &shadow_sampler,
+            &linear_sampler,
+            config.width,
+            config.height,
+        );
         Ok(Self {
             surface,
             device,
             queue,
             manual_srgb: !format.is_srgb(),
             config,
-            depth,
+            shadow_view,
+            shadow_sampler,
+            linear_sampler,
+            scene_layout,
+            post_layout,
+            targets,
+            shadow,
             sky,
             terrain,
             water,
+            post,
             far_terrain,
             far_water,
             overlay,
@@ -342,6 +548,83 @@ impl Renderer {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn create_targets(
+        device: &wgpu::Device,
+        scene_layout: &wgpu::BindGroupLayout,
+        post_layout: &wgpu::BindGroupLayout,
+        shadow_view: &wgpu::TextureView,
+        shadow_sampler: &wgpu::Sampler,
+        linear_sampler: &wgpu::Sampler,
+        w: u32,
+        h: u32,
+    ) -> Targets {
+        use wgpu::TextureUsages as U;
+        let hdr = texture(
+            device,
+            "hdr",
+            w,
+            h,
+            HDR_FORMAT,
+            U::RENDER_ATTACHMENT | U::TEXTURE_BINDING | U::COPY_SRC,
+        );
+        let depth = texture(device, "depth", w, h, DEPTH_FORMAT, U::RENDER_ATTACHMENT | U::COPY_SRC);
+        let scene_copy = texture(device, "scene copy", w, h, HDR_FORMAT, U::TEXTURE_BINDING | U::COPY_DST);
+        let depth_copy = texture(
+            device,
+            "depth copy",
+            w,
+            h,
+            DEPTH_FORMAT,
+            U::TEXTURE_BINDING | U::COPY_DST,
+        );
+        let (hdr_view, depth_view) = (view(&hdr), view(&depth));
+        let scene_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("scene inputs"),
+            layout: scene_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(shadow_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(shadow_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&view(&scene_copy)),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&view(&depth_copy)),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(linear_sampler),
+                },
+            ],
+        });
+        let post_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("post inputs"),
+            layout: post_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::TextureView(&hdr_view),
+            }],
+        });
+        Targets {
+            hdr,
+            hdr_view,
+            depth,
+            depth_view,
+            scene_copy,
+            depth_copy,
+            scene_bind,
+            post_bind,
+        }
+    }
+
     pub fn resize(&mut self, w: u32, h: u32) {
         if w == 0 || h == 0 {
             return;
@@ -349,7 +632,16 @@ impl Renderer {
         self.config.width = w;
         self.config.height = h;
         self.surface.configure(&self.device, &self.config);
-        self.depth = create_depth(&self.device, w, h);
+        self.targets = Self::create_targets(
+            &self.device,
+            &self.scene_layout,
+            &self.post_layout,
+            &self.shadow_view,
+            &self.shadow_sampler,
+            &self.linear_sampler,
+            w,
+            h,
+        );
     }
 
     pub fn size(&self) -> (u32, u32) {
@@ -425,6 +717,12 @@ impl Renderer {
             .values()
             .filter(|m| aabb_visible(&planes, m.min, m.max))
             .collect();
+        let sun_planes = frustum_planes(Mat4::from_cols_array_2d(&globals.sun_view_proj));
+        let casters: Vec<&GpuMesh> = self
+            .meshes
+            .values()
+            .filter(|m| aabb_visible(&sun_planes, m.min, m.max))
+            .collect();
         let far_visible: Vec<&GpuMesh> = self
             .far_meshes
             .values()
@@ -434,35 +732,59 @@ impl Renderer {
         let mut encoder = self.device.create_command_encoder(&Default::default());
         let mut triangles = 0;
         let mut far_triangles = 0;
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("world"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth,
-                    // Reverse Z: 0 is infinitely far away.
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
+        let depth_attachment = |view, load| {
+            Some(wgpu::RenderPassDepthStencilAttachment {
+                view,
+                depth_ops: Some(wgpu::Operations {
+                    load,
+                    store: wgpu::StoreOp::Store,
                 }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
+                stencil_ops: None,
+            })
+        };
+        let color_attachment = |view, load| {
+            [Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })]
+        };
+        let t = &self.targets;
+
+        // 1. Sun shadow map.
+        {
+            let mut pass = encoder.begin_render_pass(&pass_desc(
+                "shadow",
+                &[],
+                depth_attachment(&self.shadow_view, wgpu::LoadOp::Clear(1.0)),
+            ));
             pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.set_pipeline(&self.shadow);
+            for m in &casters {
+                if let Some((vb, ib, n)) = &m.buffers {
+                    pass.set_vertex_buffer(0, vb.slice(..));
+                    pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..*n, 0, 0..1);
+                }
+            }
+        }
+
+        // 2. Sky and terrain. Reverse Z: depth 0 is infinitely far away.
+        {
+            let color = color_attachment(&t.hdr_view, wgpu::LoadOp::Clear(wgpu::Color::BLACK));
+            let mut pass = encoder.begin_render_pass(&pass_desc(
+                "scene",
+                &color,
+                depth_attachment(&t.depth_view, wgpu::LoadOp::Clear(0.0)),
+            ));
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.set_bind_group(1, &t.scene_bind, &[]);
             pass.set_pipeline(&self.sky);
             pass.draw(0..3, 0..1);
-
             pass.set_pipeline(&self.terrain);
             for m in &visible {
                 if let Some((vb, ib, n)) = &m.buffers {
@@ -481,7 +803,22 @@ impl Renderer {
                     far_triangles += n / 3;
                 }
             }
-            // Water blends, so the far water goes down before the near water in front of it.
+        }
+
+        // 3. Water, reading a snapshot of what is behind it.
+        let has_water = visible.iter().chain(&far_visible).any(|m| m.water.is_some());
+        if has_water {
+            let size = t.hdr.size();
+            encoder.copy_texture_to_texture(t.hdr.as_image_copy(), t.scene_copy.as_image_copy(), size);
+            encoder.copy_texture_to_texture(t.depth.as_image_copy(), t.depth_copy.as_image_copy(), size);
+            let color = color_attachment(&t.hdr_view, wgpu::LoadOp::Load);
+            let mut pass = encoder.begin_render_pass(&pass_desc(
+                "water",
+                &color,
+                depth_attachment(&t.depth_view, wgpu::LoadOp::Load),
+            ));
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.set_bind_group(1, &t.scene_bind, &[]);
             pass.set_pipeline(&self.far_water);
             for m in &far_visible {
                 if let Some((vb, ib, n)) = &m.water {
@@ -500,6 +837,16 @@ impl Renderer {
                     triangles += n / 3;
                 }
             }
+        }
+
+        // 4. Tone mapping and the crosshair onto the screen.
+        {
+            let color = color_attachment(&view, wgpu::LoadOp::Clear(wgpu::Color::BLACK));
+            let mut pass = encoder.begin_render_pass(&pass_desc("post", &color, None));
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.set_bind_group(1, &t.post_bind, &[]);
+            pass.set_pipeline(&self.post);
+            pass.draw(0..3, 0..1);
             pass.set_pipeline(&self.overlay);
             pass.draw(0..3, 0..1);
         }

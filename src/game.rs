@@ -5,7 +5,7 @@ use crate::chunk::chunk_of;
 use crate::far::FarField;
 use crate::mesh;
 use crate::player::{MoveInput, Player};
-use crate::renderer::{Globals, Renderer};
+use crate::renderer::{sun_view_proj, Globals, Renderer, SHADOW_SIZE};
 use crate::terrain::{WATER_LEVEL_M, WORLD_CHUNKS_XZ, WORLD_CHUNKS_Y};
 use crate::world::World;
 use glam::{IVec3, Mat4, Vec3};
@@ -72,7 +72,15 @@ pub struct Game {
 impl Game {
     pub fn new(settings: Settings) -> Self {
         let world = World::new(settings.seed, settings.view_radius);
-        let player = Player::new(world.terrain.spawn_point());
+        #[allow(unused_mut)]
+        let mut player = Player::new(world.terrain.spawn_point());
+        #[cfg(target_arch = "wasm32")]
+        if let Some([x, y, z, yaw, pitch]) = crate::web::camera_from_url() {
+            player.pos = Vec3::new(x, y, z);
+            player.yaw = yaw;
+            player.pitch = pitch;
+            player.flying = true;
+        }
         Self {
             world,
             player,
@@ -304,7 +312,8 @@ impl Game {
         let proj = Mat4::perspective_infinite_reverse_rh(70f32.to_radians(), aspect, 0.05);
         let view = Mat4::look_to_rh(eye, self.player.look_dir(), Vec3::Y);
         let vp = proj * view;
-        let sun = Vec3::new(0.45, 0.72, 0.28).normalize();
+        // A mid-afternoon sun, low enough for trees to cast long shadows.
+        let sun = Vec3::new(0.50, 0.58, 0.30).normalize();
         let fog = self.settings.fog_m;
         let underwater = self.world.get((eye / VOXEL_SIZE).floor().as_ivec3()) == WATER;
         let (hl, has) = match self.target {
@@ -314,11 +323,12 @@ impl Game {
         Globals {
             view_proj: vp.to_cols_array_2d(),
             inv_view_proj: vp.inverse().to_cols_array_2d(),
+            sun_view_proj: sun_view_proj(eye, sun).to_cols_array_2d(),
             camera_pos: eye.extend(1.0).to_array(),
             sun_dir: sun.extend(self.time).to_array(),
             params: [fog, manual_srgb as i32 as f32, underwater as i32 as f32, 0.0],
             highlight: hl.extend(has).to_array(),
-            screen: [width as f32, height as f32, 0.0, 0.0],
+            screen: [width as f32, height as f32, SHADOW_SIZE as f32, 0.0],
         }
     }
 

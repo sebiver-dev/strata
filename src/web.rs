@@ -35,3 +35,15 @@ pub fn pointer_locked() -> bool {
         .and_then(|d| d.pointer_lock_element())
         .is_some()
 }
+
+/// A fixed starting camera from the page URL, `?cam=x,y,z,yaw,pitch` (metres
+/// and radians). Used to take the same screenshot before and after a change.
+pub fn camera_from_url() -> Option<[f32; 5]> {
+    let search = web_sys::window()?.location().search().ok()?;
+    let value = search
+        .trim_start_matches('?')
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("cam="))?;
+    let v: Vec<f32> = value.split(',').filter_map(|x| x.parse().ok()).collect();
+    v.try_into().ok()
+}

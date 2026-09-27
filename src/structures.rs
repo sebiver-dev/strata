@@ -199,9 +199,11 @@ pub struct Cottage {
     pub seed: u32,
 }
 
-const PITCH: f32 = 1.15;
+/// Roofs rise one voxel per voxel across (45 degrees): an even staircase
+/// the smooth mesher turns into a clean slope and straight gable edges.
+const PITCH: f32 = 1.0;
 const EAVE: f32 = 0.5;
-const ROOF_THICK: f32 = 0.8;
+const ROOF_THICK: f32 = 1.3;
 
 impl Cottage {
     #[allow(clippy::too_many_arguments)]
@@ -416,6 +418,55 @@ impl Cottage {
                 ],
                 PLASTER,
             );
+        }
+        // Timber sill and wall plate, and the lit windows, so the cottage still
+        // reads as a cottage (and glows at dusk) from across the valley.
+        let (l, w) = (self.half_len, self.half_wid);
+        for (y0, y1) in [(self.floor, self.floor + 0.5), (top - 0.5, top)] {
+            let (lo, hi) = (self.world(-l - 0.05, -w - 0.05), self.world(l + 0.05, w + 0.05));
+            boxed(
+                out,
+                Vec3::new(lo.x.min(hi.x), y0, lo.y.min(hi.y)),
+                Vec3::new(lo.x.max(hi.x), y1, lo.y.max(hi.y)),
+                WOOD,
+            );
+        }
+        for dy in [1.25f32, 4.25] {
+            if dy > self.wall_height() {
+                continue;
+            }
+            for (long, side) in [(true, -1.0f32), (true, 1.0), (false, -1.0), (false, 1.0)] {
+                let half = if long { l } else { w };
+                let mut t = -half + 1.5;
+                while t < half {
+                    let (a, b) = if long { (t, side * w) } else { (side * l, t) };
+                    // Sample the voxel wall so far windows match the near ones.
+                    let (sa, sb) = if long {
+                        (a, b - side * 0.25)
+                    } else {
+                        (a - side * 0.25, b)
+                    };
+                    if self.wall(sa, sb, dy) == WINDOW {
+                        let out_dir = if long {
+                            self.world(0.0, side) - self.c
+                        } else {
+                            self.world(side, 0.0) - self.c
+                        };
+                        let along = if long {
+                            self.world(1.0, 0.0) - self.c
+                        } else {
+                            self.world(0.0, 1.0) - self.c
+                        };
+                        let n = Vec3::new(out_dir.x, 0.0, out_dir.y);
+                        let u = Vec3::new(along.x, 0.0, along.y) * 0.5;
+                        let q = self.world(a, b);
+                        let c = Vec3::new(q.x, self.floor + dy + 0.25, q.y) + n * 0.03;
+                        let v = Vec3::Y * 0.5;
+                        polygon(out, &[c - u - v, c + u - v, c + u + v, c - u + v], WINDOW);
+                    }
+                    t += 2.5;
+                }
+            }
         }
     }
 }
@@ -654,6 +705,30 @@ impl Castle {
         }
         for t in &self.towers {
             t.far(out);
+        }
+        // Rows of lit windows on the keep, where the voxel keep has them.
+        let mut dy = 4.0;
+        while dy + 1.5 < KEEP_H {
+            let y = self.floor + dy + 0.75;
+            let v = Vec3::Y * 0.75;
+            // Window columns sit where the keep's local coordinate is a multiple of 3 m.
+            let mut x = self.c.x + (KEEP_LO.x / 3.0).ceil() * 3.0 + 0.5;
+            while x < khi.x - 0.5 {
+                for z in [klo.y - 0.03, khi.y + 0.03] {
+                    let (c, u) = (Vec3::new(x, y, z), Vec3::X * 0.5);
+                    polygon(out, &[c - u - v, c + u - v, c + u + v, c - u + v], WINDOW);
+                }
+                x += 3.0;
+            }
+            let mut z = self.c.y + (KEEP_LO.y / 3.0).ceil() * 3.0 + 0.5;
+            while z < khi.y - 0.5 {
+                for x in [klo.x - 0.03, khi.x + 0.03] {
+                    let (c, u) = (Vec3::new(x, y, z), Vec3::Z * 0.5);
+                    polygon(out, &[c - u - v, c + u - v, c + u + v, c - u + v], WINDOW);
+                }
+                z += 3.0;
+            }
+            dy += 4.0;
         }
     }
 }

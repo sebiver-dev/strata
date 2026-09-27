@@ -6,7 +6,9 @@
 //   2. scene pass: sky and terrain into an HDR target (fs_sky, fs_terrain)
 //   3. water pass: reads a copy of the scene colour and depth for refraction,
 //      depth tint and screen-space reflections (fs_water)
-//   4. post pass: tone mapping and the crosshair onto the swapchain (fs_post)
+//   4. bloom: the scene halved down a chain of small targets and blurred
+//      back up (fs_bloom_first, fs_bloom_down, fs_bloom_up)
+//   5. post pass: tone mapping, bloom and the crosshair onto the swapchain (fs_post)
 
 struct Globals {
     view_proj: mat4x4<f32>,
@@ -41,6 +43,7 @@ struct Globals {
 @group(1) @binding(4) var lin_sampler: sampler;
 @group(1) @binding(5) var hdr_input: texture_2d<f32>;
 @group(1) @binding(6) var post_sampler: sampler;
+@group(1) @binding(7) var bloom_tex: texture_2d<f32>;
 
 const VOXEL: f32 = 0.5;
 const CHUNK_M: f32 = 16.0;
@@ -114,7 +117,8 @@ fn air_mass(y: f32) -> f32 {
 // Colour and strength of direct sunlight at the ground.
 fn day_light() -> vec3<f32> {
     let m = air_mass(g.sun_dir.y);
-    return vec3(1.0, 0.97, 0.92) * exp(-m * RAYLEIGH * 0.16) * 3.4;
+    let warm = 1.0 - smoothstep(0.2, 0.5, g.sun_dir.y);
+    return vec3(1.0, 0.95, 0.88) * exp(-m * RAYLEIGH * 0.21) * mix(3.6, 2.9, warm);
 }
 
 const MOON_LIGHT = vec3<f32>(0.13, 0.16, 0.25);
@@ -131,8 +135,12 @@ fn hg(mu: f32, gg: f32) -> f32 {
     return (1.0 - gg * gg) / (4.0 * PI * pow(max(d, 1e-4), 1.5));
 }
 
-// Sky colour in a direction, without the sun disc.
+// Sky colour in a direction, without the sun disc or clouds.
 fn sky_dome(dir: vec3<f32>) -> vec3<f32> {
+    return sky_dome_base(dir);
+}
+
+fn sky_dome_base(dir: vec3<f32>) -> vec3<f32> {
     let night = g.sky.x;
     var day = vec3(0.0);
     if (night < 0.999) {
@@ -163,7 +171,76 @@ fn day_dome(dir: vec3<f32>) -> vec3<f32> {
     c += light * vec3(0.10, 0.06, 0.03) * exp(-y * 9.0) * (0.5 + 0.5 * mu);
     // And the horizon itself is pale with dust and moisture.
     c += light * vec3(0.07, 0.068, 0.065) * exp(-y * 5.0);
+    // Golden hour is art-directed rather than physical: a violet-blue high
+    // sky, a lavender middle, and a horizon that burns orange towards the sun
+    // and turns rose away from it.
+    let golden = golden_hour();
+    if (golden > 0.0) {
+        let side = 0.5 + 0.5 * dot(normalize(vec2(dir.x, dir.z) + 1e-5), normalize(sun.xz + 1e-5));
+        let zenith = vec3(0.07, 0.08, 0.26);
+        let middle = mix(vec3(0.30, 0.20, 0.45), vec3(0.55, 0.30, 0.32), side);
+        let horizon = mix(vec3(0.60, 0.30, 0.30), vec3(1.25, 0.52, 0.16), side * side);
+        var p = mix(horizon, middle, smoothstep(0.0, 0.25, y));
+        p = mix(p, zenith, smoothstep(0.22, 0.8, y));
+        // The glow around the low sun.
+        p += vec3(1.6, 0.75, 0.22) * pow(max(mu, 0.0), 16.0) + vec3(0.45, 0.2, 0.06) * pow(max(mu, 0.0), 4.0);
+        c = mix(c, p, golden);
+    }
     return c;
+}
+
+// 1 when the sun is low (golden hour), 0 when it is high; 0 at night.
+fn golden_hour() -> f32 {
+    return (1.0 - smoothstep(0.2, 0.5, g.sun_dir.y)) * (1.0 - g.sky.x);
+}
+
+fn fbm2(p: vec2<f32>) -> f32 {
+    var a = 0.5;
+    var f = 0.0;
+    var q = p;
+    for (var k = 0; k < 5; k++) {
+        f += a * vnoise2(q);
+        q = mat2x2<f32>(1.6, 1.2, -1.2, 1.6) * q + vec2(3.1, 1.7);
+        a *= 0.5;
+    }
+    return f;
+}
+
+// A layer of drifting cumulus and streaks, lit by the sun: warm gold and pink
+// where the light passes through them, violet-grey underneath. Returns the
+// cloud colour and coverage.
+fn clouds(dir: vec3<f32>) -> vec4<f32> {
+    if (dir.y < 0.005) {
+        return vec4(0.0);
+    }
+    // Where the ray meets a cloud deck far overhead; the horizon compresses.
+    let uv = dir.xz / (dir.y + 0.06) * 1.6 + vec2(g.sun_dir.w * 0.004, g.sun_dir.w * 0.0015);
+    let stretch = vec2(uv.x * 0.7 + uv.y * 0.3, uv.y * 1.6 - uv.x * 0.2);
+    let shape = fbm2(stretch * 1.3);
+    let detail = fbm2(stretch * 4.5 + 7.0);
+    let dens = smoothstep(0.38, 0.66, shape * 0.8 + detail * 0.3);
+    if (dens <= 0.0) {
+        return vec4(0.0);
+    }
+    // Thickness towards the sun: denser behind means darker under here.
+    let sun = normalize(g.sun_dir.xyz);
+    let ahead = fbm2(stretch * 1.3 + sun.xz * 0.35);
+    let thick = smoothstep(0.4, 0.85, ahead);
+    let mu = dot(dir, sun);
+    let light = sun_light();
+    let golden = golden_hour();
+    let lit = light * mix(vec3(1.0, 0.95, 0.9), vec3(1.0, 0.42, 0.16), golden)
+        * (0.26 + 0.8 * hg(mu, 0.55)) * mix(1.0, 0.3, thick);
+    // The shaded bodies take the colour of the sky around them, greyed.
+    let shade = mix(sky_dome_base(vec3(0.0, 1.0, 0.0)) * 0.9, vec3(0.20, 0.13, 0.24), golden);
+    // Edges glow where they are thin; the silver lining around the sun.
+    let edge = (1.0 - dens) * pow(max(mu, 0.0), 6.0) * 1.5;
+    var c = shade + lit * (0.55 + edge);
+    // Clouds near the horizon fade into the haze.
+    let fade = smoothstep(0.005, 0.12, dir.y);
+    let night = g.sky.x;
+    c = mix(c, vec3(0.012, 0.016, 0.03), night);
+    return vec4(c, dens * fade * mix(0.9, 0.5, night));
 }
 
 fn sky_color(dir: vec3<f32>) -> vec3<f32> {
@@ -176,10 +253,10 @@ fn sky_color(dir: vec3<f32>) -> vec3<f32> {
 // The sun disc with a darker, warmer rim; at night the moon, with faint maria.
 fn sun_disc(dir: vec3<f32>) -> vec3<f32> {
     let mu = dot(dir, normalize(g.sun_dir.xyz));
-    let r = sqrt(max(1.0 - mu * mu, 0.0)) / 0.0085;
+    let r = sqrt(max(1.0 - mu * mu, 0.0)) / mix(0.0085, 0.016, golden_hour());
     let disc = (1.0 - smoothstep(0.9, 1.0, r)) * step(0.0, mu);
     let limb = mix(vec3(1.0), vec3(1.0, 0.75, 0.5), r * r);
-    let sun = day_light() * limb * 14.0;
+    let sun = day_light() * limb * mix(vec3(14.0), vec3(3.2, 1.9, 0.9), golden_hour());
     let maria = 0.8 + 0.2 * vnoise(dir * 900.0);
     let moon = vec3(0.85, 0.88, 0.95) * 1.4 * maria;
     return mix(sun, moon, g.sky.x) * disc;
@@ -210,7 +287,7 @@ const LAMP_RANGE: f32 = 12.0;
 
 // How much the lanterns count: they burn all the time but only matter at dusk.
 fn lamp_on() -> f32 {
-    return smoothstep(0.05, 0.8, g.sky.x);
+    return max(smoothstep(0.05, 0.8, g.sky.x), golden_hour() * 0.75);
 }
 
 // Light from nearby lanterns on a surface at `p` facing `n`.
@@ -274,7 +351,7 @@ fn apply_fog(c: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
     let falloff = 1.0 / 38.0;
     let h0 = g.camera_pos.y - WATER_LEVEL;
     let dy = to.y * falloff;
-    let base = 0.0016 * exp(-max(h0, -20.0) * falloff);
+    let base = mix(0.0016, 0.0011, golden_hour()) * exp(-max(h0, -20.0) * falloff);
     let integral = select((1.0 - exp(-dy)) / dy, 1.0 - 0.5 * dy, abs(dy) < 1e-3);
     let depth = base * dist * max(integral, 0.0);
     // Every clear day still fades the far distance into the horizon sky.
@@ -285,9 +362,23 @@ fn apply_fog(c: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
     let sun = normalize(g.sun_dir.xyz);
     let light = sun_light();
     // In-scattered light: the horizon sky, plus a forward glow when looking towards the sun.
-    let glow = light * hg(dot(dir, sun), 0.7) * 0.5 * vec3(1.0, 0.85, 0.65);
+    let glow = light * hg(dot(dir, sun), 0.7) * mix(0.5, 0.18, golden_hour()) * vec3(1.0, 0.8, 0.55);
     let air = sky_dome(horizon_dir) * 0.95 + glow;
-    return c * trans + air * (1.0 - trans) + lamp_glow(dir, dist);
+    var out = c * trans + air * (1.0 - trans);
+
+    // Valley mist: a thin, patchy layer lying on the river and the low
+    // meadows, thickest in the evening, lit warm on the side towards the sun.
+    let mist_fall = 1.0 / 6.0;
+    let hm = g.camera_pos.y - (WATER_LEVEL + 1.5);
+    let dym = to.y * mist_fall;
+    let mist_integral = select((1.0 - exp(-dym)) / dym, 1.0 - 0.5 * dym, abs(dym) < 1e-3);
+    let patchy = 0.3 + 1.4 * vnoise2((g.camera_pos.xz + to.xz * 0.6) / 70.0);
+    let amount = mix(0.35, 1.0, golden_hour()) * (1.0 - 0.6 * g.sky.x);
+    let mist = 0.004 * exp(-max(hm, -8.0) * mist_fall) * dist * max(mist_integral, 0.0) * patchy * amount;
+    let mist_col = mix(air, air * vec3(0.9, 0.85, 1.05), golden_hour()) + glow * 0.4;
+    let mt = exp(-mist);
+    out = out * mt + mist_col * (1.0 - mt);
+    return out + lamp_glow(dir, dist);
 }
 
 fn finish(c: vec3<f32>) -> vec3<f32> {
@@ -371,11 +462,12 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             let crack = 1.0 - abs(2.0 * vnoise(q * vec3(3.0, 5.0, 3.0)) - 1.0);
             let crack_m = smoothstep(0.90, 0.97, crack) * d_dm;
             c *= 1.0 - 0.55 * crack_m;
-            if (top) {
-                let lichen = smoothstep(0.62, 0.70, fbm(q * 2.0));
-                c = mix(c, vec3(0.55, 0.58, 0.33), lichen * 0.7);
-            }
+            // Moss creeps over the tops of rocks and boulders in soft patches.
+            let moss_m = smoothstep(0.35, 0.8, n.y + (fbm(q * 1.3) - 0.5) * 0.9);
+            let moss = mix(vec3(0.18, 0.30, 0.09), vec3(0.34, 0.42, 0.14), vnoise(q * 9.0)) * (0.8 + 0.4 * fine);
+            c = mix(c, moss, moss_m * 0.9);
             s.albedo = c;
+            s.sss = moss_m * 0.15;
             s.rough = 0.75;
             s.f0 = 0.04;
             s.height = fine * 0.04 - crack_m * 0.02 + vnoise(q * 17.0) * 0.006 * d_cm;
@@ -430,15 +522,18 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.f0 = 0.03 + step(0.985, hash3(floor(q * 60.0))) * 0.4 * d_cm;
             s.height = select(0.0, ripple * 0.006 * d_dm, top) + grain * 0.002 * d_cm;
         }
-        case 5u: { // gravel: rounded stones with gaps
-            let gc = floor(q * 6.0);
-            let gd = length(fract(q * 6.0) - 0.5);
-            let stone = 1.0 - smoothstep(0.3, 0.48, gd);
+        case 5u: { // gravel: river pebbles of mixed size and tone
+            let u = q * 7.0 + vec3(0.0, q.x * 0.37, 0.0);
+            let gc = floor(u);
+            let centre = gc + 0.25 + 0.5 * vec3(hash3(gc), hash3(gc + 3.0), hash3(gc + 7.0));
+            let rad = 0.3 + 0.2 * hash3(gc + 11.0);
+            let stone = 1.0 - smoothstep(rad - 0.12, rad, distance(u, centre));
             let tint = hash3(gc);
-            let c = mix(vec3(0.40, 0.39, 0.37), vec3(0.64, 0.61, 0.56), tint);
-            s.albedo = c * mix(0.45, 1.0, mix(1.0, stone, d_dm));
+            let c = mix(vec3(0.42, 0.41, 0.39), vec3(0.66, 0.63, 0.58), tint);
+            let bed = vec3(0.38, 0.35, 0.31) * (0.85 + 0.3 * fine);
+            s.albedo = mix(bed, c, stone * d_dm + (1.0 - d_dm) * 0.5);
             s.rough = 0.7;
-            s.height = stone * 0.03 * d_dm;
+            s.height = stone * 0.02 * d_dm;
         }
         case 6u: { // snow: soft, bluish in shade, glitters
             s.albedo = vec3(0.93, 0.95, 0.98) * (0.94 + 0.08 * fine);
@@ -449,7 +544,8 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             wettable = false;
         }
         case 7u: { // bark: vertical grooves, rings on cut faces
-            if (top || n.y < -0.5) {
+            // Rings only on flat cut ends, not on the flare where a trunk meets the ground.
+            if (abs(n.y) > 0.97) {
                 let r = length(fract(p.xz) - 0.5);
                 let rings = 0.5 + 0.5 * sin(r * 90.0 + fine * 3.0);
                 s.albedo = mix(vec3(0.50, 0.38, 0.24), vec3(0.62, 0.48, 0.30), rings);
@@ -489,23 +585,48 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.height = smoothstep(0.0, 0.08, board) * 0.004;
             wettable = false;
         }
-        case 11u: { // road: packed earth with ruts, grit and flat stones
-            let rut = 0.5 + 0.5 * sin(p.x * 3.1 + p.z * 2.3 + broad * 4.0);
-            var c = mix(vec3(0.42, 0.34, 0.25), vec3(0.52, 0.45, 0.35), fine * 0.7 + rut * 0.3);
-            let sc = floor(q.xz * 5.0);
-            let flag = step(0.7, hash2(sc)) * d_dm;
-            let sd = max(abs(fract(q.xz * 5.0) - 0.5).x, abs(fract(q.xz * 5.0) - 0.5).y);
-            let slab = flag * (1.0 - smoothstep(0.34, 0.44, sd));
-            c = mix(c, vec3(0.55, 0.53, 0.49) * (0.85 + 0.3 * hash2(sc + 2.0)), slab);
+        case 11u: { // road: rounded cobblestones bedded in packed earth
+            let earth = mix(vec3(0.36, 0.27, 0.19), vec3(0.46, 0.37, 0.27), fine);
+            // Voronoi cells, about three stones per metre; the gap between the two
+            // nearest centres is the mortar of earth between stones.
+            let uv = q.xz * 2.3;
+            let base = floor(uv);
+            var f1 = 9.0;
+            var f2 = 9.0;
+            var id = vec2(0.0);
+            for (var j = -1; j <= 1; j++) {
+                for (var k = -1; k <= 1; k++) {
+                    let c = base + vec2(f32(j), f32(k));
+                    let o = c + 0.2 + 0.6 * vec2(hash2(c), hash2(c + 17.0));
+                    let d = distance(uv, o);
+                    if (d < f1) {
+                        f2 = f1;
+                        f1 = d;
+                        id = c;
+                    } else if (d < f2) {
+                        f2 = d;
+                    }
+                }
+            }
+            let gap = f2 - f1;
+            // Some stones are missing where the path is worn.
+            let worn = smoothstep(0.35, 0.5, vnoise(p * 0.7) * 0.7 + hash2(id) * 0.3);
+            let stone = smoothstep(0.05, 0.14, gap) * worn;
+            let tone = hash2(id + 5.0);
+            let grey = mix(vec3(0.44, 0.44, 0.45), vec3(0.64, 0.62, 0.60), tone) * (0.9 + 0.2 * fine);
+            let c = mix(earth, grey, stone * mix(0.6, 1.0, d_dm));
             s.albedo = c * (0.92 + 0.12 * vnoise(q * 37.0) * d_cm);
-            s.rough = 0.9;
-            s.height = slab * 0.012 + fine * 0.01;
+            s.rough = mix(0.95, 0.7, stone);
+            s.height = stone * smoothstep(0.0, 0.3, gap) * 0.03 * d_dm + fine * 0.008;
         }
         case 12u: { // lantern: dark iron frame around warm glass
-            let f = fract(p / VOXEL);
+            // Coordinates across the lantern body (0..1), which sits centred in its voxel
+            // 0.04..0.32 m above the floor and 0.26 m wide (see mesh.rs).
+            let m = fract(p / VOXEL) * VOXEL;
+            let f = vec3((m.x - 0.12) / 0.26, (m.y - 0.04) / 0.28, (m.z - 0.12) / 0.26);
             let a = select(select(f.xy, f.zy, abs(n.x) > 0.5), f.xz, abs(n.y) > 0.5);
             let edge = min(min(a.x, 1.0 - a.x), min(a.y, 1.0 - a.y));
-            let glass = smoothstep(0.12, 0.16, edge);
+            let glass = smoothstep(0.08, 0.12, edge);
             let bar = 1.0 - smoothstep(0.02, 0.04, abs(a.x - 0.5));
             let pane = glass * (1.0 - bar) * step(abs(n.y), 0.5);
             s.albedo = mix(vec3(0.10, 0.09, 0.08), vec3(0.9, 0.7, 0.4), pane);
@@ -513,6 +634,26 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.f0 = 0.04;
             let flicker = 0.9 + 0.1 * vnoise(vec3(g.sun_dir.w * 6.0, floor(p.x), floor(p.z)));
             s.emit = LAMP_COLOR * pane * 4.5 * flicker;
+            wettable = false;
+        }
+        case 15u: { // lupin spike: packed purple florets, paler towards the tip
+            let florets = vnoise(q * 60.0);
+            let up = fract(p.y * 1.3);
+            var c = mix(vec3(0.30, 0.16, 0.56), vec3(0.55, 0.40, 0.82), florets * 0.7 + up * 0.3);
+            s.albedo = c * (0.85 + 0.3 * step(0.55, vnoise(q * 140.0)) * d_cm);
+            s.rough = 0.7;
+            s.sss = 0.5;
+            wettable = false;
+        }
+        case 16u: { // daisy petals
+            s.albedo = vec3(0.90, 0.90, 0.85);
+            s.rough = 0.6;
+            s.sss = 0.6;
+            wettable = false;
+        }
+        case 17u: { // daisy heart
+            s.albedo = vec3(0.95, 0.70, 0.12);
+            s.rough = 0.7;
             wettable = false;
         }
         case 13u: { // tall grass blades
@@ -523,7 +664,7 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.sss = 0.75;
             wettable = false;
         }
-        case 14u: { // masonry: dressed stone blocks in courses with sunken mortar
+        case 18u: { // masonry: dressed stone blocks in courses with sunken mortar
             // Lay the courses on whichever wall plane the surface mostly faces.
             let an = abs(n);
             var u = select(p.x, p.z, an.x > an.z);
@@ -546,7 +687,7 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.f0 = 0.04;
             s.height = (1.0 - mortar) * 0.02 + fine * 0.01 + vnoise(q * 19.0) * 0.004 * d_cm;
         }
-        case 15u: { // lime plaster: warm, blotchy, weathered darker near the ground
+        case 19u: { // lime plaster: warm, blotchy, weathered darker near the ground
             var c = vec3(0.86, 0.80, 0.67) * (0.9 + 0.12 * broad + 0.08 * fine);
             let stain = smoothstep(0.5, 0.8, vnoise(q * vec3(1.5, 0.6, 1.5)));
             c *= 1.0 - 0.12 * stain;
@@ -554,7 +695,7 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.rough = 0.9;
             s.height = fine * 0.008 + vnoise(q * 29.0) * 0.003 * d_cm;
         }
-        case 16u: { // roof: overlapping rows of blue-grey slate
+        case 20u: { // roof: overlapping rows of blue-grey slate
             let row = floor(p.y / 0.28);
             let along = p.x + p.z;
             let tile = floor(along / 0.4 + row * 0.5);
@@ -574,7 +715,7 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.height = fv * 0.02 * d_dm - gap * 0.01;
             wettable = false;
         }
-        case 17u: { // window: warm lamplight behind small panes in a dark frame
+        case 21u: { // window: warm lamplight behind small panes in a dark frame
             let f = fract(p / VOXEL);
             let a = select(select(f.xy, f.zy, abs(n.x) > 0.5), f.xz, abs(n.y) > 0.5);
             let edge = min(min(a.x, 1.0 - a.x), min(a.y, 1.0 - a.y));
@@ -658,12 +799,20 @@ fn vertex_normal(info: u32) -> vec3<f32> {
     return normalize(n);
 }
 
+// Distance in metres beyond which grass blades and flowers are not drawn.
+const PLANT_RANGE: f32 = 70.0;
+
+// Grass blades and wildflowers: thin, wind-bent, left out of the shadow map.
+fn is_plant(mat: u32) -> bool {
+    return mat == 13u || (mat >= 15u && mat <= 17u);
+}
+
 // Leaves sway a few centimetres in the wind. The offset depends only on the
 // position, so neighbouring faces move together and no cracks open.
 fn sway(pos: vec3<f32>, data: u32) -> vec3<f32> {
     let mat = (data >> 3u) & 255u;
     let t = g.sun_dir.w;
-    if (mat == 13u) {
+    if (is_plant(mat)) {
         // Grass bends from the root: gusts roll across the meadow as waves,
         // with a quicker flutter on top.
         let tip = f32((data >> 11u) & 3u) / 3.0;
@@ -684,7 +833,15 @@ fn sway(pos: vec3<f32>, data: u32) -> vec3<f32> {
 @vertex
 fn vs_world(@location(0) pos: vec3<f32>, @location(1) data: u32) -> VOut {
     var o: VOut;
-    o.clip = g.view_proj * vec4(sway(pos, data), 1.0);
+    var p = sway(pos, data);
+    // Far grass and flowers are too small to see: their upper vertices sink
+    // into the ground there, so they cost almost no pixels (the ground's own
+    // shading carries the meadow). The fade is continuous, so nothing pops.
+    if (is_plant((data >> 3u) & 255u)) {
+        let tip = f32((data >> 11u) & 3u) / 3.0;
+        p.y -= smoothstep(PLANT_RANGE * 0.75, PLANT_RANGE, distance(pos, g.camera_pos.xyz)) * 2.5 * tip;
+    }
+    o.clip = g.view_proj * vec4(p, 1.0);
     o.world = pos;
     o.info = data;
     o.ao = f32((data >> 11u) & 3u) / 3.0;
@@ -695,7 +852,7 @@ fn vs_world(@location(0) pos: vec3<f32>, @location(1) data: u32) -> VOut {
 @vertex
 fn vs_shadow(@location(0) pos: vec3<f32>, @location(1) data: u32) -> @builtin(position) vec4<f32> {
     // Grass blades are too thin to matter in the shadow map; collapse them.
-    if (((data >> 3u) & 255u) == 13u) {
+    if (is_plant((data >> 3u) & 255u)) {
         return vec4(2.0, 2.0, 0.5, 1.0);
     }
     return g.sun_view_proj * vec4(sway(pos, data), 1.0);
@@ -778,7 +935,9 @@ fn shade_terrain(i: VOut) -> vec4<f32> {
     let under = 0.35 + 0.4 * surf.sss;
     // Light from the open sky: the dome's colour straight up, bluer in the
     // shade than the warm sun. Light bounced off the sunlit ground below is warm.
-    let skylight = sky_dome(vec3(0.0, 1.0, 0.0)) * 0.8 + sky_dome(normalize(vec3(-sun.z, 0.02, sun.x))) * 0.3;
+    var skylight = sky_dome(vec3(0.0, 1.0, 0.0)) * 0.8 + sky_dome(normalize(vec3(-sun.z, 0.02, sun.x))) * 0.3;
+    // The painted golden-hour sky is more saturated than the light it really sheds.
+    skylight = mix(skylight, vec3(dot(skylight, vec3(0.3, 0.5, 0.2))) * vec3(0.95, 0.95, 1.05), golden_hour() * 0.55);
     let bounce = light * lin(vec3(0.52, 0.47, 0.36)) * 0.16 * max(sun.y, 0.0);
     let ambient = (skylight * (sky + (1.0 - sky) * surf.sss * 0.6) + bounce * (1.0 - sky) * under) * ao;
     // Sunlight scattered through leaves and grass, strongest when looking towards the sun.
@@ -955,7 +1114,9 @@ fn shade_water(i: VOut) -> vec4<f32> {
     // Shore foam where the water is shallow.
     let depth_below = select(10.0, p.y - world_from_depth(uv, d0).y, d0 > 0.0);
     let foam_n = vnoise2(p.xz * 4.0 + vec2(t * 0.3, -t * 0.2)) * 0.6 + vnoise2(p.xz * 11.0 - t * 0.5) * 0.4;
-    let foam = (1.0 - smoothstep(0.0, 0.25, depth_below)) * smoothstep(0.35, 0.65, foam_n);
+    // Around rocks in the current the white water is broken into streaks.
+    let streak = vnoise2(vec2(p.x * 7.0, p.z * 1.5 - t * 1.4));
+    let foam = (1.0 - smoothstep(0.0, 0.45, depth_below)) * smoothstep(0.35, 0.65, foam_n * 0.7 + streak * 0.3);
     body = mix(body, lin(vec3(0.92, 0.95, 0.95)) * (0.5 + 0.8 * sh), foam * 0.7);
 
     // Reflection: screen-space first, the sky where the screen has no answer.
@@ -990,11 +1151,82 @@ fn vs_fullscreen(@builtin(vertex_index) vi: u32) -> SkyOut {
 fn fs_sky(i: SkyOut) -> @location(0) vec4<f32> {
     let far = g.inv_view_proj * vec4(i.ndc, 0.5, 1.0);
     let dir = normalize(far.xyz / far.w - g.camera_pos.xyz);
-    var c = sky_color(dir) + sun_disc(dir) + stars(dir) + lamp_glow(dir, 400.0);
+    let cl = clouds(dir);
+    var c = mix(sky_color(dir) + sun_disc(dir) + stars(dir), cl.rgb, cl.a) + lamp_glow(dir, 400.0);
     if (g.params.z > 0.5) {
         c = underwater_color();
     }
     return vec4(c, 1.0);
+}
+
+// ---------------------------------------------------------------- bloom
+
+fn screen_uv(ndc: vec2<f32>) -> vec2<f32> {
+    return vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+}
+
+fn tap(uv: vec2<f32>) -> vec3<f32> {
+    return min(textureSampleLevel(hdr_input, post_sampler, uv, 0.0).rgb, vec3(64.0));
+}
+
+// Thirteen-tap downsample (as in Jimenez 2014): a wide, smooth halving
+// without the blocky flicker of a plain box. `karis` weighs each group by
+// its brightness so single very bright pixels do not flicker as sparks.
+fn downsample(uv: vec2<f32>, karis: bool) -> vec3<f32> {
+    let px = 1.0 / vec2<f32>(textureDimensions(hdr_input));
+    let a = tap(uv + px * vec2(-2.0, -2.0));
+    let b = tap(uv + px * vec2(0.0, -2.0));
+    let c = tap(uv + px * vec2(2.0, -2.0));
+    let d = tap(uv + px * vec2(-1.0, -1.0));
+    let e = tap(uv + px * vec2(1.0, -1.0));
+    let f = tap(uv + px * vec2(-2.0, 0.0));
+    let m = tap(uv);
+    let h = tap(uv + px * vec2(2.0, 0.0));
+    let i = tap(uv + px * vec2(-1.0, 1.0));
+    let j = tap(uv + px * vec2(1.0, 1.0));
+    let k = tap(uv + px * vec2(-2.0, 2.0));
+    let l = tap(uv + px * vec2(0.0, 2.0));
+    let n = tap(uv + px * vec2(2.0, 2.0));
+    var groups = array<vec3<f32>, 5>(
+        (d + e + i + j) * 0.25,
+        (a + b + f + m) * 0.25,
+        (b + c + m + h) * 0.25,
+        (f + m + k + l) * 0.25,
+        (m + h + l + n) * 0.25,
+    );
+    let weights = array<f32, 5>(0.5, 0.125, 0.125, 0.125, 0.125);
+    var sum = vec3(0.0);
+    var wsum = 0.0;
+    for (var q = 0; q < 5; q++) {
+        var w = weights[q];
+        if (karis) {
+            w /= 1.0 + dot(groups[q], vec3(0.2126, 0.7152, 0.0722));
+        }
+        sum += groups[q] * w;
+        wsum += w;
+    }
+    return sum / wsum;
+}
+
+@fragment
+fn fs_bloom_first(i: SkyOut) -> @location(0) vec4<f32> {
+    return vec4(downsample(screen_uv(i.ndc), true), 1.0);
+}
+
+@fragment
+fn fs_bloom_down(i: SkyOut) -> @location(0) vec4<f32> {
+    return vec4(downsample(screen_uv(i.ndc), false), 1.0);
+}
+
+// Nine-tap tent filter over the smaller level, added onto the larger one.
+@fragment
+fn fs_bloom_up(i: SkyOut) -> @location(0) vec4<f32> {
+    let uv = screen_uv(i.ndc);
+    let px = 1.0 / vec2<f32>(textureDimensions(hdr_input));
+    var c = tap(uv) * 4.0;
+    c += (tap(uv + vec2(px.x, 0.0)) + tap(uv - vec2(px.x, 0.0)) + tap(uv + vec2(0.0, px.y)) + tap(uv - vec2(0.0, px.y))) * 2.0;
+    c += tap(uv + px) + tap(uv - px) + tap(uv + vec2(px.x, -px.y)) + tap(uv + vec2(-px.x, px.y));
+    return vec4(c / 16.0, 1.0);
 }
 
 // Tone maps the HDR scene onto the screen.
@@ -1002,14 +1234,25 @@ fn fs_sky(i: SkyOut) -> @location(0) vec4<f32> {
 fn fs_post(i: SkyOut) -> @location(0) vec4<f32> {
     let uv = vec2(i.ndc.x * 0.5 + 0.5, 0.5 - i.ndc.y * 0.5);
     // Eyes adapt to the dark: expose nights brighter.
-    var c = textureSampleLevel(hdr_input, post_sampler, uv, 0.0).rgb * mix(1.0, 2.6, g.sky.x);
+    var c = textureSampleLevel(hdr_input, post_sampler, uv, 0.0).rgb;
+    // Bloom: a soft glow of everything, strongest around the brightest light.
+    // The chain sums five blurred levels, hence the divide.
+    let bloom = textureSampleLevel(bloom_tex, post_sampler, uv, 0.0).rgb / 5.0;
+    c = mix(c, bloom, 0.07);
+    c *= mix(1.0, 2.6, g.sky.x);
     let q = i.ndc * 0.75;
     c *= 1.0 - 0.22 * dot(q, q);
     var m = finish(c);
-    // Grade: a touch more colour, and shadows leaning cool against the warm sun.
+    // Grade: rich, painterly colour. More saturation, warm highlights and
+    // shadows leaning violet-blue against the warm sun, and a gentle S-curve.
     let l = dot(m, vec3(0.2126, 0.7152, 0.0722));
-    m = mix(vec3(l), m, 1.1);
-    m += vec3(-0.012, 0.0, 0.02) * (1.0 - l) * (1.0 - l);
+    m = mix(vec3(l), m, 1.18);
+    // Painterly greens: yellow-greens pulled towards a deeper, cooler green.
+    let green = max(m.g - max(m.r, m.b), 0.0);
+    m -= vec3(0.30, 0.22, -0.04) * green;
+    m += vec3(-0.01, -0.012, 0.03) * (1.0 - l) * (1.0 - l);
+    m += vec3(0.03, 0.012, -0.02) * l * l;
+    m = mix(m, m * m * (3.0 - 2.0 * m), 0.35);
     m = clamp(m, vec3(0.0), vec3(1.0));
     // Dither away banding in the sky gradient.
     m += (hash2(i.clip.xy) - 0.5) / 255.0;

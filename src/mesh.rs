@@ -1,7 +1,7 @@
 //! Turns a chunk of voxels into triangles. Solid ground, rock, trees and built
 //! pieces are drawn as one smooth surface (surface nets over a lightly blurred
-//! occupancy field), so nothing in the world reads as a cube. Water, lanterns
-//! and grass blades keep their own shapes.
+//! occupancy field), so nothing in the world reads as a cube. Water, lantern
+//! posts, lanterns and grass blades keep their own shapes.
 
 use crate::block::*;
 use crate::chunk::CHUNK;
@@ -133,7 +133,7 @@ impl Padded {
 /// crisp so their glass reads as glass.
 #[inline]
 fn is_smooth(b: Block) -> bool {
-    is_solid(b) && b != LANTERN && b != WINDOW
+    is_solid(b) && b != LANTERN && b != POST && b != WINDOW
 }
 
 pub fn build(world: &World, cpos: IVec3) -> MeshData {
@@ -172,7 +172,15 @@ pub fn build(world: &World, cpos: IVec3) -> MeshData {
                     continue;
                 }
                 if b == TALL_GRASS {
-                    grass_blades(&mut out, origin, p);
+                    grass_blades(&mut out, origin, p, world.terrain.seed);
+                    continue;
+                }
+                if b == POST {
+                    post(&mut out, &pad, origin, p);
+                    continue;
+                }
+                if b == LANTERN {
+                    lantern(&mut out, origin, p, pad.get(p - IVec3::Y) == POST);
                     continue;
                 }
                 if is_smooth(b) {
@@ -223,7 +231,15 @@ pub fn smooth_data(mat: Block, ao: u32, n: Vec3) -> u32 {
 /// single placed voxels never vanish or fuse shut.
 fn smooth_surface(pad: &Padded, origin: IVec3, out: &mut MeshData) {
     let idx = |x: i32, y: i32, z: i32| ((y * P + z) * P + x) as usize;
-    let mut a: Vec<f32> = pad.data.iter().map(|b| is_smooth(*b) as u8 as f32).collect();
+    // The foot of a post stands in the top ground voxel, so it counts as ground there.
+    let stride_y = (P * P) as usize;
+    let mut a: Vec<f32> = (0..pad.data.len())
+        .map(|i| {
+            let b = pad.data[i];
+            let ground_post = b == POST && i >= stride_y && is_smooth(pad.data[i - stride_y]);
+            (is_smooth(b) || ground_post) as u8 as f32
+        })
+        .collect();
     if a.iter().all(|v| *v == 0.0) {
         return;
     }
@@ -307,6 +323,10 @@ fn smooth_surface(pad: &Padded, origin: IVec3, out: &mut MeshData) {
             if *v > 0.5 && o.y > best {
                 best = o.y;
                 mat = pad.get(c + o);
+                if mat == POST {
+                    // The foot of a lantern post counts as the ground it stands in.
+                    mat = pad.get(c + o - IVec3::Y);
+                }
             }
         }
         // More solid around the cell means a more enclosed, darker spot.
@@ -374,38 +394,315 @@ const CELL_EDGES: [(usize, usize); 12] = [
 const BLADES: u32 = 5;
 
 /// A tuft of thin tapered blades rising from the floor of voxel `p`. Heights
-/// vary in soft patches, from ankle-high to hip-high, and each blade leans a
-/// little its own way. Both windings are emitted so blades show from either side.
-fn grass_blades(out: &mut MeshData, origin: IVec3, p: IVec3) {
+/// vary in soft patches, from ankle-high to hip-high, and tall-grass fields
+/// stand chest- to head-high. Each blade leans a little its own way; tall ones
+/// get a joint halfway so they bend in a curve. Both windings are emitted so
+/// blades show from either side.
+fn grass_blades(out: &mut MeshData, origin: IVec3, p: IVec3, seed: u32) {
     let w = origin + p;
     // Rooted a little below the voxel floor, since the smooth ground can dip there.
-    let floor = w.as_vec3() * VOXEL_SIZE - glam::Vec3::Y * 0.12;
+    let floor = w.as_vec3() * VOXEL_SIZE - Vec3::Y * 0.12;
     let patch = crate::noise::fbm2(97, w.x as f32 / 9.0, w.z as f32 / 9.0, 2);
-    let tall = 0.22 + 0.95 * patch * patch;
+    let field = crate::terrain::tall_meadow(seed, w.x as f32 * VOXEL_SIZE, w.z as f32 * VOXEL_SIZE);
+    let tall = (0.22 + 0.95 * patch * patch) * (1.0 - field) + (1.25 + 0.6 * patch) * field;
+    let blades = BLADES + (field * 3.0).round() as u32;
     let data = |ao: u32| 2 | ((TALL_GRASS as u32) << 3) | (ao << 11);
-    for k in 0..BLADES {
+    for k in 0..blades {
         let h = crate::noise::hash3(0x5eed + k, w.x, w.y, w.z);
         let r = |shift: u32| crate::noise::unit(h.rotate_left(shift));
-        let base = floor + glam::Vec3::new(0.05 + 0.4 * r(0), 0.0, 0.05 + 0.4 * r(8));
+        let base = floor + Vec3::new(0.05 + 0.4 * r(0), 0.0, 0.05 + 0.4 * r(8));
         let height = tall * (0.55 + 0.6 * r(16));
         let angle = r(24) * std::f32::consts::TAU;
-        let side = glam::Vec3::new(angle.cos(), 0.0, angle.sin()) * 0.035;
-        let lean = glam::Vec3::new(r(4) - 0.5, 0.0, r(12) - 0.5) * height * 0.5;
+        let side = Vec3::new(angle.cos(), 0.0, angle.sin()) * (0.035 + 0.012 * field);
+        let lean = Vec3::new(r(4) - 0.5, 0.0, r(12) - 0.5) * height * 0.5;
+        let tip = base + lean + Vec3::Y * height;
         let start = out.vertices.len() as u32;
-        for (pos, ao) in [
-            (base - side, 0),
-            (base + side, 0),
-            (base + lean + glam::Vec3::Y * height, 3),
-        ] {
+        let mut push = |pos: Vec3, ao: u32| {
             out.vertices.push(Vertex {
                 pos: pos.to_array(),
                 data: data(ao),
-            });
+            })
+        };
+        push(base - side, 0);
+        push(base + side, 0);
+        if height > 0.7 {
+            // Joint halfway up, leaning less than the tip so the blade curves.
+            let mid = base + lean * 0.3 + Vec3::Y * height * 0.55;
+            push(mid - side * 0.7, 1);
+            push(mid + side * 0.7, 1);
+            push(tip, 3);
+            let (a, b, c, d, t) = (start, start + 1, start + 2, start + 3, start + 4);
+            out.indices
+                .extend_from_slice(&[a, b, d, a, d, b, a, d, c, a, c, d, c, d, t, c, t, d]);
+        } else {
+            push(tip, 3);
+            out.indices
+                .extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 1]);
         }
-        out.indices
-            .extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 1]);
+    }
+    flowers(out, floor + Vec3::Y * 0.1, w, seed);
+}
+
+/// Adds a double-sided triangle for flowers and stems; `ao` is the height
+/// along the plant that the wind bends (3 at the top).
+fn plant_tri(out: &mut MeshData, pts: [(Vec3, u32); 3], mat: Block) {
+    let start = out.vertices.len() as u32;
+    for (pos, ao) in pts {
+        out.vertices.push(Vertex {
+            pos: pos.to_array(),
+            data: 2 | ((mat as u32) << 3) | (ao << 11),
+        });
+    }
+    out.indices
+        .extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 1]);
+}
+
+/// Wildflowers among the grass of voxel `w`: purple lupin spikes in patches,
+/// and daisies scattered through the meadows.
+fn flowers(out: &mut MeshData, floor: Vec3, w: IVec3, seed: u32) {
+    let h = crate::noise::hash3(0xf10e, w.x, w.y, w.z);
+    let r = |shift: u32| crate::noise::unit(h.rotate_left(shift));
+    let (xm, zm) = (w.x as f32 * VOXEL_SIZE, w.z as f32 * VOXEL_SIZE);
+    let lupins = crate::noise::fbm2(seed.wrapping_add(50), xm / 16.0, zm / 16.0, 2);
+    let meadow = crate::terrain::meadow(seed, xm, zm);
+    let at = floor + Vec3::new(0.1 + 0.3 * r(3), -0.1, 0.1 + 0.3 * r(7));
+    let angle = r(11) * std::f32::consts::TAU;
+    let across = Vec3::new(angle.cos(), 0.0, angle.sin());
+    let across2 = Vec3::new(-across.z, 0.0, across.x);
+    if lupins > 0.55 && r(0) < 0.6 {
+        // A stem, then a tapering spike of florets on its top half, as two crossed planes.
+        let height = 0.7 + 0.55 * r(15);
+        let lean = Vec3::new(r(19) - 0.5, 0.0, r(23) - 0.5) * 0.12;
+        let spike = at + lean * 0.5 + Vec3::Y * height * 0.45;
+        let top = at + lean + Vec3::Y * height;
+        plant_tri(
+            out,
+            [(at - across * 0.012, 0), (at + across * 0.012, 0), (spike, 1)],
+            TALL_GRASS,
+        );
+        let wide = 0.07 + 0.03 * r(27);
+        for side in [across, across2] {
+            plant_tri(
+                out,
+                [(spike - side * wide, 1), (spike + side * wide, 1), (top, 3)],
+                LUPIN,
+            );
+        }
+    } else if r(0) < 0.03 + 0.1 * meadow {
+        // A daisy: a thin stem with a white flower head facing the sky.
+        let height = 0.22 + 0.25 * r(15);
+        let top = at + Vec3::new(r(19) - 0.5, 0.0, r(23) - 0.5) * 0.08 + Vec3::Y * height;
+        plant_tri(
+            out,
+            [(at - across * 0.008, 0), (at + across * 0.008, 0), (top, 3)],
+            TALL_GRASS,
+        );
+        let ring = |k: u32, rad: f32, y: f32| {
+            let a = angle + k as f32 * std::f32::consts::TAU / 6.0;
+            top + Vec3::new(a.cos() * rad, y, a.sin() * rad)
+        };
+        let petals = 0.045 + 0.02 * r(29);
+        for k in 0..6 {
+            plant_tri(
+                out,
+                [(top, 3), (ring(k, petals, 0.0), 3), (ring(k + 1, petals, 0.0), 3)],
+                DAISY,
+            );
+        }
+        for k in 0..6 {
+            let y = 0.006;
+            plant_tri(
+                out,
+                [
+                    (top + Vec3::Y * y, 3),
+                    (ring(k, 0.016, y), 3),
+                    (ring(k + 1, 0.016, y), 3),
+                ],
+                DAISY_HEART,
+            );
+        }
     }
 }
+
+/// Adds a flat convex polygon (a triangle or quad) facing away from `centre`.
+fn flat(out: &mut MeshData, pts: &[Vec3], centre: Vec3, mat: Block) {
+    let mut n = (pts[1] - pts[0]).cross(pts[2] - pts[0]).normalize_or_zero();
+    let mid = pts.iter().copied().sum::<Vec3>() / pts.len() as f32;
+    let flip = n.dot(mid - centre) < 0.0;
+    if flip {
+        n = -n;
+    }
+    let start = out.vertices.len() as u32;
+    for q in pts {
+        out.vertices.push(Vertex {
+            pos: q.to_array(),
+            data: smooth_data(mat, 3, n),
+        });
+    }
+    for i in 1..pts.len() as u32 - 1 {
+        if flip {
+            out.indices.extend_from_slice(&[start, start + i + 1, start + i]);
+        } else {
+            out.indices.extend_from_slice(&[start, start + i, start + i + 1]);
+        }
+    }
+}
+
+/// A closed box from `lo` to `hi`.
+fn cuboid(out: &mut MeshData, lo: Vec3, hi: Vec3, mat: Block) {
+    let c = (lo + hi) * 0.5;
+    let v = |x: bool, y: bool, z: bool| {
+        Vec3::new(
+            if x { hi.x } else { lo.x },
+            if y { hi.y } else { lo.y },
+            if z { hi.z } else { lo.z },
+        )
+    };
+    let (f, t) = (false, true);
+    for face in [
+        [v(f, f, f), v(t, f, f), v(t, t, f), v(f, t, f)],
+        [v(f, f, t), v(t, f, t), v(t, t, t), v(f, t, t)],
+        [v(f, f, f), v(f, t, f), v(f, t, t), v(f, f, t)],
+        [v(t, f, f), v(t, t, f), v(t, t, t), v(t, f, t)],
+        [v(f, f, f), v(t, f, f), v(t, f, t), v(f, f, t)],
+        [v(f, t, f), v(t, t, f), v(t, t, t), v(f, t, t)],
+    ] {
+        flat(out, &face, c, mat);
+    }
+}
+
+/// Half the thickness of a lantern post in metres.
+const POST_RADIUS: f32 = 0.08;
+
+/// A straight timber of square section `half` from `a` to `b`.
+fn beam(out: &mut MeshData, a: Vec3, b: Vec3, half: f32, mat: Block) {
+    let dir = (b - a).normalize_or_zero();
+    let side = if dir.y.abs() > 0.99 {
+        Vec3::X
+    } else {
+        dir.cross(Vec3::Y).normalize()
+    };
+    let up = side.cross(dir);
+    let (s, u) = (side * half, up * half);
+    let corner = |e: Vec3, k: usize| e + [s + u, -s + u, -s - u, s - u][k];
+    let centre = (a + b) * 0.5;
+    for k in 0..4 {
+        let j = (k + 1) % 4;
+        flat(
+            out,
+            &[corner(a, k), corner(a, j), corner(b, j), corner(b, k)],
+            centre,
+            mat,
+        );
+    }
+    flat(
+        out,
+        &[corner(a, 0), corner(a, 1), corner(a, 2), corner(a, 3)],
+        centre,
+        mat,
+    );
+    flat(
+        out,
+        &[corner(b, 0), corner(b, 1), corner(b, 2), corner(b, 3)],
+        centre,
+        mat,
+    );
+}
+
+/// One voxel's length of a square wooden lantern post. The top voxel gets a
+/// cap, and when a lantern hangs beside the voxel below it, an arm reaching
+/// out over it with a diagonal brace.
+fn post(out: &mut MeshData, pad: &Padded, origin: IVec3, p: IVec3) {
+    let centre = (origin + p).as_vec3() * VOXEL_SIZE + Vec3::new(VOXEL_SIZE * 0.5, 0.0, VOXEL_SIZE * 0.5);
+    let r = POST_RADIUS;
+    let above = pad.get(p + IVec3::Y);
+    let top = above != POST && above != LANTERN;
+    let height = if top { ARM_HEIGHT + 0.08 } else { VOXEL_SIZE };
+    cuboid(
+        out,
+        centre + Vec3::new(-r, 0.0, -r),
+        centre + Vec3::new(r, height, r),
+        WOOD,
+    );
+    if !top {
+        return;
+    }
+    let cap = r + 0.025;
+    cuboid(
+        out,
+        centre + Vec3::new(-cap, height, -cap),
+        centre + Vec3::new(cap, height + 0.04, cap),
+        WOOD,
+    );
+    for d in [IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z] {
+        if pad.get(p + d - IVec3::Y) != LANTERN {
+            continue;
+        }
+        let out_dir = d.as_vec3();
+        let arm_y = centre + Vec3::Y * ARM_HEIGHT;
+        let end = arm_y + out_dir * (VOXEL_SIZE + 0.1);
+        beam(out, arm_y - out_dir * r, end, 0.045, WOOD);
+        // Brace from lower on the post up to the middle of the arm.
+        let low = centre + Vec3::Y * (ARM_HEIGHT - 0.42) + out_dir * r * 0.5;
+        beam(out, low, arm_y + out_dir * 0.36 - Vec3::Y * 0.03, 0.03, WOOD);
+    }
+}
+
+/// Height above the top post voxel's floor at which the lantern arm runs.
+const ARM_HEIGHT: f32 = 0.2;
+
+/// A lantern: a glass body with an iron frame (drawn by the shader) under a
+/// small pointed iron roof. Standing on a post it gets a collar that grips
+/// the post; otherwise it hangs by a hook from the arm above.
+fn lantern(out: &mut MeshData, origin: IVec3, p: IVec3, on_post: bool) {
+    let floor = (origin + p).as_vec3() * VOXEL_SIZE + Vec3::new(VOXEL_SIZE * 0.5, 0.0, VOXEL_SIZE * 0.5);
+    let at = |dx: f32, y: f32, dz: f32| floor + Vec3::new(dx, y, dz);
+    let (b0, b1) = LANTERN_BODY;
+    let hw = LANTERN_HALF_WIDTH;
+    if on_post {
+        // Collar: slightly wider than the post and overlapping its top.
+        let r = POST_RADIUS + 0.03;
+        cuboid(out, at(-r, -0.04, -r), at(r, b0, r), WOOD);
+    } else {
+        // Base plate, then the hook up to the arm in the voxel above.
+        cuboid(
+            out,
+            at(-hw - 0.015, b0 - 0.025, -hw - 0.015),
+            at(hw + 0.015, b0, hw + 0.015),
+            LANTERN,
+        );
+        beam(
+            out,
+            at(0.0, b1 + 0.15, 0.0),
+            at(0.0, VOXEL_SIZE + ARM_HEIGHT, 0.0),
+            0.012,
+            LANTERN,
+        );
+    }
+    cuboid(out, at(-hw, b0, -hw), at(hw, b1, hw), LANTERN);
+    // Roof: a low pyramid with an overhang.
+    let o = hw + 0.05;
+    let eave = b1 + 0.02;
+    let apex = at(0.0, b1 + 0.16, 0.0);
+    let corners = [at(-o, eave, -o), at(o, eave, -o), at(o, eave, o), at(-o, eave, o)];
+    let centre = at(0.0, eave + 0.04, 0.0);
+    for k in 0..4 {
+        flat(out, &[corners[k], corners[(k + 1) % 4], apex], centre, LANTERN);
+    }
+    flat(out, &corners, centre, LANTERN);
+    // Thin iron plate joining the body to the roof.
+    cuboid(
+        out,
+        at(-hw - 0.01, b1, -hw - 0.01),
+        at(hw + 0.01, eave, hw + 0.01),
+        LANTERN,
+    );
+}
+
+/// The lantern body's bottom and top above its voxel floor, in metres.
+pub const LANTERN_BODY: (f32, f32) = (0.04, 0.32);
+/// Half the width of the lantern body in metres.
+pub const LANTERN_HALF_WIDTH: f32 = 0.13;
 
 #[allow(clippy::too_many_arguments)]
 fn emit(
@@ -534,7 +831,86 @@ mod tests {
             .iter()
             .filter(|v| (v.data >> 3) & 255 == TALL_GRASS as u32)
             .count();
-        assert_eq!(blades, 3 * BLADES as usize);
+        assert!(
+            (3 * BLADES as usize..=5 * (BLADES as usize + 3)).contains(&blades),
+            "{blades}"
+        );
+    }
+
+    #[test]
+    fn lantern_sits_on_its_post() {
+        let mut w = World::new(1, 1);
+        let mut c = Chunk::default();
+        c.set(5, 4, 5, STONE);
+        for y in 5..8 {
+            c.set(5, y, 5, POST);
+        }
+        c.set(5, 8, 5, LANTERN);
+        w.chunks.insert(IVec3::ZERO, c);
+        let m = build(&w, IVec3::ZERO);
+        let floor = 8.0 * VOXEL_SIZE;
+        let mat = |v: &Vertex| (v.data >> 3) & 255;
+        let post_top = m
+            .vertices
+            .iter()
+            .filter(|v| mat(v) == WOOD as u32 && v.pos[1] <= floor + 1e-4)
+            .map(|v| v.pos[1])
+            .fold(f32::MIN, f32::max);
+        assert!((post_top - floor).abs() < 1e-4, "post ends at {post_top}");
+        // The lantern's collar reaches down over the post and its body starts right above.
+        let lowest = m
+            .vertices
+            .iter()
+            .filter(|v| v.pos[1] > floor - 0.2 && mat(v) != STONE as u32 && v.pos[1] < floor)
+            .count();
+        assert!(lowest > 0);
+        // The ground around the post's foot keeps the ground's material.
+        assert!(m.vertices.iter().all(|v| mat(v) != POST as u32));
+        let body = m.vertices.iter().filter(|v| mat(v) == LANTERN as u32);
+        let bottom = body.map(|v| v.pos[1]).fold(f32::MAX, f32::min);
+        assert!((bottom - floor - LANTERN_BODY.0).abs() < 1e-4);
+        // Nothing post-shaped is wider than the post itself below the lantern.
+        let centre = 5.5 * VOXEL_SIZE;
+        for v in m
+            .vertices
+            .iter()
+            .filter(|v| mat(v) == WOOD as u32 && v.pos[1] < floor - 0.05)
+        {
+            let r = (v.pos[0] - centre).abs().max((v.pos[2] - centre).abs());
+            assert!(r <= POST_RADIUS + 1e-4, "{r}");
+        }
+    }
+
+    #[test]
+    fn hanging_lantern_hooks_onto_the_arm() {
+        let mut w = World::new(1, 1);
+        let mut c = Chunk::default();
+        c.set(5, 4, 5, STONE);
+        for y in 5..=10 {
+            c.set(5, y, 5, POST);
+        }
+        c.set(6, 9, 5, LANTERN);
+        w.chunks.insert(IVec3::ZERO, c);
+        let m = build(&w, IVec3::ZERO);
+        let mat = |v: &Vertex| (v.data >> 3) & 255;
+        let arm_y = 10.0 * VOXEL_SIZE + ARM_HEIGHT;
+        let lamp_x = 6.5 * VOXEL_SIZE;
+        // The arm reaches past the lantern's centre at arm height.
+        let reach = m
+            .vertices
+            .iter()
+            .filter(|v| mat(v) == WOOD as u32 && (v.pos[1] - arm_y).abs() < 0.06)
+            .map(|v| v.pos[0])
+            .fold(f32::MIN, f32::max);
+        assert!(reach > lamp_x, "arm ends at {reach}");
+        // The hook climbs from the lantern roof to the arm.
+        let hook_top = m
+            .vertices
+            .iter()
+            .filter(|v| mat(v) == LANTERN as u32)
+            .map(|v| v.pos[1])
+            .fold(f32::MIN, f32::max);
+        assert!((hook_top - arm_y).abs() < 1e-3, "hook reaches {hook_top}");
     }
 
     #[test]

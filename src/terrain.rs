@@ -23,6 +23,10 @@ pub const WATER_LEVEL_M: f32 = 24.5;
 /// Trees sit on a jittered grid with this spacing in metres.
 pub const TREE_CELL_M: f32 = 9.0;
 const TREE_REACH_M: f32 = 7.5;
+/// Grid cell (metres) that holds at most one boulder.
+const BOULDER_CELL_M: f32 = 6.0;
+/// Largest boulder radius in metres.
+const BOULDER_MAX_R_M: f32 = 2.4;
 const TREE_MAX_HEIGHT_M: f32 = 26.0;
 
 /// Half the width of a road's packed surface in metres.
@@ -34,7 +38,7 @@ const SIDE_ROADS_Z: [f32; 4] = [300.0, 780.0, 1290.0, 1760.0];
 /// How far side roads climb away from the valley road.
 const SIDE_ROAD_LENGTH_M: f32 = 560.0;
 /// Voxels in a lantern post below the lantern itself.
-const LANTERN_POST: i32 = 5;
+const LANTERN_POST: i32 = 6;
 
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
@@ -110,27 +114,30 @@ impl Terrain {
     }
 
     /// Ground positions (voxel coordinates) of the lantern posts whose base lies
-    /// within the given rectangle of metres.
-    fn lanterns_in(&self, x0: f32, x1: f32, z0: f32, z1: f32) -> Vec<IVec3> {
+    /// within the given rectangle of metres, each with the direction (one voxel
+    /// step) towards its road, where its lantern hangs.
+    fn lanterns_in(&self, x0: f32, x1: f32, z0: f32, z1: f32) -> Vec<(IVec3, IVec3)> {
         let mut out = Vec::new();
-        let mut add = |x: f32, z: f32| {
+        let mut add = |x: f32, z: f32, towards: IVec3| {
             if x < x0 || x >= x1 || z < z0 || z >= z1 {
                 return;
             }
             let (h, _) = self.height_at(x, z);
             if h > WATER_LEVEL_M + 0.8 {
-                out.push(IVec3::new(
+                let base = IVec3::new(
                     (x / VOXEL_SIZE).floor() as i32,
                     (h / VOXEL_SIZE).floor() as i32,
                     (z / VOXEL_SIZE).floor() as i32,
-                ));
+                );
+                out.push((base, towards));
             }
         };
         let side = |k: i32| if k % 2 == 0 { 2.6 } else { -2.6 };
+        let towards = |off: f32, axis: IVec3| if off > 0.0 { -axis } else { axis };
         let s = LANTERN_SPACING_M;
         for k in (z0 / s).floor() as i32 - 1..=(z1 / s).ceil() as i32 {
             let z = (k as f32 + 0.5) * s;
-            add(self.road_x(z) + side(k), z);
+            add(self.road_x(z) + side(k), z, towards(side(k), IVec3::X));
         }
         for (r, z0) in SIDE_ROADS_Z.iter().enumerate() {
             let start = self.road_x(*z0);
@@ -141,7 +148,7 @@ impl Terrain {
                     continue;
                 }
                 if let Some(z) = self.side_road_z(r, x) {
-                    add(x, z + side(k));
+                    add(x, z + side(k), towards(side(k), IVec3::Z));
                 }
             }
         }
@@ -273,6 +280,34 @@ impl Terrain {
         })
     }
 
+    /// A rounded, half-buried boulder: common along the river banks and in the
+    /// shallows, scattered sparsely over the meadows, never on roads.
+    pub fn boulder_in_cell(&self, gx: i32, gz: i32) -> Option<Boulder> {
+        let h = hash2(self.seed.wrapping_add(40), gx, gz);
+        let xm = (gx as f32 + 0.1 + 0.8 * unit(h)) * BOULDER_CELL_M;
+        let zm = (gz as f32 + 0.1 + 0.8 * unit(h.rotate_left(9))) * BOULDER_CELL_M;
+        let info = self.column_info(xm, zm);
+        let above_water = info.height_m - WATER_LEVEL_M;
+        let chance = if (-1.2..2.5).contains(&above_water) {
+            0.5
+        } else if info.surface == GRASS && info.height_m < 60.0 {
+            0.05
+        } else {
+            0.0
+        };
+        if unit(h.rotate_left(19)) >= chance || self.road_distance(xm, zm) < 3.5 {
+            return None;
+        }
+        let size = unit(h.rotate_left(27));
+        let r = 0.6 + (BOULDER_MAX_R_M - 0.6) * size * size;
+        let squash = 0.65 + 0.25 * unit(h.rotate_left(4));
+        Some(Boulder {
+            centre: Vec3::new(xm, info.height_m - r * 0.3, zm),
+            radii: Vec3::new(r * (0.95 + 0.3 * unit(h.rotate_left(13))), r * squash, r),
+            seed: h,
+        })
+    }
+
     fn stamp_tree(&self, tree: &Tree, origin: IVec3, data: &mut [Block; CHUNK_VOLUME]) {
         let mut put = |p: IVec3, b: Block, replace_solid: bool| {
             let l = p - origin;
@@ -294,6 +329,21 @@ impl Terrain {
         } else {
             (crown - ri + 1, crown + ri)
         };
+        // Broadleaf crowns: clump centres (voxels, relative to the trunk at crown
+        // height) and radii.
+        let h = crate::noise::hash3(self.seed.wrapping_add(24), tree.base.x, tree.base.y, tree.base.z);
+        let hr = |k: u32| unit(h.rotate_left(k));
+        let mut clumps = vec![(Vec3::new(0.0, r_vox * 0.2, 0.0), r_vox * 0.66)];
+        let n = 5 + (hr(1) * 3.0) as u32;
+        for k in 0..n {
+            let a = (k as f32 + 0.35 * hr(3 + k)) * std::f32::consts::TAU / n as f32;
+            let out = r_vox * (0.5 + 0.15 * hr(9 + k));
+            let lift = r_vox * (-0.2 + 0.5 * hr(17 + k));
+            clumps.push((
+                Vec3::new(a.cos() * out, lift, a.sin() * out),
+                r_vox * (0.4 + 0.14 * hr(25 + k)),
+            ));
+        }
         // Only visit the part of the crown that falls inside this chunk.
         let lo = origin - IVec3::new(tree.base.x, 0, tree.base.z);
         let hi = lo + IVec3::splat(CHUNK - 1);
@@ -308,30 +358,47 @@ impl Terrain {
                         let t = (y - y0) as f32 / (y1 - y0) as f32;
                         (fx * fx + fz * fz).sqrt() < r_vox * (1.0 - t) + 0.6
                     } else {
-                        // A lumpy, slightly flattened crown instead of a clean ball.
-                        let fy = (y - crown) as f32 * 1.15;
-                        let d = (fx * fx + fy * fy + fz * fz).sqrt();
-                        d < r_vox * 0.78
-                            || (d < r_vox * 1.18 && {
-                                let lump = value3(
-                                    self.seed.wrapping_add(23),
-                                    p.x as f32 * 0.22,
-                                    p.y as f32 * 0.22,
-                                    p.z as f32 * 0.22,
-                                );
-                                d < r_vox * (0.78 + 0.4 * lump)
-                            })
+                        // A cloud of rounded clumps around a central one, each a
+                        // little lumpy, so the crown reads as masses of foliage.
+                        let q = Vec3::new(fx, (y - crown) as f32 + 0.5, fz);
+                        let lump = value3(
+                            self.seed.wrapping_add(23),
+                            p.x as f32 * 0.3,
+                            p.y as f32 * 0.3,
+                            p.z as f32 * 0.3,
+                        ) - 0.5;
+                        clumps.iter().any(|(c, r)| q.distance(*c) < r * (1.0 + 0.3 * lump))
                     };
-                    let hole = unit(crate::noise::hash3(self.seed, p.x, p.y, p.z)) < 0.12;
-                    if inside && !hole {
+                    if inside {
                         put(p, LEAVES, false);
                     }
+                }
+            }
+        }
+        if !tree.conifer {
+            // Boughs from the upper trunk out into the outer clumps.
+            for (c, _) in clumps.iter().skip(1) {
+                let from = Vec3::new(0.0, (top - 3 - crown) as f32, 0.0);
+                let to = *c * 0.8;
+                let steps = (to - from).length().ceil() as i32 * 2;
+                for k in 0..=steps {
+                    let v = from.lerp(to, k as f32 / steps as f32);
+                    let cell = IVec3::new(tree.base.x, crown, tree.base.z) + v.floor().as_ivec3();
+                    put(cell, WOOD, true);
                 }
             }
         }
         for y in tree.base.y..top {
             for (dx, dz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
                 put(IVec3::new(tree.base.x + dx - 1, y, tree.base.z + dz - 1), WOOD, true);
+            }
+        }
+        if !tree.conifer {
+            // Roots flare out around the foot of the trunk.
+            for (dx, dz) in [(-2, -1), (-2, 0), (1, -1), (1, 0), (-1, -2), (0, -2), (-1, 1), (0, 1)] {
+                if hr((dx * 7 + dz * 3 + 40) as u32) < 0.7 {
+                    put(IVec3::new(tree.base.x + dx, tree.base.y, tree.base.z + dz), WOOD, true);
+                }
             }
         }
     }
@@ -442,8 +509,19 @@ impl Terrain {
                 }
             }
             let (ox, oz) = (origin.x as f32 * VOXEL_SIZE, origin.z as f32 * VOXEL_SIZE);
-            for base in self.lanterns_in(ox, ox + side, oz, oz + side) {
-                stamp_lantern(base, origin, &mut data);
+            let reach = BOULDER_MAX_R_M * 1.3;
+            let cell = |m: f32| (m / BOULDER_CELL_M).floor() as i32;
+            for gz in cell(oz - reach)..=cell(oz + side + reach) {
+                for gx in cell(ox - reach)..=cell(ox + side + reach) {
+                    if let Some(b) = self.boulder_in_cell(gx, gz) {
+                        stamp_boulder(&b, s, origin, &mut data);
+                    }
+                }
+            }
+            // A lantern hangs a voxel beside its post, so look a little past the chunk.
+            let m = VOXEL_SIZE * 2.0;
+            for (base, towards) in self.lanterns_in(ox - m, ox + side + m, oz - m, oz + side + m) {
+                stamp_lantern(base, towards, origin, &mut data);
             }
         }
 
@@ -470,27 +548,67 @@ impl Terrain {
     }
 }
 
-/// A wooden post with a lantern and a small plank roof on top.
-fn stamp_lantern(base: IVec3, origin: IVec3, data: &mut [Block; CHUNK_VOLUME]) {
-    for dy in 0..=LANTERN_POST + 1 {
-        let l = base + IVec3::Y * dy - origin;
-        if l.cmplt(IVec3::ZERO).any() || l.cmpge(IVec3::splat(CHUNK)).any() {
-            continue;
+pub struct Boulder {
+    /// Centre in metres.
+    pub centre: Vec3,
+    /// Half extents in metres.
+    pub radii: Vec3,
+    seed: u32,
+}
+
+/// Fills a lumpy ellipsoid of stone; the smooth mesher rounds it off.
+fn stamp_boulder(b: &Boulder, seed: u32, origin: IVec3, data: &mut [Block; CHUNK_VOLUME]) {
+    let lo = ((b.centre - b.radii * 1.2) / VOXEL_SIZE).floor().as_ivec3().max(origin);
+    let hi = ((b.centre + b.radii * 1.2) / VOXEL_SIZE)
+        .ceil()
+        .as_ivec3()
+        .min(origin + IVec3::splat(CHUNK - 1));
+    for y in lo.y..=hi.y {
+        for z in lo.z..=hi.z {
+            for x in lo.x..=hi.x {
+                let p = (IVec3::new(x, y, z).as_vec3() + 0.5) * VOXEL_SIZE;
+                let d = ((p - b.centre) / b.radii).length();
+                let lump = value3(seed.wrapping_add(41) ^ b.seed, p.x * 0.9, p.y * 0.9, p.z * 0.9) - 0.5;
+                if d < 1.0 + lump * 0.35 {
+                    let l = IVec3::new(x, y, z) - origin;
+                    data[local_index(l.x, l.y, l.z)] = STONE;
+                }
+            }
         }
-        data[local_index(l.x, l.y, l.z)] = match dy {
-            d if d < LANTERN_POST => WOOD,
-            d if d == LANTERN_POST => LANTERN,
-            _ => PLANKS,
-        };
     }
 }
 
+/// A square wooden post with an arm at the top, reaching over the road, and
+/// a lantern hanging from the arm's end (the mesher draws the arm and hook).
+fn stamp_lantern(base: IVec3, towards: IVec3, origin: IVec3, data: &mut [Block; CHUNK_VOLUME]) {
+    let mut put = |p: IVec3, b: Block| {
+        let l = p - origin;
+        if l.cmpge(IVec3::ZERO).all() && l.cmplt(IVec3::splat(CHUNK)).all() {
+            data[local_index(l.x, l.y, l.z)] = b;
+        }
+    };
+    for dy in 0..=LANTERN_POST {
+        put(base + IVec3::Y * dy, POST);
+    }
+    put(base + towards + IVec3::Y * (LANTERN_POST - 1), LANTERN);
+}
+
+/// How much a spot (in metres) is meadow, 0..1: grass grows thick there.
+pub fn meadow(seed: u32, xm: f32, zm: f32) -> f32 {
+    smoothstep(0.38, 0.62, fbm2(seed.wrapping_add(30), xm / 38.0, zm / 38.0, 3))
+}
+
+/// How much a spot (in metres) is tall-grass field, 0..1: dense grass that
+/// stands chest- to head-high, in wide patches of its own.
+pub fn tall_meadow(seed: u32, xm: f32, zm: f32) -> f32 {
+    smoothstep(0.56, 0.68, fbm2(seed.wrapping_add(34), xm / 64.0, zm / 64.0, 3))
+}
+
 /// Whether the air voxel resting on a grass block holds tall grass: dense in
-/// meadows, sparse between them.
+/// meadows and tall-grass fields, sparse between them.
 fn tall_grass(seed: u32, x: i32, y: i32, z: i32) -> bool {
     let (xm, zm) = (x as f32 * VOXEL_SIZE, z as f32 * VOXEL_SIZE);
-    let meadow = fbm2(seed.wrapping_add(30), xm / 38.0, zm / 38.0, 3);
-    let chance = 0.06 + 0.8 * smoothstep(0.38, 0.62, meadow);
+    let chance = (0.06 + 0.8 * meadow(seed, xm, zm)).max(0.97 * tall_meadow(seed, xm, zm));
     unit(crate::noise::hash3(seed.wrapping_add(32), x, y, z)) < chance
 }
 
@@ -522,6 +640,35 @@ mod tests {
     }
 
     #[test]
+    fn river_banks_have_boulders_and_roads_do_not() {
+        let t = Terrain::new(20260927);
+        let (mut bank, mut road) = (0, 0);
+        for gz in 150..190 {
+            for gx in 120..180 {
+                if let Some(b) = t.boulder_in_cell(gx, gz) {
+                    let above = t.column_info(b.centre.x, b.centre.z).height_m - WATER_LEVEL_M;
+                    bank += (above < 2.5) as i32;
+                    road += (t.road_distance(b.centre.x, b.centre.z) < 3.5) as i32;
+                    assert!(b.radii.max_element() <= BOULDER_MAX_R_M * 1.25);
+                }
+            }
+        }
+        assert!(bank > 10, "{bank} boulders by the river");
+        assert_eq!(road, 0);
+    }
+
+    #[test]
+    fn valley_has_tall_grass_fields() {
+        let seed = 20260927;
+        let mut field = 0;
+        for i in 0..400 {
+            let (x, z) = (600.0 + (i % 20) as f32 * 40.0, 700.0 + (i / 20) as f32 * 40.0);
+            field += (tall_meadow(seed, x, z) > 0.9) as i32;
+        }
+        assert!((10..300).contains(&field), "{field} of 400 samples in tall grass");
+    }
+
+    #[test]
     fn valley_road_has_lantern_posts() {
         let mut t = Terrain::new(20260927);
         let z = 1024.0;
@@ -531,10 +678,15 @@ mod tests {
         let posts = t.lanterns_in(x - 8.0, x + 8.0, z - 40.0, z + 40.0);
         assert!(posts.len() >= 3, "{posts:?}");
         // The lantern sits on top of its post in the generated chunk.
-        let top = posts[0] + IVec3::Y * LANTERN_POST;
-        let c = t.generate(crate::chunk::chunk_of(top));
-        let l = crate::chunk::local_of(top);
+        // The lantern hangs beside the top of its post, towards the road.
+        let (base, towards) = posts[0];
+        let lamp = base + towards + IVec3::Y * (LANTERN_POST - 1);
+        let c = t.generate(crate::chunk::chunk_of(lamp));
+        let l = crate::chunk::local_of(lamp);
         assert_eq!(c.get(l.x, l.y, l.z), LANTERN);
+        let lamp_m = (lamp.as_vec3() + 0.5) * VOXEL_SIZE;
+        let base_m = (base.as_vec3() + 0.5) * VOXEL_SIZE;
+        assert!(t.road_distance(lamp_m.x, lamp_m.z) < t.road_distance(base_m.x, base_m.z));
     }
 
     #[test]

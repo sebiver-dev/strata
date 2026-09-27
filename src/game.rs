@@ -601,9 +601,9 @@ impl Game {
         let proj = Mat4::perspective_infinite_reverse_rh(70f32.to_radians(), aspect, 0.05);
         let view = Mat4::look_to_rh(eye, self.player.look_dir(), Vec3::Y);
         let vp = proj * view;
-        // A late-afternoon sun about 26 degrees up (warm light, long shadows),
+        // A golden-hour sun about 10 degrees up (warm light, long shadows),
         // or at night a high moon on the other side of the sky.
-        let day_sun = Vec3::new(0.62, 0.36, 0.40).normalize();
+        let day_sun = Vec3::new(0.35, 0.17, 0.92).normalize();
         let moon = Vec3::new(-0.45, 0.62, -0.35).normalize();
         let t = self.night * self.night * (3.0 - 2.0 * self.night);
         let sun = day_sun.lerp(moon, t).normalize();

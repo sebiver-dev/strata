@@ -22,14 +22,26 @@ pub const PATH: Block = 11;
 pub const LANTERN: Block = 12;
 /// Tall grass blades standing in the air voxel above a grass block.
 pub const TALL_GRASS: Block = 13;
+/// A thin wooden lantern post, drawn as a pole rather than a full voxel.
+pub const POST: Block = 14;
+
+// Materials that exist only on meshes, never as voxels.
+/// Lupin flower spikes.
+pub const LUPIN: Block = 15;
+/// Daisy petals.
+pub const DAISY: Block = 16;
+/// The yellow heart of a daisy.
+pub const DAISY_HEART: Block = 17;
+
+// Built structures.
 /// Dressed stone laid in courses: bridges, towers, castle walls, plinths.
-pub const MASONRY: Block = 14;
+pub const MASONRY: Block = 18;
 /// Lime plaster between the timbers of a cottage wall.
-pub const PLASTER: Block = 15;
+pub const PLASTER: Block = 19;
 /// Slate and shingle roofing.
-pub const ROOF: Block = 16;
+pub const ROOF: Block = 20;
 /// A lit window; glows warm from dusk on.
-pub const WINDOW: Block = 17;
+pub const WINDOW: Block = 21;
 
 /// Materials the player can place, in hotbar order (keys 1..).
 pub const PLACEABLE: [Block; 8] = [STONE, DIRT, GRASS, SAND, GRAVEL, WOOD, PLANKS, SNOW];
@@ -54,6 +66,7 @@ pub fn name(b: Block) -> &'static str {
         PLASTER => "plaster",
         ROOF => "roof",
         WINDOW => "window",
+        POST => "post",
         _ => "unknown",
     }
 }
@@ -61,7 +74,7 @@ pub fn name(b: Block) -> &'static str {
 /// Blocks that fully hide the faces of their neighbours.
 #[inline]
 pub fn is_opaque(b: Block) -> bool {
-    !matches!(b, AIR | WATER | TALL_GRASS)
+    !matches!(b, AIR | WATER | TALL_GRASS | POST | LANTERN)
 }
 
 /// Blocks the player collides with.

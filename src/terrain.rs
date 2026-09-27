@@ -323,6 +323,21 @@ impl Terrain {
         } else {
             (crown - ri + 1, crown + ri)
         };
+        // Broadleaf crowns: clump centres (voxels, relative to the trunk at crown
+        // height) and radii.
+        let h = crate::noise::hash3(self.seed.wrapping_add(24), tree.base.x, tree.base.y, tree.base.z);
+        let hr = |k: u32| unit(h.rotate_left(k));
+        let mut clumps = vec![(Vec3::new(0.0, r_vox * 0.2, 0.0), r_vox * 0.66)];
+        let n = 5 + (hr(1) * 3.0) as u32;
+        for k in 0..n {
+            let a = (k as f32 + 0.35 * hr(3 + k)) * std::f32::consts::TAU / n as f32;
+            let out = r_vox * (0.5 + 0.15 * hr(9 + k));
+            let lift = r_vox * (-0.2 + 0.5 * hr(17 + k));
+            clumps.push((
+                Vec3::new(a.cos() * out, lift, a.sin() * out),
+                r_vox * (0.4 + 0.14 * hr(25 + k)),
+            ));
+        }
         // Only visit the part of the crown that falls inside this chunk.
         let lo = origin - IVec3::new(tree.base.x, 0, tree.base.z);
         let hi = lo + IVec3::splat(CHUNK - 1);
@@ -337,30 +352,47 @@ impl Terrain {
                         let t = (y - y0) as f32 / (y1 - y0) as f32;
                         (fx * fx + fz * fz).sqrt() < r_vox * (1.0 - t) + 0.6
                     } else {
-                        // A lumpy, slightly flattened crown instead of a clean ball.
-                        let fy = (y - crown) as f32 * 1.15;
-                        let d = (fx * fx + fy * fy + fz * fz).sqrt();
-                        d < r_vox * 0.78
-                            || (d < r_vox * 1.18 && {
-                                let lump = value3(
-                                    self.seed.wrapping_add(23),
-                                    p.x as f32 * 0.22,
-                                    p.y as f32 * 0.22,
-                                    p.z as f32 * 0.22,
-                                );
-                                d < r_vox * (0.78 + 0.4 * lump)
-                            })
+                        // A cloud of rounded clumps around a central one, each a
+                        // little lumpy, so the crown reads as masses of foliage.
+                        let q = Vec3::new(fx, (y - crown) as f32 + 0.5, fz);
+                        let lump = value3(
+                            self.seed.wrapping_add(23),
+                            p.x as f32 * 0.3,
+                            p.y as f32 * 0.3,
+                            p.z as f32 * 0.3,
+                        ) - 0.5;
+                        clumps.iter().any(|(c, r)| q.distance(*c) < r * (1.0 + 0.3 * lump))
                     };
-                    let hole = unit(crate::noise::hash3(self.seed, p.x, p.y, p.z)) < 0.12;
-                    if inside && !hole {
+                    if inside {
                         put(p, LEAVES, false);
                     }
+                }
+            }
+        }
+        if !tree.conifer {
+            // Boughs from the upper trunk out into the outer clumps.
+            for (c, _) in clumps.iter().skip(1) {
+                let from = Vec3::new(0.0, (top - 3 - crown) as f32, 0.0);
+                let to = *c * 0.8;
+                let steps = (to - from).length().ceil() as i32 * 2;
+                for k in 0..=steps {
+                    let v = from.lerp(to, k as f32 / steps as f32);
+                    let cell = IVec3::new(tree.base.x, crown, tree.base.z) + v.floor().as_ivec3();
+                    put(cell, WOOD, true);
                 }
             }
         }
         for y in tree.base.y..top {
             for (dx, dz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
                 put(IVec3::new(tree.base.x + dx - 1, y, tree.base.z + dz - 1), WOOD, true);
+            }
+        }
+        if !tree.conifer {
+            // Roots flare out around the foot of the trunk.
+            for (dx, dz) in [(-2, -1), (-2, 0), (1, -1), (1, 0), (-1, -2), (0, -2), (-1, 1), (0, 1)] {
+                if hr((dx * 7 + dz * 3 + 40) as u32) < 0.7 {
+                    put(IVec3::new(tree.base.x + dx, tree.base.y, tree.base.z + dz), WOOD, true);
+                }
             }
         }
     }

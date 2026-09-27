@@ -684,13 +684,13 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.f0 = 0.25;
             wettable = false;
         }
-        case 15u, 27u, 28u: { // lupin florets: purple, pink or white, paler towards the tip
+        case 15u, 40u, 41u: { // lupin florets: purple, pink or white, paler towards the tip
             let florets = vnoise(q * 60.0);
             let up = fract(p.y * 1.3);
             var lo = vec3(0.30, 0.16, 0.56);
             var hi = vec3(0.55, 0.40, 0.82);
-            if (mat == 27u) { lo = vec3(0.62, 0.22, 0.42); hi = vec3(0.90, 0.56, 0.70); }
-            if (mat == 28u) { lo = vec3(0.78, 0.76, 0.80); hi = vec3(0.95, 0.94, 0.92); }
+            if (mat == 40u) { lo = vec3(0.62, 0.22, 0.42); hi = vec3(0.90, 0.56, 0.70); }
+            if (mat == 41u) { lo = vec3(0.78, 0.76, 0.80); hi = vec3(0.95, 0.94, 0.92); }
             var c = mix(lo, hi, florets * 0.7 + up * 0.3);
             s.albedo = c * (0.85 + 0.3 * step(0.55, vnoise(q * 140.0)) * d_cm);
             s.rough = 0.7;
@@ -869,7 +869,7 @@ const PLANT_RANGE: f32 = 70.0;
 
 // Grass blades and wildflowers: thin, wind-bent, left out of the shadow map.
 fn is_plant(mat: u32) -> bool {
-    return mat == 13u || (mat >= 15u && mat <= 17u) || mat == 27u || mat == 28u;
+    return mat == 13u || (mat >= 15u && mat <= 17u) || mat == 40u || mat == 41u;
 }
 
 // Leaves sway a few centimetres in the wind. The offset depends only on the

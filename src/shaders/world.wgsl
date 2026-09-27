@@ -674,7 +674,7 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.emit = LAMP_COLOR * 4.5 * flicker * (0.85 + 0.3 * ripple);
             wettable = false;
         }
-        case 22u: { // wrought iron: dark, a little glossy, rusty in places
+        case 26u: { // wrought iron: dark, a little glossy, rusty in places
             let rust = smoothstep(0.55, 0.8, vnoise(q * 9.0));
             s.albedo = mix(vec3(0.07, 0.065, 0.06), vec3(0.22, 0.12, 0.07), rust * 0.6);
             s.rough = mix(0.4, 0.8, rust);

@@ -43,7 +43,7 @@ pub const ROOF: Block = 20;
 /// A lit window; glows warm from dusk on.
 pub const WINDOW: Block = 21;
 /// Wrought iron: lantern frames, arms and chains (mesh only).
-pub const IRON: Block = 22;
+pub const IRON: Block = 26;
 
 /// Materials the player can place, in hotbar order (keys 1..).
 pub const PLACEABLE: [Block; 8] = [STONE, DIRT, GRASS, SAND, GRAVEL, WOOD, PLANKS, SNOW];

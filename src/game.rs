@@ -17,6 +17,52 @@ use winit::keyboard::KeyCode;
 const REACH_M: f32 = 8.0;
 const EDIT_REPEAT_S: f32 = 0.16;
 const MOUSE_SENSITIVITY: f32 = 0.0022;
+/// Largest brush radius in voxels (a 6.5 m wide brush).
+pub const MAX_BRUSH: i32 = 6;
+
+/// The shape and size of the volume one click digs or builds.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Brush {
+    /// Radius in voxels; 0 edits a single voxel.
+    pub radius: i32,
+    pub cube: bool,
+}
+
+impl Brush {
+    /// Whether a voxel at offset `d` from the brush centre is inside the brush.
+    /// Must match `in_brush` in the terrain shader, which previews it.
+    pub fn contains(&self, d: IVec3) -> bool {
+        let r = self.radius;
+        if self.cube {
+            d.abs().max_element() <= r
+        } else {
+            d.length_squared() as f32 <= (r as f32 + 0.35).powi(2)
+        }
+    }
+
+    /// Offsets of every voxel inside the brush.
+    pub fn offsets(self) -> impl Iterator<Item = IVec3> {
+        let r = self.radius;
+        (-r..=r)
+            .flat_map(move |z| (-r..=r).flat_map(move |y| (-r..=r).map(move |x| IVec3::new(x, y, z))))
+            .filter(move |d| self.contains(*d))
+    }
+
+    /// Width across the brush in metres.
+    pub fn width_m(&self) -> f32 {
+        (2 * self.radius + 1) as f32 * VOXEL_SIZE
+    }
+}
+
+/// What the on-screen HUD shows. The browser page redraws it when this changes.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Hud {
+    pub selected: usize,
+    pub brush: Brush,
+    pub flying: bool,
+    /// The material under the crosshair, if any is in reach.
+    pub target: Option<Block>,
+}
 
 pub struct Settings {
     pub seed: u32,
@@ -59,7 +105,7 @@ pub struct Game {
     keys: HashSet<KeyCode>,
     buttons: HashSet<MouseButton>,
     selected: usize,
-    brush: i32,
+    brush: Brush,
     edit_timer: f32,
     time: f32,
     fps: f32,
@@ -92,7 +138,7 @@ impl Game {
             keys: HashSet::new(),
             buttons: HashSet::new(),
             selected: 0,
-            brush: 1,
+            brush: Brush { radius: 1, cube: false },
             edit_timer: 0.0,
             time: 0.0,
             fps: 0.0,
@@ -110,8 +156,9 @@ impl Game {
                     self.player.flying = !self.player.flying;
                     self.player.vel = Vec3::ZERO;
                 }
-                KeyCode::BracketLeft => self.brush = (self.brush - 1).max(0),
-                KeyCode::BracketRight => self.brush = (self.brush + 1).min(4),
+                KeyCode::BracketLeft | KeyCode::Minus | KeyCode::NumpadSubtract => self.resize_brush(-1),
+                KeyCode::BracketRight | KeyCode::Equal | KeyCode::NumpadAdd => self.resize_brush(1),
+                KeyCode::KeyB => self.brush.cube = !self.brush.cube,
                 _ => {
                     let digits = [
                         KeyCode::Digit1,
@@ -136,7 +183,21 @@ impl Game {
         }
     }
 
+    fn resize_brush(&mut self, step: i32) {
+        self.brush.radius = (self.brush.radius + step).clamp(0, MAX_BRUSH);
+    }
+
     pub fn mouse_button(&mut self, b: MouseButton, pressed: bool) {
+        // Middle click picks up the material under the crosshair.
+        if b == MouseButton::Middle {
+            if pressed {
+                let picked = self.target.map(|v| self.world.get(v));
+                if let Some(i) = PLACEABLE.iter().position(|m| Some(*m) == picked) {
+                    self.selected = i;
+                }
+            }
+            return;
+        }
         if pressed {
             self.buttons.insert(b);
             self.edit_timer = 0.0;
@@ -150,7 +211,12 @@ impl Game {
             .look(dx as f32 * MOUSE_SENSITIVITY, dy as f32 * MOUSE_SENSITIVITY);
     }
 
+    /// The wheel picks materials, or resizes the brush while Alt is held.
     pub fn scroll(&mut self, lines: f32) {
+        if self.held(KeyCode::AltLeft) || self.held(KeyCode::AltRight) {
+            self.resize_brush(if lines > 0.0 { 1 } else { -1 });
+            return;
+        }
         let n = PLACEABLE.len() as i32;
         let step = if lines > 0.0 { -1 } else { 1 };
         self.selected = ((self.selected as i32 + step).rem_euclid(n)) as usize;
@@ -235,28 +301,19 @@ impl Game {
         }
     }
 
-    /// Digs (with AIR) or builds a sphere of voxels around `center`.
+    /// Digs (with AIR) or builds the brush volume around `center`.
     fn edit(&mut self, center: IVec3, block: Block) {
-        let r = self.brush;
-        for dz in -r..=r {
-            for dy in -r..=r {
-                for dx in -r..=r {
-                    let d = IVec3::new(dx, dy, dz);
-                    if d.length_squared() as f32 > (r as f32 + 0.35).powi(2) {
-                        continue;
-                    }
-                    let v = center + d;
-                    let current = self.world.get(v);
-                    if block == AIR {
-                        if is_solid(current) {
-                            // Dug holes below the river line fill with water.
-                            let wet = (v.y as f32 + 0.5) * VOXEL_SIZE < WATER_LEVEL_M && self.touches_water(v);
-                            self.world.set(v, if wet { WATER } else { AIR });
-                        }
-                    } else if !is_solid(current) && !self.player.intersects_voxel(v) {
-                        self.world.set(v, block);
-                    }
+        for d in self.brush.offsets() {
+            let v = center + d;
+            let current = self.world.get(v);
+            if block == AIR {
+                if is_solid(current) {
+                    // Dug holes below the river line fill with water.
+                    let wet = (v.y as f32 + 0.5) * VOXEL_SIZE < WATER_LEVEL_M && self.touches_water(v);
+                    self.world.set(v, if wet { WATER } else { AIR });
                 }
+            } else if !is_solid(current) && !self.player.intersects_voxel(v) {
+                self.world.set(v, block);
             }
         }
     }
@@ -339,7 +396,7 @@ impl Game {
         let fog = self.settings.fog_m;
         let underwater = self.world.get((eye / VOXEL_SIZE).floor().as_ivec3()) == WATER;
         let (hl, has) = match self.target {
-            Some(v) => (v.as_vec3() * VOXEL_SIZE, 1.0),
+            Some(v) => (v.as_vec3() * VOXEL_SIZE, 1.0 + self.brush.radius as f32),
             None => (Vec3::ZERO, 0.0),
         };
         Globals {
@@ -348,9 +405,23 @@ impl Game {
             sun_view_proj: sun_view_proj(eye, sun).to_cols_array_2d(),
             camera_pos: eye.extend(1.0).to_array(),
             sun_dir: sun.extend(self.time).to_array(),
-            params: [fog, manual_srgb as i32 as f32, underwater as i32 as f32, 0.0],
+            params: [
+                fog,
+                manual_srgb as i32 as f32,
+                underwater as i32 as f32,
+                self.brush.cube as i32 as f32,
+            ],
             highlight: hl.extend(has).to_array(),
             screen: [width as f32, height as f32, SHADOW_SIZE as f32, scale],
+        }
+    }
+
+    pub fn hud(&self) -> Hud {
+        Hud {
+            selected: self.selected,
+            brush: self.brush,
+            flying: self.player.flying,
+            target: self.target.map(|v| self.world.get(v)),
         }
     }
 
@@ -397,7 +468,7 @@ impl Game {
             "Strata | {:.0} fps | {} | brush {} | {}{} | {} chunks, {} far tiles | {}k + {}k far tris | {}",
             self.fps,
             block::name(PLACEABLE[self.selected]),
-            self.brush,
+            self.brush.radius,
             if self.player.flying { "flying" } else { "walking" },
             if self.ready { "" } else { " (loading)" },
             renderer.mesh_count(),
@@ -406,5 +477,22 @@ impl Game {
             renderer.far_triangles_drawn / 1000,
             self.timings(renderer),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn brush_volumes() {
+        let count = |radius, cube| Brush { radius, cube }.offsets().count();
+        assert_eq!(count(0, false), 1);
+        assert_eq!(count(0, true), 1);
+        assert_eq!(count(1, false), 7);
+        assert_eq!(count(1, true), 27);
+        assert_eq!(count(2, true), 125);
+        assert!(count(MAX_BRUSH, false) < count(MAX_BRUSH, true));
+        assert_eq!(Brush { radius: 2, cube: false }.width_m(), 2.5);
     }
 }

@@ -576,7 +576,7 @@ pub fn tall_meadow(seed: u32, xm: f32, zm: f32) -> f32 {
 /// 0..1), sparse between them.
 fn tall_grass(seed: u32, x: i32, y: i32, z: i32, verge: f32) -> bool {
     let (xm, zm) = (x as f32 * VOXEL_SIZE, z as f32 * VOXEL_SIZE);
-    let chance = (0.06 + 0.8 * meadow(seed, xm, zm))
+    let chance = (0.14 + 0.78 * meadow(seed, xm, zm))
         .max(0.97 * tall_meadow(seed, xm, zm))
         .max(0.85 * verge);
     unit(crate::noise::hash3(seed.wrapping_add(32), x, y, z)) < chance

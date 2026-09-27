@@ -349,6 +349,7 @@ pub fn build_tile(terrain: &Terrain, tile: IVec2, level: u8) -> MeshData {
         }
     }
     terrain.structures.far(&mut out, origin, origin + TILE_M);
+    crate::vista::far_curtains(&mut out, origin, origin + TILE_M);
     out
 }
 

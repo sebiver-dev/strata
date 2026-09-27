@@ -65,6 +65,12 @@ pub struct Game {
     edit_timer: f32,
     time: f32,
     fps: f32,
+    /// Smoothed CPU milliseconds per frame: world streaming, meshing, far field, rendering.
+    cpu_ms: [f32; 4],
+    /// Share of the chunk columns within the view radius that show voxels.
+    coverage: f32,
+    /// Multiplier on the loading budgets this frame.
+    boost: f64,
     target: Option<IVec3>,
     ready: bool,
 }
@@ -94,6 +100,9 @@ impl Game {
             edit_timer: 0.0,
             time: 0.0,
             fps: 0.0,
+            cpu_ms: [0.0; 4],
+            coverage: 0.0,
+            boost: 1.0,
             target: None,
             ready: false,
         }
@@ -170,18 +179,38 @@ impl Game {
             self.fps * 0.95 + 0.05 / dt.max(1e-3)
         };
 
-        self.world.stream(self.player.pos, self.settings.stream_budget_ms);
+        let clock = web_time::Instant::now();
+        let lap = || clock.elapsed().as_secs_f32() * 1000.0;
+        // Until the ground around the player exists they cannot move, and while
+        // much of the voxel area is still missing the far field's box trees show
+        // up close, so spend more of the frame loading in both cases.
+        let boost = if !self.ready {
+            5.0
+        } else if self.coverage < 0.85 {
+            3.0
+        } else {
+            1.0
+        };
+        self.boost = boost;
+        self.world
+            .stream(self.player.pos, self.settings.stream_budget_ms * boost);
+        let t_stream = lap();
         for c in self.world.removed.drain(..) {
             renderer.remove(c);
         }
         self.remesh(renderer);
         self.update_near_mask(renderer);
+        let t_mesh = lap();
         self.far.update(
             &self.world.terrain,
             self.player.pos,
-            self.settings.far_budget_ms,
+            self.settings.far_budget_ms * boost,
             |t, m| renderer.upload_far(t, m),
         );
+        let t_far = lap();
+        self.smooth_cpu(0, t_stream);
+        self.smooth_cpu(1, t_mesh - t_stream);
+        self.smooth_cpu(2, t_far - t_mesh);
 
         // Hold the player still until the ground under them exists.
         let here = chunk_of((self.player.pos / VOXEL_SIZE).floor().as_ivec3());
@@ -274,7 +303,7 @@ impl Game {
             let m = mesh::build(&self.world, c);
             renderer.upload(c, &m);
             self.world.dirty.remove(&c);
-            if start.elapsed().as_secs_f64() * 1000.0 > self.settings.mesh_budget_ms {
+            if start.elapsed().as_secs_f64() * 1000.0 > self.settings.mesh_budget_ms * self.boost {
                 break;
             }
         }
@@ -287,6 +316,7 @@ impl Game {
         let mut mask = vec![0u8; (side * side) as usize];
         let center = chunk_of((self.player.pos / VOXEL_SIZE).floor().as_ivec3());
         let r = self.world.view_radius;
+        let (mut total, mut covered) = (0u32, 0u32);
         for dz in -r..=r {
             for dx in -r..=r {
                 let (x, z) = (center.x + dx, center.z + dz);
@@ -298,15 +328,19 @@ impl Game {
                     self.world.chunks.contains_key(&c) && !self.world.dirty.contains(&c)
                 });
                 mask[(z * side + x) as usize] = meshed as u8;
+                total += 1;
+                covered += meshed as u32;
             }
         }
+        self.coverage = covered as f32 / total.max(1) as f32;
         if mask != self.near_mask {
             renderer.set_near_mask(&mask);
             self.near_mask = mask;
         }
     }
 
-    pub fn globals(&self, width: u32, height: u32, manual_srgb: bool) -> Globals {
+    /// `width` and `height` are the scene's render size, `scale` that size over the window's.
+    pub fn globals(&self, width: u32, height: u32, manual_srgb: bool, scale: f32) -> Globals {
         let aspect = width as f32 / height.max(1) as f32;
         let eye = self.player.eye();
         let proj = Mat4::perspective_infinite_reverse_rh(70f32.to_radians(), aspect, 0.05);
@@ -328,13 +362,51 @@ impl Game {
             sun_dir: sun.extend(self.time).to_array(),
             params: [fog, manual_srgb as i32 as f32, underwater as i32 as f32, 0.0],
             highlight: hl.extend(has).to_array(),
-            screen: [width as f32, height as f32, SHADOW_SIZE as f32, 0.0],
+            screen: [width as f32, height as f32, SHADOW_SIZE as f32, scale],
         }
+    }
+
+    fn smooth_cpu(&mut self, i: usize, ms: f32) {
+        self.cpu_ms[i] = self.cpu_ms[i] * 0.9 + ms * 0.1;
+    }
+
+    /// Records how long the renderer spent recording and submitting a frame.
+    pub fn note_render_time(&mut self, ms: f32) {
+        self.smooth_cpu(3, ms);
+    }
+
+    /// Where the frame time goes, for the status line.
+    fn timings(&self, renderer: &Renderer) -> String {
+        let (w, h) = renderer.render_size();
+        let c = self.cpu_ms;
+        let mut s = format!(
+            "{} | {w}x{h} | cpu {:.1} ms (world {:.1}, mesh {:.1}, far {:.1}, draw {:.1})",
+            renderer.adapter_name,
+            c.iter().sum::<f32>(),
+            c[0],
+            c[1],
+            c[2],
+            c[3]
+        );
+        match renderer.gpu_ms {
+            Some(g) => {
+                s += &format!(
+                    " | gpu {:.1} ms (shadow {:.1}, scene {:.1}, water {:.1}, post {:.1})",
+                    g.iter().sum::<f32>(),
+                    g[0],
+                    g[1],
+                    g[2],
+                    g[3]
+                )
+            }
+            None => s += " | gpu timing unavailable",
+        }
+        s
     }
 
     pub fn status(&self, renderer: &Renderer) -> String {
         format!(
-            "Strata | {:.0} fps | {} | brush {} | {}{} | {} chunks, {} far tiles | {}k + {}k far tris",
+            "Strata | {:.0} fps | {} | brush {} | {}{} | {} chunks, {} far tiles | {}k + {}k far tris | {}",
             self.fps,
             block::name(PLACEABLE[self.selected]),
             self.brush,
@@ -344,6 +416,7 @@ impl Game {
             self.far.tile_count(),
             renderer.triangles_drawn / 1000,
             renderer.far_triangles_drawn / 1000,
+            self.timings(renderer),
         )
     }
 }

@@ -12,7 +12,8 @@ use glam::IVec3;
 pub struct Vertex {
     /// World position in metres.
     pub pos: [f32; 3],
-    /// Bits 0..3 face direction, 3..11 material, 11..13 ambient occlusion (0 darkest).
+    /// Bits 0..3 face direction, 3..11 material, 11..13 ambient occlusion (0 darkest),
+    /// 13..17 leaf edges open to the air (+u, -u, +v, -v; see `FACES`).
     pub data: u32,
 }
 
@@ -190,6 +191,16 @@ fn emit(
     let base = if f.n.cmpgt(IVec3::ZERO).any() { p + f.n } else { p };
     let front = p + f.n;
     let occ = |q: IVec3| is_opaque(pad.get(q)) as u32;
+    // Leaf faces remember which of their edges are on the outline of the
+    // crown, so the shader can fray them.
+    let mut edges = 0u32;
+    if b == LEAVES {
+        for (bit, d) in [f.u, -f.u, f.v, -f.v].into_iter().enumerate() {
+            if !is_opaque(pad.get(p + d)) {
+                edges |= 1 << bit;
+            }
+        }
+    }
     let start = verts.len() as u32;
     let mut ao = [3u32; 4];
     for (i, (cu, cv)) in [(0, 0), (1, 0), (1, 1), (0, 1)].into_iter().enumerate() {
@@ -204,7 +215,7 @@ fn emit(
         if water && f.n == IVec3::Y {
             pos.y -= 0.06;
         }
-        let data = fi as u32 | ((b as u32) << 3) | (ao[i] << 11);
+        let data = fi as u32 | ((b as u32) << 3) | (ao[i] << 11) | (edges << 13);
         verts.push(Vertex {
             pos: pos.to_array(),
             data,
@@ -234,6 +245,30 @@ mod tests {
         assert_eq!(m.indices.len(), 36);
         // Unoccluded faces are fully lit.
         assert!(m.vertices.iter().all(|v| (v.data >> 11) & 3 == 3));
+    }
+
+    #[test]
+    fn lone_leaf_faces_have_all_edges_open() {
+        let mut w = World::new(1, 1);
+        let mut c = Chunk::default();
+        c.set(5, 5, 5, LEAVES);
+        c.set(6, 5, 5, LEAVES);
+        w.chunks.insert(IVec3::ZERO, c);
+        let m = build(&w, IVec3::ZERO);
+        // The top face of each block borders its neighbour on one edge only.
+        let tops: Vec<u32> = m
+            .vertices
+            .iter()
+            .filter(|v| v.data & 7 == 2)
+            .map(|v| (v.data >> 13) & 15)
+            .collect();
+        assert_eq!(tops.len(), 8);
+        assert!(tops.iter().all(|e| e.count_ones() == 3));
+        // Stone never gets edge bits.
+        let mut c = Chunk::default();
+        c.set(5, 5, 5, STONE);
+        w.chunks.insert(IVec3::ZERO, c);
+        assert!(build(&w, IVec3::ZERO).vertices.iter().all(|v| v.data >> 13 == 0));
     }
 
     #[test]

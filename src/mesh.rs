@@ -548,29 +548,6 @@ fn flat(out: &mut MeshData, pts: &[Vec3], centre: Vec3, mat: Block) {
     }
 }
 
-/// A closed box from `lo` to `hi`.
-fn cuboid(out: &mut MeshData, lo: Vec3, hi: Vec3, mat: Block) {
-    let c = (lo + hi) * 0.5;
-    let v = |x: bool, y: bool, z: bool| {
-        Vec3::new(
-            if x { hi.x } else { lo.x },
-            if y { hi.y } else { lo.y },
-            if z { hi.z } else { lo.z },
-        )
-    };
-    let (f, t) = (false, true);
-    for face in [
-        [v(f, f, f), v(t, f, f), v(t, t, f), v(f, t, f)],
-        [v(f, f, t), v(t, f, t), v(t, t, t), v(f, t, t)],
-        [v(f, f, f), v(f, t, f), v(f, t, t), v(f, f, t)],
-        [v(t, f, f), v(t, t, f), v(t, t, t), v(t, f, t)],
-        [v(f, f, f), v(t, f, f), v(t, f, t), v(f, f, t)],
-        [v(f, t, f), v(t, t, f), v(t, t, t), v(f, t, t)],
-    ] {
-        flat(out, &face, c, mat);
-    }
-}
-
 /// Half the thickness of a lantern post in metres.
 const POST_RADIUS: f32 = 0.085;
 

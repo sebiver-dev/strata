@@ -448,8 +448,8 @@ impl Terrain {
         out
     }
 
-    /// The great oak on top of the spawn rise, reaching one long bough out
-    /// over the arrival spot so it frames the first view up the valley.
+    /// The great oak ahead of the arrival spot, reaching one long bough out
+    /// to the right so it frames the first view up the valley from that side.
     fn plan_hero_tree(&self) -> Option<Tree> {
         let (ax, az) = crate::vista::ARRIVAL;
         let yaw = crate::vista::SPAWN_YAW;
@@ -464,7 +464,9 @@ impl Terrain {
             height: 18.0,
             kind: TreeKind::Broadleaf,
             seed: self.seed ^ 0x0a4_7ee,
-            hero: Some((to_arrival + fwd * 0.6).normalize()),
+            // Its long bough reaches out to the right, framing the valley view
+            // from that side without closing off the sky over it.
+            hero: Some((fwd.perp() * 0.8 + to_arrival * 0.2).normalize()),
         })
     }
 

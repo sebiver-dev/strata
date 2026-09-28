@@ -657,6 +657,7 @@ impl Game {
             highlight: hl.extend(has).to_array(),
             screen: [width as f32, height as f32, SHADOW_SIZE as f32, scale],
             sky: [t, near.len() as f32, 0.0, 0.0],
+            wind: crate::weather::wind(self.time).uniform(),
             lights,
         }
     }

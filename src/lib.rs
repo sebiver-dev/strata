@@ -24,6 +24,7 @@ pub mod terrain;
 pub mod trees;
 pub mod vista;
 pub mod watchtower;
+pub mod weather;
 #[cfg(target_arch = "wasm32")]
 pub mod web;
 pub mod world;

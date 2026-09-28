@@ -29,6 +29,10 @@ struct Globals {
     screen: vec4<f32>,
     // x: night (0 day, 1 night), y: number of lights in use
     sky: vec4<f32>,
+    // The wind, shared by everything that moves (see weather.rs): xy unit
+    // direction it blows towards in XZ, z strength 0..1, w gust phase in metres.
+    // Material cases read it through wind_push().
+    wind: vec4<f32>,
     // Lanterns: xyz position in metres, w strength
     lights: array<vec4<f32>, 24>,
 };
@@ -1457,6 +1461,18 @@ fn is_plant(mat: u32) -> bool {
     return mat == 13u || (mat >= 15u && mat <= 17u) || (mat >= 30u && mat <= 33u) || mat == 40u || mat == 41u;
 }
 
+// How hard the wind pushes at `pos` right now, in metres of bend for a 1 m
+// stem, pointing downwind: the mean breeze plus gusts that sweep across the
+// valley as waves. Everything that moves in the wind should use this.
+fn wind_push(pos: vec3<f32>) -> vec2<f32> {
+    let dir = g.wind.xy;
+    let q = pos.xz - dir * g.wind.w;
+    let gust = vnoise2(q * 0.05);
+    let wave = 0.5 + 0.5 * sin(dot(q, dir) * 0.35);
+    let local = 0.25 + 0.75 * gust * (0.4 + 0.6 * wave);
+    return dir * (0.1 + 0.5 * g.wind.z * local);
+}
+
 // Leaves sway a few centimetres in the wind. The offset depends only on the
 // position, so neighbouring faces move together and no cracks open.
 fn sway(pos: vec3<f32>, data: u32) -> vec3<f32> {
@@ -1466,12 +1482,11 @@ fn sway(pos: vec3<f32>, data: u32) -> vec3<f32> {
         // Grass bends from the root: gusts roll across the meadow as waves,
         // with a quicker flutter on top.
         let tip = f32((data >> 11u) & 3u) / 3.0;
-        let wind = normalize(vec2(0.8, 0.6));
-        let gust = vnoise2(pos.xz * 0.06 - wind * t * 0.9);
-        let wave = 0.5 + 0.5 * sin(dot(pos.xz, wind) * 0.45 - t * 2.4);
+        let push = wind_push(pos);
+        let t = g.sun_dir.w;
         let flutter = sin(t * 5.3 + pos.x * 3.1 + pos.z * 2.7) * 0.25;
-        let bend = (0.12 + 0.35 * gust * wave + flutter * 0.1) * tip;
-        return pos + vec3(wind.x * bend, -abs(bend) * 0.25, wind.y * bend);
+        let bend = push * (1.0 + flutter * 0.2) * tip;
+        return pos + vec3(bend.x, -length(bend) * 0.25, bend.y);
     }
     if (mat == 53u) {
         // Banners flap about their rod: the AO bits hold how far down the cloth

@@ -768,7 +768,7 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
                 // lichen in pale patches.
                 let crag = 1.0 - smoothstep(SNOW_FREE.z - 30.0, SNOW_FREE.z, distance(p.xz, SNOW_FREE.xy));
                 if (crag > 0.0) {
-                    c = mix(c, c * vec3(1.22, 1.06, 0.82) + vec3(0.05, 0.035, 0.0), crag);
+                    c = mix(c, vec3(dot(c, vec3(0.33))) * vec3(1.1, 1.03, 0.9) + vec3(0.04, 0.035, 0.02), crag);
                     let runs = smoothstep(0.55, 0.85, vnoise2(vec2(along * 0.3, p.y * 0.012)));
                     var wet = runs * 0.45;
                     for (var k = 0u; k < CLIFF_FALL_COUNT; k++) {

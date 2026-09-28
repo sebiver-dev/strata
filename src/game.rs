@@ -1,7 +1,7 @@
 //! Ties the world, the player and the renderer together each frame.
 
 use crate::avatar::{PoseInput, Rig, Tool};
-use crate::block::{self, is_solid, Block, AIR, PLACEABLE, VOXEL_SIZE, WATER};
+use crate::block::{self, is_solid, Block, AIR, BUILT, PLACEABLE, VOXEL_SIZE, WATER};
 use crate::budget::{Cost, Deadline};
 use crate::chunk::chunk_of;
 use crate::far::FarField;
@@ -132,13 +132,25 @@ pub struct Settings {
     pub fog_m: f32,
 }
 
+/// `?budget=ms` raises the background work budget, so a slow headless browser
+/// taking screenshots loads the close-up world before the shot.
+#[cfg(target_arch = "wasm32")]
+fn web_budget() -> Option<f64> {
+    crate::web::url_param("budget")?.parse().ok()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn web_budget() -> Option<f64> {
+    None
+}
+
 impl Default for Settings {
     fn default() -> Self {
         if cfg!(target_arch = "wasm32") {
             Settings {
                 seed: 20260927,
                 view_radius: 7,
-                work_budget_ms: 6.0,
+                work_budget_ms: web_budget().unwrap_or(6.0),
                 fog_m: 1000.0,
             }
         } else {
@@ -410,7 +422,9 @@ impl Game {
         let hit = self
             .world
             .raycast(cam, dir, REACH_M + cam.distance(eye))
-            .filter(|h| ((h.voxel.as_vec3() + 0.5) * VOXEL_SIZE - eye).length() <= REACH_M + 0.5);
+            .filter(|h| ((h.voxel.as_vec3() + 0.5) * VOXEL_SIZE - eye).length() <= REACH_M + 0.5)
+            // Buildings can't be dug or built onto, so they are never a target.
+            .filter(|h| self.world.get(h.voxel) != BUILT);
         self.target = hit.as_ref().map(|h| h.voxel);
         self.edit_timer -= dt;
         if self.edit_timer <= 0.0 {
@@ -513,26 +527,9 @@ impl Game {
     /// Digs (with AIR) or builds the brush volume aimed at voxel `at`.
     fn edit(&mut self, at: IVec3, block: Block) {
         let anchor = self.brush.anchor(at);
-        for d in self.brush.offsets() {
-            let v = anchor + d;
-            let current = self.world.get(v);
-            if block == AIR {
-                if is_solid(current) {
-                    // Dug holes below the river line fill with water.
-                    let c = (v.as_vec3() + 0.5) * VOXEL_SIZE;
-                    let wet = c.y < water_level(c.x, c.z) && self.touches_water(v);
-                    self.world.set(v, if wet { WATER } else { AIR });
-                }
-            } else if !is_solid(current) && !self.player.intersects_voxel(v) {
-                self.world.set(v, block);
-            }
-        }
-    }
-
-    fn touches_water(&self, v: IVec3) -> bool {
-        [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::Z, IVec3::NEG_Z]
-            .iter()
-            .any(|d| self.world.get(v + *d) == WATER)
+        let voxels: Vec<IVec3> = self.brush.offsets().map(|d| anchor + d).collect();
+        let player = &self.player;
+        apply_edit(&mut self.world, &voxels, block, |v| player.intersects_voxel(v));
     }
 
     fn remesh(&mut self, renderer: &mut Renderer, deadline: &Deadline, share: f64) {
@@ -707,6 +704,34 @@ impl Game {
     }
 }
 
+/// Digs (with AIR) or fills the given voxels. Built structures are left
+/// alone: their collision voxels are never dug out or replaced, and nothing is
+/// placed where one stands or where `occupied` says the player is.
+fn apply_edit(world: &mut World, voxels: &[IVec3], block: Block, occupied: impl Fn(IVec3) -> bool) {
+    for &v in voxels {
+        let current = world.get(v);
+        if current == BUILT {
+            continue;
+        }
+        if block == AIR {
+            if is_solid(current) {
+                // Dug holes below the river line fill with water.
+                let c = (v.as_vec3() + 0.5) * VOXEL_SIZE;
+                let wet = c.y < water_level(c.x, c.z) && touches_water(world, v);
+                world.set(v, if wet { WATER } else { AIR });
+            }
+        } else if !is_solid(current) && !occupied(v) {
+            world.set(v, block);
+        }
+    }
+}
+
+fn touches_water(world: &World, v: IVec3) -> bool {
+    [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::Z, IVec3::NEG_Z]
+        .iter()
+        .any(|d| world.get(v + *d) == WATER)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -742,5 +767,31 @@ mod tests {
         for d in block.offsets() {
             assert_eq!(block.anchor(corner + d), corner);
         }
+    }
+
+    #[test]
+    fn built_structures_cannot_be_dug_or_replaced() {
+        use crate::block::STONE;
+        use crate::chunk::{Chunk, CHUNK};
+        let mut w = World::new(1, 1);
+        let origin = IVec3::new(0, 1, 0);
+        let mut c = Chunk::default();
+        c.set(4, 4, 4, BUILT);
+        c.set(5, 4, 4, STONE);
+        w.chunks.insert(origin, c);
+        let o = origin * CHUNK;
+        let (built, stone, air) = (
+            o + IVec3::new(4, 4, 4),
+            o + IVec3::new(5, 4, 4),
+            o + IVec3::new(6, 4, 4),
+        );
+        let all = [built, stone, air];
+        apply_edit(&mut w, &all, AIR, |_| false);
+        assert_eq!(w.get(built), BUILT);
+        assert_eq!(w.get(stone), AIR);
+        apply_edit(&mut w, &all, crate::block::DIRT, |_| false);
+        assert_eq!(w.get(built), BUILT);
+        assert_eq!(w.get(stone), crate::block::DIRT);
+        assert_eq!(w.get(air), crate::block::DIRT);
     }
 }

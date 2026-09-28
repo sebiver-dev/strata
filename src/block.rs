@@ -52,6 +52,8 @@ pub const CLOTH: Block = 24;
 pub const BUILT: Block = 25;
 /// Wrought iron: lantern frames, arms and chains (mesh only).
 pub const IRON: Block = 26;
+/// Leaded glass lit warm from within: slits and small windows (mesh only).
+pub const GLOW: Block = 55;
 /// Deep blue-violet woollen banner with a gold trim; sways in the wind (mesh only).
 pub const BANNER: Block = 53;
 /// Rough bridge stone: mottled, mossy on top, dark and damp near the water (mesh only).
@@ -114,6 +116,7 @@ pub fn name(b: Block) -> &'static str {
         BUILT => "building",
         POST => "post",
         IRON => "iron",
+        GLOW => "lit glass",
         BANNER => "banner",
         BRIDGE_STONE => "bridge stone",
         BOULDER => "boulder",

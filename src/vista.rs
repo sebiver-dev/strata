@@ -764,8 +764,11 @@ mod tests {
                     }
                     seen += 1;
                 }
-                crate::structures::Structure::Tower(tw) => {
+                crate::structures::Structure::Watchtower(tw) => {
                     assert!(tw.c.distance(Vec2::new(TOWER_KNOLL.0, TOWER_KNOLL.2)) < 0.5);
+                    // It stands on the knoll's flat top, not on stilts or sunk into it.
+                    assert!((tw.floor - TOWER_KNOLL.1).abs() < 1.0, "tower floor {}", tw.floor);
+                    assert!(tw.floor - tw.base < 1.5, "footings {} deep", tw.floor - tw.base);
                     seen += 1;
                 }
                 _ => {}

@@ -13,12 +13,13 @@ use crate::bridge::{self, Bridge, BRIDGE_HALF_W};
 use crate::castle::Castle;
 use crate::chunk::{chunk_of, local_index, CHUNK, CHUNK_VOLUME};
 use crate::cottage::Cottage;
-use crate::far::revolve;
+use crate::far::face;
 use crate::mesh::MeshData;
 use crate::model;
 use crate::noise::{hash2, unit};
 use crate::terrain::Terrain;
 use crate::vista;
+use crate::watchtower::Watchtower;
 use glam::{IVec3, Vec2, Vec3};
 use std::collections::HashMap;
 
@@ -26,123 +27,6 @@ use std::collections::HashMap;
 const FENCE_OFFSET_M: f32 = 3.6;
 /// Distance between fence posts.
 const FENCE_POST_SPACING: f32 = 2.4;
-
-/// Snaps a coordinate so a span of `2 * half` metres covers whole voxels.
-fn snap(x: f32, half: f32) -> f32 {
-    let voxels = (2.0 * half / VOXEL_SIZE).round() as i32;
-    let base = (x / VOXEL_SIZE).round() * VOXEL_SIZE;
-    if voxels % 2 == 0 {
-        base
-    } else {
-        base + VOXEL_SIZE * 0.5
-    }
-}
-
-/// Lowest and highest ground over a rectangle, sampled every metre.
-fn ground_range(t: &Terrain, lo: Vec2, hi: Vec2) -> (f32, f32) {
-    let (mut a, mut b) = (f32::MAX, f32::MIN);
-    let mut z = lo.y;
-    while z <= hi.y {
-        let mut x = lo.x;
-        while x <= hi.x {
-            let h = t.height_at(x, z).0;
-            a = a.min(h);
-            b = b.max(h);
-            x += 1.0;
-        }
-        z += 1.0;
-    }
-    (a, b)
-}
-
-/// A round stone tower with a timber lookout room and a pointed roof.
-#[derive(Clone, Debug)]
-pub struct Tower {
-    pub c: Vec2,
-    pub r: f32,
-    /// Where the plinth starts, under the ground.
-    pub base: f32,
-    /// Top of the stone shaft.
-    pub top: f32,
-    /// Height of the timber lookout room above the shaft (0 for none).
-    pub room: f32,
-    pub cone_r: f32,
-    pub cone_h: f32,
-    pub seed: u32,
-}
-
-impl Tower {
-    fn bounds(&self) -> (Vec3, Vec3) {
-        let e = self.cone_r.max(self.r + 0.6) + 0.5;
-        (
-            Vec3::new(self.c.x - e, self.base - 1.0, self.c.y - e),
-            Vec3::new(self.c.x + e, self.top + self.room + self.cone_h + 0.5, self.c.y + e),
-        )
-    }
-
-    fn block(&self, p: Vec3) -> Option<Block> {
-        let d = Vec2::new(p.x, p.z).distance(self.c);
-        let angle = (p.z - self.c.y).atan2(p.x - self.c.x);
-        let shell = |r: f32| d > r - 0.6;
-        if p.y >= self.base && p.y < self.top && d <= self.r {
-            let dy = p.y - self.base;
-            // Narrow lit slits spiralling up the shaft.
-            let turn = (angle / std::f32::consts::TAU * 4.0 + dy / 9.0).rem_euclid(1.0);
-            if shell(self.r) && dy > 4.0 && dy % 3.5 < 1.0 && (0.47..0.53).contains(&turn) {
-                return Some(WINDOW);
-            }
-            return Some(MASONRY);
-        }
-        let room_top = self.top + self.room;
-        if self.room > 0.0 && p.y >= self.top && p.y < room_top {
-            let rr = self.r + 0.6;
-            if d <= rr {
-                let dy = p.y - self.top;
-                if dy < VOXEL_SIZE || dy >= self.room - VOXEL_SIZE {
-                    return Some(WOOD);
-                }
-                let bay = (angle / std::f32::consts::TAU * 8.0).rem_euclid(1.0);
-                if shell(rr) && (0.2..0.8).contains(&bay) && (0.75..2.25).contains(&dy) {
-                    return Some(WINDOW);
-                }
-                return Some(if shell(rr) && !(0.2..0.8).contains(&bay) {
-                    WOOD
-                } else {
-                    PLANKS
-                });
-            }
-        }
-        if p.y >= room_top && p.y < room_top + self.cone_h {
-            let t = (p.y - room_top) / self.cone_h;
-            // Slightly concave, flaring at the eaves like a real spire.
-            let rr = self.cone_r * (1.0 - t).powf(1.4);
-            if d <= rr.max(0.3) {
-                return Some(ROOF);
-            }
-        }
-        None
-    }
-
-    fn far(&self, out: &mut MeshData) {
-        let room_top = self.top + self.room;
-        let shaft = [
-            (self.base, 0.0),
-            (self.base, self.r),
-            (self.top, self.r),
-            (self.top, self.r + if self.room > 0.0 { 0.6 } else { 0.0 }),
-            (room_top, self.r + if self.room > 0.0 { 0.6 } else { 0.0 }),
-            (room_top, 0.0),
-        ];
-        revolve(out, self.c, &shaft, 10, MASONRY, 0);
-        let mut cone = vec![(room_top, 0.0)];
-        for i in 0..=4 {
-            let t = i as f32 / 4.0;
-            cone.push((room_top + t * self.cone_h, self.cone_r * (1.0 - t).powf(1.4)));
-        }
-        revolve(out, self.c, &cone, 10, ROOF, 0);
-    }
-}
-
 /// A run of post-and-rail fence beside the valley road.
 #[derive(Clone, Debug)]
 pub struct Fence {
@@ -242,7 +126,7 @@ impl Fence {
 pub enum Structure {
     Bridge(Bridge),
     Cottage(Cottage),
-    Tower(Tower),
+    Watchtower(Watchtower),
     Castle(Castle),
     Fence(Fence),
 }
@@ -330,21 +214,13 @@ impl Structures {
 
         // The watchtower and the castle stand on the knoll and the bluff composed
         // for the view on arrival (see `vista`).
-        {
-            let c = Vec2::new(vista::TOWER_KNOLL.0, vista::TOWER_KNOLL.2);
-            let c = Vec2::new(snap(c.x, 0.25), snap(c.y, 0.25));
-            let (lo, hi) = ground_range(t, c - 3.0, c + 3.0);
-            s.add(Structure::Tower(Tower {
-                c,
-                r: 2.6,
-                base: lo - 1.0,
-                top: hi + 11.0,
-                room: 3.0,
-                cone_r: 4.0,
-                cone_h: 5.0,
-                seed: seed ^ 20,
-            }));
-        }
+        let (tx, _, tz) = vista::TOWER_KNOLL;
+        s.add(Structure::Watchtower(Watchtower::plan(
+            t,
+            Vec2::new(tx, tz),
+            Vec2::new(spawn.x, spawn.z),
+            seed ^ 20,
+        )));
         if let Some(c) = Castle::plan(t, spawn) {
             s.add(Structure::Castle(c));
         }
@@ -365,9 +241,9 @@ impl Structures {
             match st {
                 Structure::Cottage(c) => c.model(t, &mut all),
                 Structure::Fence(f) => f.model(t, &mut all),
+                Structure::Watchtower(w) => w.model(t, &mut all),
                 Structure::Bridge(b) => b.model(t, &mut all),
                 Structure::Castle(c) => c.model(&mut all),
-                _ => {}
             }
         }
         let mut remap: HashMap<(IVec3, u32), u32> = HashMap::new();
@@ -405,7 +281,7 @@ impl Structures {
         let (lo, hi) = match &st {
             Structure::Bridge(b) => b.bounds(),
             Structure::Cottage(c) => c.bounds(),
-            Structure::Tower(t) => t.bounds(),
+            Structure::Watchtower(w) => w.bounds(),
             Structure::Castle(c) => c.bounds(),
             Structure::Fence(f) => (f.lo, f.hi),
         };
@@ -463,7 +339,7 @@ impl Structures {
                         let b = match st {
                             Structure::Bridge(b) => b.block(p, g),
                             Structure::Cottage(c) => c.block(p, g),
-                            Structure::Tower(t) => t.block(p),
+                            Structure::Watchtower(w) => w.block(p, g),
                             Structure::Castle(c) => c.block(p, g),
                             Structure::Fence(f) => f.block(p, g),
                         };
@@ -522,7 +398,7 @@ impl Structures {
                     Some(m) => model::append(out, m),
                     None => c.far(out),
                 },
-                Structure::Tower(t) => t.far(out),
+                Structure::Watchtower(w) => w.far(out),
                 Structure::Castle(c) => c.far(out),
                 Structure::Fence(_) => {}
             }
@@ -543,6 +419,13 @@ fn cottage_door_near(s: &Structures, x: f32, z: f32) -> bool {
     })
 }
 
+/// All six faces of an axis-aligned box.
+pub(crate) fn boxed(out: &mut MeshData, lo: Vec3, hi: Vec3, mat: Block) {
+    for fi in 0..6 {
+        face(&mut out.vertices, &mut out.indices, lo, hi, fi, mat);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -559,7 +442,7 @@ mod tests {
         assert_eq!(count(|x| matches!(x, Structure::Bridge(_))), 1);
         assert!(count(|x| matches!(x, Structure::Cottage(_))) >= 5);
         assert!(count(|x| matches!(x, Structure::Fence(_))) >= 2);
-        assert_eq!(count(|x| matches!(x, Structure::Tower(_))), 1);
+        assert_eq!(count(|x| matches!(x, Structure::Watchtower(_))), 1);
         assert_eq!(count(|x| matches!(x, Structure::Castle(_))), 1);
     }
 

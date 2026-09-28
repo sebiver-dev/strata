@@ -283,7 +283,8 @@ impl Tree {
         }
         let big = s.clumps.iter().map(|c| c.radii.x).fold(0.0, f32::max) * 0.75;
         for (i, c) in s.clumps.iter().enumerate() {
-            let mesh = if c.radii.x > big { ico(2) } else { ico(1) };
+            let fine = if self.hero.is_some() { 1 } else { 0 };
+            let mesh = if c.radii.x > big { ico(2 + fine) } else { ico(1 + fine) };
             clump(out, &s.clumps, i, s.canopy, mesh, c.seed);
         }
         for t in &s.tiers {
@@ -525,15 +526,15 @@ fn trunk(out: &mut MeshData, l: &Limb, flare: f32, sides: u32, seed: u32) {
     }
 }
 
-/// A unit icosphere, subdivided `level` times (0 to 2).
+/// A unit icosphere, subdivided `level` times (0 to 3).
 struct Ico {
     verts: Vec<Vec3>,
     tris: Vec<[u32; 3]>,
 }
 
 fn ico(level: usize) -> &'static Ico {
-    static CACHE: [OnceLock<Ico>; 3] = [OnceLock::new(), OnceLock::new(), OnceLock::new()];
-    CACHE[level.min(2)].get_or_init(|| {
+    static CACHE: [OnceLock<Ico>; 4] = [const { OnceLock::new() }; 4];
+    CACHE[level.min(3)].get_or_init(|| {
         let t = (1.0 + 5f32.sqrt()) / 2.0;
         let mut verts: Vec<Vec3> = [
             (-1.0, t, 0.0),
@@ -574,7 +575,7 @@ fn ico(level: usize) -> &'static Ico {
             [8, 6, 7],
             [9, 8, 1],
         ];
-        for _ in 0..level.min(2) {
+        for _ in 0..level.min(3) {
             let mut mids = std::collections::HashMap::new();
             let mut mid = |a: u32, b: u32, verts: &mut Vec<Vec3>| {
                 *mids.entry((a.min(b), a.max(b))).or_insert_with(|| {
@@ -614,7 +615,8 @@ fn clump(out: &mut MeshData, all: &[Clump], index: usize, canopy: Vec3, mesh: &I
     let lobes: Vec<(Vec3, f32)> = (0..11)
         .map(|k| {
             let a = r(k) * TAU;
-            let y = -0.2 + 1.2 * r(k + 10);
+            // Mostly on top, but some bulge down so a crown seen from below is not flat.
+            let y = -0.75 + 1.7 * r(k + 10);
             let s = (1.0 - y * y).max(0.0).sqrt();
             (
                 Vec3::new(a.cos() * s, y.min(1.0), a.sin() * s).normalize(),
@@ -636,7 +638,7 @@ fn clump(out: &mut MeshData, all: &[Clump], index: usize, canopy: Vec3, mesh: &I
             s += 0.03 * (value3(seed ^ 0x55, w.x * 2.3, w.y * 2.3, w.z * 2.3) - 0.5);
             let mut q = d * c.radii * s;
             if q.y < 0.0 {
-                q.y *= 0.9;
+                q.y *= 0.95;
             }
             c.centre + q
         })

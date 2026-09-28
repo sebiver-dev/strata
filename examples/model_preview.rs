@@ -35,7 +35,7 @@ fn main() {
         (Kind::Broadleaf, 10.0, 0.0, 1u32, None),
         (Kind::Broadleaf, 13.0, 16.0, 7, None),
         (Kind::Conifer, 18.0, 32.0, 3, None),
-        (Kind::Broadleaf, 15.0, 52.0, 11, Some(Vec2::new(-1.0, 0.3).normalize())),
+        (Kind::Broadleaf, 18.0, 52.0, 11, Some(Vec2::new(-1.0, 0.3).normalize())),
         (Kind::Conifer, 14.0, 68.0, 9, None),
     ];
     for (kind, height, x, seed, hero) in trees {
@@ -53,8 +53,14 @@ fn main() {
         }
     }
     println!("{} triangles", mesh.indices.len() / 3);
-    let eye = Vec3::new(34.0, 9.0, 62.0);
-    let view = Mat4::look_at_rh(eye, Vec3::new(34.0, 7.0, 0.0), Vec3::Y);
+    // `close` looks up at the hero oak from where a player would stand.
+    let close = std::env::args().any(|a| a == "close");
+    let (eye, at) = if close {
+        (Vec3::new(47.0, 1.6, 11.0), Vec3::new(52.0, 7.0, 0.0))
+    } else {
+        (Vec3::new(34.0, 9.0, 62.0), Vec3::new(34.0, 7.0, 0.0))
+    };
+    let view = Mat4::look_at_rh(eye, at, Vec3::Y);
     let proj = Mat4::perspective_rh(0.9, W as f32 / H as f32, 0.5, 500.0);
     let vp = proj * view;
     let sun = Vec3::new(-0.5, 0.45, 0.6).normalize();

@@ -14,6 +14,7 @@ pub mod game;
 pub mod mesh;
 pub mod model;
 pub mod noise;
+pub mod path_fence;
 pub mod plants;
 pub mod player;
 pub mod renderer;

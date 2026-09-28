@@ -524,7 +524,9 @@ fn hamlet(t: &Terrain, zb: f32, bx0: f32, seed: u32) -> Vec<Cottage> {
         0.0,
         house.pitch(1.2).roofed(Roof::Tile),
     );
-    // West bank: flanking the bridge's far end, then along the river.
+    // West bank, the side the view looks across: only a few small cottages,
+    // one flanking the bridge's far end and the rest spread out along the
+    // river, so the trees between them read rather than a street of houses.
     let z = zb - 11.0;
     at(
         bx0 - 7.0,
@@ -532,16 +534,7 @@ fn hamlet(t: &Terrain, zb: f32, bx0: f32, seed: u32) -> Vec<Cottage> {
         true,
         1.0,
         0.0,
-        house.jettied().size(5.0, 3.25).pitch(1.05).roofed(Roof::Tile),
-    );
-    let z = zb + 13.0;
-    at(
-        bx0 - 8.0,
-        z,
-        true,
-        -1.0,
-        0.0,
-        cottage.size(4.5, 3.0).pitch(1.6).with_dormers(),
+        cottage.size(4.0, 2.75).pitch(1.5).roofed(Roof::Tile),
     );
     let z = zb + 1.0;
     at(
@@ -550,25 +543,7 @@ fn hamlet(t: &Terrain, zb: f32, bx0: f32, seed: u32) -> Vec<Cottage> {
         false,
         1.0,
         0.0,
-        house.size(4.0, 3.5).pitch(1.25).roofed(Roof::Tile),
-    );
-    let z = zb + 24.0;
-    at(
-        river(z) - 18.0,
-        z,
-        false,
-        1.0,
-        0.0,
-        cottage.size(3.5, 2.75).pitch(1.45).roofed(Roof::Shingle),
-    );
-    let z = zb + 36.0;
-    at(
-        river(z) - 19.0,
-        z,
-        false,
-        1.0,
-        0.0,
-        house.jettied().size(5.0, 3.25).pitch(1.2).with_dormers(),
+        cottage.size(3.75, 2.75).pitch(1.25).roofed(Roof::Tile),
     );
     let z = zb - 30.0;
     at(
@@ -577,7 +552,7 @@ fn hamlet(t: &Terrain, zb: f32, bx0: f32, seed: u32) -> Vec<Cottage> {
         false,
         1.0,
         0.0,
-        house.size(4.5, 3.25).pitch(0.95).roofed(Roof::Tile),
+        cottage.size(3.5, 2.75).pitch(1.0),
     );
     let z = zb - 50.0;
     at(
@@ -684,7 +659,7 @@ mod tests {
     fn the_hamlet_clusters_on_both_banks_off_the_path_and_the_bridge() {
         let t = world();
         let houses = cottages(&t);
-        assert!(houses.len() >= 12, "{} houses", houses.len());
+        assert!(houses.len() >= 9, "{} houses", houses.len());
         let bridge = t
             .structures
             .iter()

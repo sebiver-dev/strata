@@ -431,7 +431,7 @@ pub fn tuft(out: &mut MeshData, seed: u32, w: IVec3, spot: &Spot) {
     let spot_at = |rng: &mut Rng| floor + Vec3::new(rng.range(0.08, 0.42), 0.02, rng.range(0.08, 0.42));
     let mut crowded = false;
     // Drifts: sparse at their edges, crowded in the middle.
-    if lupins > 0.58 && roll < 0.1 + 1.6 * (lupins - 0.58) {
+    if lupins > 0.6 && roll < 0.06 + 1.4 * (lupins - 0.6) {
         let at = spot_at(&mut rng);
         // Mostly violet, with pink and white spires mixed in; some drifts
         // run pinker or paler than others.

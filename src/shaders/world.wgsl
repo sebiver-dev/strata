@@ -983,14 +983,14 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             var c = mix(vec3(0.10, 0.24, 0.06), vec3(0.26, 0.42, 0.10), hue);
             c = mix(c, vec3(0.38, 0.46, 0.14), smoothstep(0.62, 0.85, broad) * 0.45);
             // The gaps between clusters are deep green shade, not brown.
-            let gap = mix(vec3(0.5, 0.62, 0.55), vec3(1.12), sqrt(dome));
+            let gap = mix(vec3(0.46, 0.68, 0.52), vec3(1.1), sqrt(dome));
             c *= mix(vec3(1.0), gap, d_cl);
             c *= mix(0.94, mix(0.8, 1.05, shape), d_dm);
             s.albedo = c;
             s.rough = 0.55;
             s.f0 = 0.04;
             s.sss = 0.8;
-            s.height = dome * 0.22 * d_cl + shape * 0.02 * d_dm + leaves * 0.01;
+            s.height = dome * 0.16 * d_cl + shape * 0.02 * d_dm + leaves * 0.01;
             wettable = false;
         }
         case 29u: { // conifer needles: dark blue-green sprays

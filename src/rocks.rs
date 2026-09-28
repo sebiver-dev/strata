@@ -78,7 +78,7 @@ fn site_where(t: &Terrain, gx: i32, gz: i32, keep: impl Fn(Vec3) -> bool) -> Opt
     let h = hash2(t.seed.wrapping_add(40), gx, gz);
     let mut x = (gx as f32 + 0.1 + 0.8 * unit(h)) * CELL_M;
     let mut z = (gz as f32 + 0.1 + 0.8 * unit(h.rotate_left(9))) * CELL_M;
-    // A mossy group in the meadow ahead and left of the arrival spot, as in
+    // A mossy group in the meadow ahead and right of the arrival spot, as in
     // the foreground of the reference view.
     let spot = vista_rocks();
     let composed = (spot / CELL_M).floor().as_ivec2() == IVec2::new(gx, gz);
@@ -134,7 +134,8 @@ fn vista_rocks() -> Vec2 {
     let (ax, az) = crate::vista::ARRIVAL;
     let yaw = crate::vista::SPAWN_YAW;
     let fwd = Vec2::new(yaw.cos(), yaw.sin());
-    Vec2::new(ax, az) + fwd * 7.0 - fwd.perp() * 3.5
+    // Ahead and right, on the river side of the path, which swings out left.
+    Vec2::new(ax, az) + fwd * 8.0 + fwd.perp() * 2.5
 }
 
 /// The boulders of a cluster: the main one first, then up to four smaller
@@ -186,7 +187,10 @@ fn boulder(t: &Terrain, x: f32, z: f32, r: f32, h: u32) -> Option<Boulder> {
         Vec3::new(1.25, 0.6 + 0.1 * hr(6), 1.0 + 0.1 * hr(8))
     } * r;
     let reach = radii.x.max(radii.z);
-    if t.road_distance(x, z) - reach < ROAD_HALF_WIDTH_M + ROAD_CLEARANCE_M || t.structures.path_at(t, x, z) {
+    if t.road_distance(x, z) - reach < ROAD_HALF_WIDTH_M + ROAD_CLEARANCE_M
+        || t.structures.path_at(t, x, z)
+        || crate::vista::path_distance(x, z) < crate::vista::PATH_HALF_WIDTH_M + reach + 0.3
+    {
         return None;
     }
     let g0 = t.height_at(x, z).0;

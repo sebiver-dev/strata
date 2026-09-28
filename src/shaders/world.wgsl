@@ -121,6 +121,88 @@ fn below_fall(xz: vec2<f32>) -> f32 {
     }
     return best;
 }
+
+// Matches vista::PATH: the cobbled path from the spawn rise to the bridge,
+// as a polyline of (x, z) metres from the player's feet.
+const VISTA_PATH_COUNT: u32 = 11u;
+// Matches vista::PATH_HALF_WIDTH_M.
+const VISTA_PATH_HALF: f32 = 1.2;
+
+fn vista_path_point(k: u32) -> vec2<f32> {
+    var pts = array<vec2<f32>, 11>(
+        vec2(858.0, 1022.5), vec2(855.5, 1016.0), vec2(858.5, 1011.5), vec2(862.0, 1006.0), vec2(864.5, 998.0),
+        vec2(865.5, 988.0), vec2(866.5, 978.0), vec2(867.5, 968.0), vec2(868.5, 960.5), vec2(870.5, 955.5),
+        vec2(873.0, 953.5),
+    );
+    return pts[k];
+}
+
+// How much a point on the ground is the path's cobbles (0..1): its edge
+// wanders a hand's width either way and fades into the grass over a few
+// centimetres, and it narrows to a rounded tip at the player's feet.
+fn vista_path_cover(xz: vec2<f32>) -> f32 {
+    if (xz.x < 845.0 || xz.x > 882.0 || xz.y < 946.0 || xz.y > 1030.0) {
+        return 0.0;
+    }
+    var d = 1e4;
+    for (var k = 1u; k < VISTA_PATH_COUNT; k++) {
+        let a = vista_path_point(k - 1u);
+        let b = vista_path_point(k);
+        let t = clamp(dot(xz - a, b - a) / dot(b - a, b - a), 0.0, 1.0);
+        d = min(d, distance(xz, a + (b - a) * t));
+    }
+    let taper = 0.55 + 0.45 * smoothstep(0.0, 7.0, distance(xz, vista_path_point(0u)));
+    let edge = VISTA_PATH_HALF * taper + 0.28 * (vnoise2(xz * 0.9) - 0.5) + 0.1 * (vnoise2(xz * 3.7) - 0.5);
+    return 1.0 - smoothstep(edge - 0.12, edge + 0.08, d);
+}
+
+// Cobbles for the path: rounded stones a hand or two across, set in packed
+// earth, a few missing where feet have worn it. `cover` is how much of the
+// point is path, so the stones thin out towards its edge.
+fn cobbles(p: vec3<f32>, q: vec3<f32>, fine: f32, d_dm: f32, cover: f32) -> Surface {
+    var s: Surface;
+    let earth = mix(vec3(0.33, 0.25, 0.17), vec3(0.45, 0.35, 0.24), fine);
+    // Voronoi cells, about five stones per metre, a little longer along X.
+    let uv = q.xz * vec2(4.6, 5.2);
+    let base = floor(uv);
+    var f1 = 9.0;
+    var f2 = 9.0;
+    var id = vec2(0.0);
+    var near = vec2(0.0);
+    for (var j = -1; j <= 1; j++) {
+        for (var k = -1; k <= 1; k++) {
+            let c = base + vec2(f32(j), f32(k));
+            let o = c + 0.15 + 0.7 * vec2(hash2(c), hash2(c + 17.0));
+            let d = distance(uv, o);
+            if (d < f1) {
+                f2 = f1;
+                f1 = d;
+                id = c;
+                near = o;
+            } else if (d < f2) {
+                f2 = d;
+            }
+        }
+    }
+    let gap = f2 - f1;
+    // Towards the edge, and here and there, stones are missing.
+    let keep = hash2(id + 3.0) * 0.35 + vnoise(p * 0.8) * 0.65;
+    let worn = smoothstep(0.30, 0.42, keep - (1.0 - cover) * 0.6);
+    let stone = smoothstep(0.06, 0.16, gap) * worn;
+    let tone = hash2(id + 5.0);
+    var grey = mix(vec3(0.37, 0.35, 0.33), vec3(0.55, 0.51, 0.46), tone) * (0.9 + 0.2 * fine);
+    // Warm, weathered tops and darker, earthy rims.
+    grey *= mix(0.78, 1.05, smoothstep(0.0, 0.25, gap));
+    s.albedo = mix(earth, grey, stone * mix(0.6, 1.0, d_dm));
+    s.rough = mix(0.95, 0.72, stone);
+    s.f0 = 0.03;
+    // Each stone domes up from its rim.
+    s.height = stone * smoothstep(0.0, 0.35, gap) * 0.045 * d_dm + fine * 0.008;
+    s.sss = 0.0;
+    s.emit = vec3(0.0);
+    return s;
+}
+
 const PI: f32 = 3.14159265;
 
 fn hash3(p: vec3<f32>) -> f32 {
@@ -1478,6 +1560,33 @@ fn shade_terrain(i: VOut) -> vec4<f32> {
         // drawn, the ground keeps it.
         let near = 1.0 - smoothstep(PLANT_RANGE * 0.6, PLANT_RANGE, distance(i.world, g.camera_pos.xyz));
         surf.albedo = mix(surf.albedo, surf.albedo * vec3(0.78, 0.70, 0.46), near * smoothstep(0.6, 0.9, n.y));
+    }
+    if ((mat == 3u || mat == 11u) && n.y > 0.5) {
+        // The spawn path's soft edge is drawn here rather than by the voxels,
+        // so it runs smooth instead of stepping from column to column. Its
+        // voxels reach a little past the edge, where they show as turf; the
+        // bridge's approach, which joins it, keeps its own cobbles.
+        let cover = vista_path_cover(i.world.xz);
+        let turf_side = mat == 11u && i.world.z > 956.5 && i.world.x > 845.0 && i.world.x < 882.0
+            && i.world.z < 1030.0;
+        if ((mat == 3u && cover > 0.0) || turf_side) {
+            var turf = surf;
+            if (mat == 11u) {
+                turf = material(3u, i.world, n, pix);
+                let near = 1.0 - smoothstep(PLANT_RANGE * 0.6, PLANT_RANGE, distance(i.world, g.camera_pos.xyz));
+                turf.albedo = mix(turf.albedo, turf.albedo * vec3(0.78, 0.70, 0.46), near);
+            }
+            let q = i.world - floor(i.world / 64.0) * 64.0;
+            let calm = smoothstep(120.0, 500.0, distance(i.world, g.camera_pos.xyz));
+            let fine = mix(fbm(i.world * 3.1), 0.5, calm);
+            let d_dm = 1.0 - smoothstep(0.02, 0.08, pix);
+            let c = cobbles(i.world, q, fine, d_dm, cover);
+            surf.albedo = mix(turf.albedo, c.albedo, cover);
+            surf.rough = mix(turf.rough, c.rough, cover);
+            surf.height = mix(turf.height, c.height, cover);
+            surf.sss = turf.sss * (1.0 - cover);
+            surf.f0 = mix(turf.f0, c.f0, cover);
+        }
     }
     var ao_in = i.ao;
     if (mat == 53u) {

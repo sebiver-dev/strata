@@ -51,14 +51,20 @@ pub const TREE_CELL_M: f32 = 9.0;
 /// How far a trunk can lean away from its foot, in metres.
 const TREE_REACH_M: f32 = 2.5;
 const TREE_MAX_HEIGHT_M: f32 = 26.0;
-/// How far (metres) the great oak stands from the arrival spot, and its
-/// bearing (radians) left of the arrival view.
-const HERO_REACH_M: f32 = 7.0;
-const HERO_BEARING: f32 = 0.95;
+/// How far (metres) the great oak stands from the arrival spot, its bearing
+/// (radians) left of the arrival view and its height. It stands well back on
+/// the meadow, so the whole trunk shows from its foot to the fork at the left
+/// edge of the first view and the eye is far outside its crown.
+const HERO_REACH_M: f32 = 40.0;
+const HERO_BEARING: f32 = std::f32::consts::FRAC_PI_4;
+const HERO_HEIGHT_M: f32 = 40.0;
+/// Which way (radians, relative to the arrival view) the great oak leans and
+/// reaches its long bough: out to the left, away from the middle of the view.
+const HERO_BOUGH: f32 = -3.0 * std::f32::consts::FRAC_PI_8;
 /// Picks the great oak's bough layout: with this one no bough reaches across
 /// the first view, so the castle and the valley to the right stay open
 /// (`vista` tests check the framing through the spawn camera).
-const HERO_SEED: u32 = 0x0a4_7ee ^ 0x1a73_8b2f;
+const HERO_SEED: u32 = 0xa467_c47a;
 /// Height of the rock bands where mountain slopes break into cliffs.
 const CLIFF_STEP_M: f32 = 10.0;
 
@@ -284,7 +290,7 @@ impl Terrain {
         // The spawn view is composed: the rise, the gorge, the knoll and the hills.
         h = vista::before_channel(s, x_m, z_m, rx, h);
 
-        let (c0, c1) = vista::channel_edges(x_m, z_m, rx);
+        let (c0, c1) = vista::channel_edges(z_m);
         let channel = 1.0 - smoothstep(c0, c1, d);
         let bed = water_level(x_m, z_m) - 2.8 + 0.8 * fbm2(s.wrapping_add(6), x_m / 12.0, z_m / 12.0, 2);
         h += (bed - h) * channel;
@@ -456,29 +462,29 @@ impl Terrain {
         out
     }
 
-    /// The great oak just ahead and left of the arrival spot, framing the
-    /// first view up the valley from the left edge.
+    /// The great oak ahead and left of the arrival spot, framing the first
+    /// view up the valley from the left edge.
     fn plan_hero_tree(&self) -> Option<Tree> {
         let (ax, az) = crate::vista::ARRIVAL;
         let yaw = crate::vista::SPAWN_YAW;
         let fwd = Vec2::new(yaw.cos(), yaw.sin());
-        // Ahead and to the left of the arrival spot, just outside the left
-        // edge of the view so only the trunk's near side frames it, like the
-        // reference's tree, and the valley, the castle crag and the peaks to
-        // the right stay open.
+        // Ahead and to the left of the arrival spot, its trunk just inside the
+        // left edge of the view like the reference's tree, and its crown high
+        // in the top-left corner, so the valley, the bridge, the castle crag
+        // and the peaks to the right stay open.
         let left = -fwd.perp();
         let (ahead, aside) = (HERO_REACH_M * HERO_BEARING.cos(), HERO_REACH_M * HERO_BEARING.sin());
         let foot = Vec2::new(ax, az) + fwd * ahead + left * aside;
         let (x, z) = (foot.x, foot.y);
+        let bough = yaw + HERO_BOUGH;
         Some(Tree {
             base: Vec3::new(x, self.height_at(x, z).0, z),
-            height: 26.0,
+            height: HERO_HEIGHT_M,
             kind: TreeKind::Broadleaf,
             seed: self.seed ^ HERO_SEED,
-            // Its long bough reaches back over the arrival spot, so most of
-            // the crown hangs above and behind the eye and only its near
-            // lobes show in the top-left corner of the first view.
-            hero: Some(-fwd),
+            // It leans, and its long bough reaches, out to the left, so the
+            // crown hangs over the left edge and not the valley.
+            hero: Some(Vec2::new(bough.cos(), bough.sin())),
         })
     }
 

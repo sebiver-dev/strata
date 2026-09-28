@@ -1,11 +1,12 @@
 //! The first view of the world, composed on purpose rather than left to noise.
 //!
-//! The player arrives on a grassy rise on the east bank, facing upstream into
-//! a low sun. Below on the left the river runs in a shallow gorge, stepping
-//! down a cascade seen through the arches of the stone bridge, which a lantern
-//! lit path curves down to. On the far bank a rounded knoll holds a watchtower
-//! in front of rolling wooded hills, and ahead and to the right a sheer rock
-//! bluff carries the castle, with thin waterfalls pouring off its faces.
+//! The player arrives on a grassy rise on the west bank, facing upstream into
+//! a low sun. A lantern lit cobbled path winds down from their feet, out to
+//! the left and back through the middle of the view, to the stone bridge
+//! right of centre, from which the river runs away to the lower right. Ahead
+//! and a little left a rounded knoll holds a watchtower in front of rolling
+//! wooded hills, and beyond the river, upper right, a sheer rock bluff
+//! carries the castle, with thin waterfalls pouring off its faces.
 //!
 //! Every feature here is a shaping of the ground height that `Terrain::height_at`
 //! applies, so columns, far tiles, trees and structures all see it. Each one
@@ -20,15 +21,21 @@ use glam::{Vec2, Vec3};
 use std::f32::consts::{PI, TAU};
 
 /// The middle of the spawn rise's flat top (metres), with `y` its ground
-/// height, 8 m above the home reach of the river. A big tree stands here.
-pub const SPAWN: (f32, f32, f32) = (900.0, 32.5, 1024.0);
+/// height, 8 m above the home reach of the river, on the west bank.
+pub const SPAWN: (f32, f32, f32) = (851.0, 32.5, 1024.0);
 /// Where on the rise the player arrives (x, z in metres): near the edge of the
-/// top on the river side, so the water shows below on the left.
-pub const ARRIVAL: (f32, f32) = (893.0, 1024.0);
+/// top on the river side, so the water shows below on the right.
+pub const ARRIVAL: (f32, f32) = (858.0, 1024.0);
+/// Height (metres) of the player's feet on arrival: a metre above the rise's
+/// ground, where `Terrain::spawn_point` puts them.
+pub const ARRIVAL_FEET_Y: f32 = SPAWN.1 + 1.0;
 /// Which way the player faces on arrival, as a yaw in radians (forward is
-/// (cos, 0, sin)): upstream, the castle a little right of centre, the low sun
-/// and the watchtower ahead-left, the bridge and cascade just left of centre.
-pub const SPAWN_YAW: f32 = -1.5;
+/// (cos, 0, sin)): upstream, with the bridge at about 61% of the width, the
+/// castle top at about 66% and high, and the tower knoll just left of centre
+/// (the arrival view's projection is checked in the tests).
+pub const SPAWN_YAW: f32 = -1.45;
+/// How far the player looks down on arrival, radians.
+pub const SPAWN_PITCH: f32 = -0.15;
 /// Where the golden-hour sun stands, as a yaw: ahead-left of the arrival view.
 pub const SUN_YAW: f32 = SPAWN_YAW - 0.3;
 /// Radius (metres) of the rise's flat top, kept clear for a big tree.
@@ -110,24 +117,35 @@ pub const CLIFF_FALLS: [CliffFall; 3] = [
 const POOL_R: f32 = 4.5;
 
 /// Trees are kept off the lines of sight from the arrival spot to these (x, z),
-/// within this many metres to either side: the bridge, the cascade, the castle.
-const SIGHTS: [(f32, f32, f32); 3] = [
+/// within this many metres to either side: the bridge, the cascade, the
+/// watchtower and the castle. Houses keep off the first two (`keeps_walls_clear`).
+const SIGHTS: [(f32, f32, f32); 4] = [
     (886.75, 952.0, 6.0),
     (891.0, 931.0, 5.0),
+    (TOWER_KNOLL.0, TOWER_KNOLL.2, 5.0),
     (CASTLE_TOP.0, CASTLE_TOP.2, 7.0),
 ];
 /// How far out (metres) trees are kept off those lines.
 const SIGHT_CLEAR_M: f32 = 170.0;
 
-/// The path from the spawn rise down to the bridge's east end: its Z range,
-/// the X it starts from at the bridge, the X it ends at on the rise and the
-/// sideways swing of its curve.
-/// It starts at the player's feet and bows out around the east side of the
-/// cottage whose deck stands over the river, then back to the bridge.
-const PATH_Z: (f32, f32) = (BRIDGE_Z + 1.0, ARRIVAL.1 - 2.5);
-const PATH_X0: f32 = 903.5;
-const PATH_X1: f32 = ARRIVAL.0;
-const PATH_SWING: f32 = 16.0;
+/// The cobbled path from the spawn rise down to the bridge's west end, as a
+/// polyline of (x, z) metres from the player's feet to the bridge. It swings
+/// out to the left of the arrival view first, so it enters the frame from
+/// the bottom left, crosses the lower middle and bends back to meet the
+/// bridge's approach head on: a gentle S.
+pub const PATH: [(f32, f32); 11] = [
+    (858.0, 1022.5),
+    (855.5, 1016.0),
+    (858.5, 1011.5),
+    (862.0, 1006.0),
+    (864.5, 998.0),
+    (865.5, 988.0),
+    (866.5, 978.0),
+    (867.5, 968.0),
+    (868.5, 960.5),
+    (870.5, 955.5),
+    (873.0, 953.5),
+];
 /// Half the width of the path's packed surface.
 pub const PATH_HALF_WIDTH_M: f32 = 1.2;
 /// Lanterns stand this far apart along the path, alternating sides.
@@ -204,22 +222,11 @@ fn gorge(z: f32) -> f32 {
     smoothstep(840.0, 880.0, z) * (1.0 - smoothstep(1060.0, 1100.0, z))
 }
 
-/// How strongly a point lies on the viewer's own bank below the spawn rise,
-/// where the gorge's lip is let down so the water shows from the rise (0..1).
-fn viewer_bank(x: f32, z: f32, rx: f32) -> f32 {
-    if x < rx {
-        return 0.0;
-    }
-    smoothstep(956.0, 975.0, z) * (1.0 - smoothstep(1032.0, 1052.0, z))
-}
-
 /// Distances (metres from the river's centre line) over which the river bed
-/// blends into the banks: narrow, so the channel walls stand steep, in the gorge,
-/// and a little wider on the bank below the rise, which slopes to the water.
-pub fn channel_edges(x: f32, z: f32, rx: f32) -> (f32, f32) {
+/// blends into the banks: narrow, so the channel walls stand steep, in the gorge.
+pub fn channel_edges(z: f32) -> (f32, f32) {
     let g = gorge(z);
-    let v = viewer_bank(x, z, rx);
-    (7.0 + 2.0 * g, 17.0 - 5.0 * g + 2.0 * v)
+    (7.0 + 2.0 * g, 17.0 - 5.0 * g)
 }
 
 /// How far (metres) the valley road swings east to pass behind the castle bluff.
@@ -250,16 +257,13 @@ pub fn before_channel(seed: u32, x: f32, z: f32, rx: f32, mut h: f32) -> f32 {
     }
 
     // In the gorge the banks stand 5 to 6.5 m above the water: a little lower at
-    // the lip of the channel walls, so the bridge's ramps meet them. Below the
-    // rise the near bank instead slopes down to the water's edge.
+    // the lip of the channel walls, so the bridge's ramps meet them.
     let g = gorge(z);
     if g > 0.0 && d > 8.0 && d < 90.0 {
         let out = smoothstep(17.0, 32.0, d);
         let wobble = 0.8 * (value2(seed.wrapping_add(65), x / 23.0, z / 23.0) - 0.5);
         let wl = smooth_water_level(z);
-        let gorge_bank = wl + 4.7 + (1.8 + wobble) * out;
-        let v = viewer_bank(x, z, rx);
-        let bank = gorge_bank + (wl + 0.9 + 5.2 * smoothstep(11.0, 34.0, d) + wobble - gorge_bank) * v;
+        let bank = wl + 4.7 + (1.8 + wobble) * out;
         h += (bank - h).max(0.0) * g;
     }
 
@@ -456,79 +460,120 @@ pub fn far_curtains(out: &mut MeshData, lo: Vec2, hi: Vec2) {
     }
 }
 
-/// X of the path's centre line at a Z, if the path reaches that Z.
-pub fn path_x(z: f32) -> Option<f32> {
-    let (z0, z1) = PATH_Z;
-    if !(z0..=z1).contains(&z) {
-        return None;
-    }
-    let t = (z - z0) / (z1 - z0);
-    Some(PATH_X0 + (PATH_X1 - PATH_X0) * t + PATH_SWING * (t * PI).sin())
+fn path_point(k: usize) -> Vec2 {
+    Vec2::new(PATH[k].0, PATH[k].1)
 }
 
-/// Roughly how far (metres) a point is from the path's centre line; past its
-/// ends, the distance to the end, so the ends are round.
-pub fn path_distance(x: f32, z: f32) -> f32 {
-    let (z0, z1) = PATH_Z;
-    let zc = z.clamp(z0, z1);
-    let Some(px) = path_x(zc) else {
-        return f32::MAX;
-    };
-    let t = (zc - z0) / (z1 - z0);
-    let slope = ((PATH_X1 - PATH_X0) + PATH_SWING * PI * (t * PI).cos()) / (z1 - z0);
-    let across = (x - px).abs() / (1.0 + slope * slope).sqrt();
-    let beyond = (z0 - z).max(z - z1).max(0.0);
-    (across * across + beyond * beyond).sqrt()
-}
-
-/// Whether a column is on the path, given the same 0..1 fray the road's
-/// ragged edges use. The path narrows to a rounded end where it starts on the rise.
-pub fn on_path(x: f32, z: f32, fray: f32) -> bool {
-    let d = path_distance(x, z);
-    if d > PATH_HALF_WIDTH_M + 1.0 {
-        return false;
-    }
-    let taper = 0.55 + 0.45 * smoothstep(0.0, 7.0, PATH_Z.1 - z);
-    d < PATH_HALF_WIDTH_M * taper + 0.5 * fray
-}
-
-/// Lantern posts along the path (metres): each post's foot, and which way along
-/// X its lantern hangs, towards the path.
-pub fn path_lanterns() -> impl Iterator<Item = (f32, f32, f32)> {
-    let (z0, z1) = PATH_Z;
-    let n = ((z1 - z0) / PATH_LANTERN_SPACING_M) as i32;
-    (0..n).filter_map(move |k| {
-        let z = z0 + PATH_LANTERN_SPACING_M * (k as f32 + 0.5);
-        let side = if k % 2 == 0 { 2.3 } else { -2.3 };
-        path_x(z).map(|x| (x + side, z, -side.signum()))
+/// The box (min, max corners in XZ) the path's centre line stays in.
+fn path_box() -> (Vec2, Vec2) {
+    (1..PATH.len()).fold((path_point(0), path_point(0)), |(lo, hi), k| {
+        (lo.min(path_point(k)), hi.max(path_point(k)))
     })
 }
 
+/// X of the path's centre line at a Z, if the path reaches that Z. The path
+/// only ever heads towards -Z, so there is one X for each Z along it.
+pub fn path_x(z: f32) -> Option<f32> {
+    (1..PATH.len()).find_map(|k| {
+        let (a, b) = (path_point(k - 1), path_point(k));
+        (b.y..=a.y)
+            .contains(&z)
+            .then(|| a.x + (b.x - a.x) * (z - a.y) / (b.y - a.y))
+    })
+}
+
+/// How far (metres) a point is from the path's centre line; past its ends,
+/// the distance to the end, so the ends are round.
+pub fn path_distance(x: f32, z: f32) -> f32 {
+    let p = Vec2::new(x, z);
+    let (lo, hi) = path_box();
+    if p.cmplt(lo - 12.0).any() || p.cmpgt(hi + 12.0).any() {
+        return f32::MAX;
+    }
+    (1..PATH.len())
+        .map(|k| {
+            let (a, b) = (path_point(k - 1), path_point(k));
+            let t = ((p - a).dot(b - a) / (b - a).length_squared()).clamp(0.0, 1.0);
+            p.distance(a + (b - a) * t)
+        })
+        .fold(f32::MAX, f32::min)
+}
+
+/// How wide (metres from the centre line) the path's cobbles run at a point:
+/// `PATH_HALF_WIDTH_M`, narrowing to a rounded tip where it starts on the
+/// rise, at the player's feet. The shader draws the same soft edge
+/// (`vista_path_cover` in world.wgsl).
+pub fn path_half_width(x: f32, z: f32) -> f32 {
+    PATH_HALF_WIDTH_M * (0.55 + 0.45 * smoothstep(0.0, 7.0, Vec2::new(x, z).distance(path_point(0))))
+}
+
+/// Whether a column is path, given the same 0..1 fray the road's ragged edges
+/// use. The columns reach a little past the cobbles' edge: the shader draws
+/// the edge itself, smooth and wandering, and shows the voxels past it as turf.
+pub fn on_path(x: f32, z: f32, fray: f32) -> bool {
+    let d = path_distance(x, z);
+    d <= PATH_HALF_WIDTH_M + 1.0 && d < path_half_width(x, z) + 0.3 + 0.3 * fray
+}
+
+/// Lantern posts along the path (metres): each post's foot, and which way along
+/// X its lantern hangs, towards the path. They stand every
+/// `PATH_LANTERN_SPACING_M` along it, alternating sides.
+pub fn path_lanterns() -> impl Iterator<Item = (f32, f32, f32)> {
+    let mut out = Vec::new();
+    let mut next = PATH_LANTERN_SPACING_M * 0.5;
+    let mut walked = 0.0;
+    for k in 1..PATH.len() {
+        let (a, b) = (path_point(k - 1), path_point(k));
+        let len = a.distance(b);
+        while next < walked + len {
+            let p = a.lerp(b, (next - walked) / len);
+            let side = if out.len() % 2 == 0 { -2.3 } else { 2.3 };
+            out.push((p.x + side, p.y, -side.signum()));
+            next += PATH_LANTERN_SPACING_M;
+        }
+        walked += len;
+    }
+    out.into_iter()
+}
+
 /// Whether a tree trunk here would crowd a composed feature kept open for
-/// something else: the spawn rise's top (for its big tree), the knoll's top
-/// (for the watchtower), the path, and the lines of sight from the arrival spot
-/// to the bridge, the cascade and the castle.
+/// something else: the spawn rise's top, the knoll's top (for the
+/// watchtower), the path, and the lines of sight from the arrival spot to the
+/// bridge, the cascade, the watchtower and the castle.
 pub fn keeps_clear(x: f32, z: f32) -> bool {
-    let from = Vec2::new(ARRIVAL.0, ARRIVAL.1);
-    let rel = Vec2::new(x, z) - from;
-    let r = rel.length();
-    let in_sight = r < SIGHT_CLEAR_M
-        && SIGHTS.iter().any(|&(tx, tz, w)| {
-            let to = Vec2::new(tx, tz) - from;
-            let d = to.normalize();
-            let along = rel.dot(d);
-            along > 0.0 && along < to.length() && d.perp_dot(rel).abs() < w
-        });
-    in_sight
+    in_sight(x, z, &SIGHTS)
         || Vec2::new(x - SPAWN.0, z - SPAWN.2).length() < RISE_TOP_R + 1.5
         || Vec2::new(x - TOWER_KNOLL.0, z - TOWER_KNOLL.2).length() < KNOLL_TOP_R + 4.0
         || path_distance(x, z) < 3.5
 }
 
+/// Like `keeps_clear`, for the walls of a house: the castle and the
+/// watchtower stand high above anything built in the valley, so only the
+/// low lines of sight, to the bridge and the cascade, are kept open.
+pub fn keeps_walls_clear(x: f32, z: f32) -> bool {
+    in_sight(x, z, &SIGHTS[..2])
+        || Vec2::new(x - SPAWN.0, z - SPAWN.2).length() < RISE_TOP_R + 1.5
+        || Vec2::new(x - TOWER_KNOLL.0, z - TOWER_KNOLL.2).length() < KNOLL_TOP_R + 4.0
+        || path_distance(x, z) < 3.5
+}
+
+/// Whether a point lies on one of these lines of sight from the arrival spot.
+fn in_sight(x: f32, z: f32, sights: &[(f32, f32, f32)]) -> bool {
+    let from = Vec2::new(ARRIVAL.0, ARRIVAL.1);
+    let rel = Vec2::new(x, z) - from;
+    rel.length() < SIGHT_CLEAR_M
+        && sights.iter().any(|&(tx, tz, w)| {
+            let to = Vec2::new(tx, tz) - from;
+            let d = to.normalize();
+            let along = rel.dot(d);
+            along > 0.0 && along < to.length() && d.perp_dot(rel).abs() < w
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block::{GRASS, PATH, STONE};
+    use crate::block::{GRASS, STONE};
     use crate::terrain::Terrain;
     use glam::IVec3;
 
@@ -554,11 +599,15 @@ mod tests {
             let h = t.height_at(x + a.cos() * RISE_TOP_R, z + a.sin() * RISE_TOP_R).0;
             assert!((h - top).abs() < 0.8, "rise edge at {a}: {h} vs {top}");
         }
-        // The player arrives on the top, standing on it.
+        // The player arrives on the top, standing on it, where the arrival
+        // camera (`ARRIVAL_FEET_Y`) expects their feet.
         let s = t.spawn_point();
         assert_eq!((s.x, s.z), ARRIVAL);
         assert!(Vec2::new(s.x - x, s.z - z).length() < RISE_TOP_R);
         assert!(s.y > top && s.y < top + 1.5);
+        assert!((s.y - ARRIVAL_FEET_Y).abs() < 0.01, "feet at {}", s.y);
+        // On the west bank, the river on the right of the arrival view.
+        assert!(x < t.river_x(z) - 15.0);
     }
 
     #[test]
@@ -566,11 +615,11 @@ mod tests {
         let t = world();
         let s = t.spawn_point();
         let eye = Vec3::new(s.x, s.y + 0.6, s.z);
-        // Water points on the left half of the view, under 30 degrees down,
+        // Water points on the right half of the view, under 30 degrees down,
         // with nothing in the way.
         let mut seen = 0;
         for k in 0..40 {
-            let yaw = SPAWN_YAW - 0.9 * k as f32 / 40.0;
+            let yaw = SPAWN_YAW + 0.9 * k as f32 / 40.0;
             for step in 8..80 {
                 let dist = step as f32;
                 let p = Vec2::new(eye.x + yaw.cos() * dist, eye.z + yaw.sin() * dist);
@@ -600,7 +649,7 @@ mod tests {
     #[test]
     fn gorge_banks_stand_above_the_water_near_the_bridge() {
         let t = world();
-        for (z, sides) in [(890.0, [-1.0f32, 1.0]), (952.0, [-1.0, 1.0]), (1000.0, [-1.0, -1.0])] {
+        for (z, sides) in [(890.0, [-1.0f32, 1.0]), (952.0, [-1.0, 1.0]), (1000.0, [-1.0, 1.0])] {
             let rx = t.river_x(z);
             let wl = water_level(rx, z);
             for side in sides {
@@ -766,20 +815,21 @@ mod tests {
                 crate::structures::Structure::Bridge(b) => {
                     // The bridge centres on whole voxels, so it may sit a quarter metre off.
                     assert!((b.z - BRIDGE_Z).abs() <= 0.25, "bridge z {}", b.z);
-                    // Dry ground at both ends, above the water, and the path meets the east end.
+                    // Dry ground at both ends, above the water.
                     for x in [b.x0 - 0.5, b.x1 + 0.5] {
                         assert!(t.height_at(x, b.z).0 > water_level(x, b.z) + 3.0, "bridge end {x}");
                     }
-                    // The path meets the east end, or the paved approach bridges the gap.
-                    let px = path_x(PATH_Z.0).unwrap();
-                    assert!(px >= b.x1 - 2.0 && px - b.x1 < 8.0, "path {px}, bridge end {}", b.x1);
-                    let mut x = b.x1;
-                    while x < px {
+                    // The path from the rise meets the west end, and the paved
+                    // approach bridges any gap.
+                    let end = path_point(PATH.len() - 1);
+                    let meet = Vec2::new(b.x0, b.z);
+                    assert!(end.distance(meet) < 3.0, "path ends at {end}, bridge at {meet}");
+                    for k in 0..=20 {
+                        let p = end.lerp(meet, k as f32 / 20.0);
                         assert!(
-                            t.structures.path_at(&t, x, b.z) || path_distance(x, b.z) < 2.0,
-                            "unpaved at {x}"
+                            t.structures.path_at(&t, p.x, p.y) || path_distance(p.x, p.y) < PATH_HALF_WIDTH_M,
+                            "unpaved at {p}"
                         );
-                        x += 0.5;
                     }
                     seen += 1;
                 }
@@ -799,7 +849,12 @@ mod tests {
     #[test]
     fn path_runs_from_the_rise_to_the_bridge() {
         let t = world();
-        // It never runs through a building, and stays west of the road's fence.
+        // It starts at the player's feet and only ever heads down the valley.
+        assert!(path_point(0).distance(Vec2::new(ARRIVAL.0, ARRIVAL.1)) < 2.0);
+        for k in 1..PATH.len() {
+            assert!(PATH[k].1 < PATH[k - 1].1, "path turns back at {k}");
+        }
+        // It never runs through a building, and stays west of the river.
         use crate::structures::Structure;
         let buildings: Vec<(Vec3, Vec3)> = t
             .structures
@@ -811,31 +866,140 @@ mod tests {
                 _ => None,
             })
             .collect();
-        let mut z = PATH_Z.0 + 2.0;
-        while z < PATH_Z.1 {
+        let (z_end, z_start) = (PATH[PATH.len() - 1].1, PATH[0].1);
+        let mut z = z_end;
+        while z <= z_start {
             let x = path_x(z).unwrap();
             let (x0, x1) = (x - PATH_HALF_WIDTH_M, x + PATH_HALF_WIDTH_M);
             for (lo, hi) in &buildings {
                 let inside = lo.x < x1 && hi.x > x0 && lo.z < z + 0.25 && hi.z > z - 0.25;
                 assert!(!inside, "path at {x},{z} runs into a building");
             }
-            // The west fence stands 3.6 m off the road's centre line.
-            assert!(x1 < t.road_x(z) - 3.6 - 0.5, "path at {x},{z} crowds the fence");
+            // On dry ground above the channel wall.
+            assert!(x1 < t.river_x(z) - 9.0, "path at {x},{z} in the river");
+            assert!(t.height_at(x, z).0 > water_level(x, z) + 3.0, "path at {x},{z} is low");
             z += 0.5;
         }
-        let (z0, z1) = PATH_Z;
-        let mut z = z0;
-        while z <= z1 - 1.0 {
+        // Paved all along.
+        let mut z = z_end;
+        while z <= z_start - 1.0 {
             let x = path_x(z).unwrap();
             let c = t.column_info(x, z);
-            assert_eq!(c.surface, PATH, "path at {x},{z}");
+            assert_eq!(c.surface, crate::block::PATH, "path at {x},{z}");
             z += 2.0;
         }
-        // It ends in a rounded tip on the rise, not a square edge.
-        let end = path_x(z1).unwrap();
-        assert!(on_path(end, z1, 0.0) && !on_path(end + 1.2, z1, 0.0) && !on_path(end, z1 + 1.5, 0.0));
-        assert!(Vec2::new(end - SPAWN.0, z1 - SPAWN.2).length() <= RISE_TOP_R + 0.5);
-        assert!(path_lanterns().count() >= 4);
+        // It starts in a rounded tip on the rise, not a square edge: narrower
+        // there, and nothing past it.
+        let (start, next) = (path_point(0), path_point(1));
+        let back = (start - next).normalize();
+        assert!(on_path(start.x, start.y, 0.0));
+        assert!(!on_path(start.x + back.x * 1.5, start.y + back.y * 1.5, 1.0));
+        assert!(!on_path(start.x - back.y * 1.5, start.y + back.x * 1.5, 1.0));
+        assert!(path_half_width(start.x, start.y) < 0.7 * PATH_HALF_WIDTH_M);
+        assert!(start.distance(Vec2::new(SPAWN.0, SPAWN.2)) <= RISE_TOP_R + 0.5);
+        // Lanterns all along it, beside it rather than on it, the first on
+        // its left just ahead of the arrival spot, where the view opens.
+        let lamps: Vec<_> = path_lanterns().collect();
+        assert!(lamps.len() >= 4);
+        for &(x, z, towards) in &lamps {
+            let d = path_distance(x, z);
+            assert!(d > PATH_HALF_WIDTH_M + 0.4 && d < 3.0, "lantern at {x},{z}: {d} m off");
+            assert!(
+                path_distance(x + towards, z) < d,
+                "lantern at {x},{z} hangs away from the path"
+            );
+        }
+        let (x, z, _) = lamps[0];
+        let a = Vec2::new(ARRIVAL.0, ARRIVAL.1);
+        let fwd = Vec2::new(SPAWN_YAW.cos(), SPAWN_YAW.sin());
+        let rel = Vec2::new(x, z) - a;
+        assert!(rel.length() < 12.0 && rel.dot(fwd) > 4.0, "first lantern at {x},{z}");
+        assert!(fwd.perp_dot(rel) < -3.0, "first lantern at {x},{z} is not on the left");
+    }
+
+    #[test]
+    fn shader_knows_the_path() {
+        let wgsl = include_str!("shaders/world.wgsl");
+        assert!(wgsl.contains(&format!("const VISTA_PATH_COUNT: u32 = {}u;", PATH.len())));
+        assert!(wgsl.contains(&format!("const VISTA_PATH_HALF: f32 = {PATH_HALF_WIDTH_M:.1};")));
+        for (x, z) in PATH {
+            assert!(wgsl.contains(&format!("vec2({x:.1}, {z:.1})")), "path point {x},{z}");
+        }
+    }
+
+    #[test]
+    fn structures_keep_off_the_rise_and_the_path() {
+        use crate::structures::Structure;
+        let t = world();
+        let arrival = Vec2::new(ARRIVAL.0, ARRIVAL.1);
+        let eye = Vec3::new(ARRIVAL.0, ARRIVAL_FEET_Y + 1.6, ARRIVAL.1);
+        let (lo_p, hi_p) = path_box();
+        for (lo, hi, st) in t.structures.iter_bounds() {
+            let what = match st {
+                Structure::Cottage(_) => "cottage",
+                Structure::Fence(_) => "fence",
+                Structure::Watchtower(_) => "watchtower",
+                Structure::Castle(_) => "castle",
+                // The path meets the bridge on purpose.
+                Structure::Bridge(_) => continue,
+            };
+            let (lo2, hi2) = (Vec2::new(lo.x, lo.z), Vec2::new(hi.x, hi.z));
+            // Off the spawn rise.
+            let near = arrival.clamp(lo2, hi2);
+            assert!(near.distance(arrival) > 8.0, "{what} at {lo}..{hi} on the spawn rise");
+            let spawn = Vec2::new(SPAWN.0, SPAWN.2);
+            assert!(
+                spawn.clamp(lo2, hi2).distance(spawn) > 8.0,
+                "{what} at {lo}..{hi} on the rise"
+            );
+            // Off the path: no point of its centre line within its paving
+            // (and a little) of the box.
+            if lo2.x < hi_p.x + 3.0 && hi2.x > lo_p.x - 3.0 && lo2.y < hi_p.y + 3.0 && hi2.y > lo_p.y - 3.0 {
+                for k in 0..200 {
+                    let z = hi_p.y - (hi_p.y - lo_p.y) * k as f32 / 199.0;
+                    let Some(x) = path_x(z) else { continue };
+                    let p = Vec2::new(x, z);
+                    assert!(
+                        p.clamp(lo2, hi2).distance(p) > PATH_HALF_WIDTH_M + 0.5,
+                        "{what} at {lo}..{hi} on the path at {p}"
+                    );
+                }
+            }
+            // No wall stands right in front of the camera: nothing built within
+            // 40 m of the eye covers the middle of the first view.
+            if let Structure::Cottage(_) = st {
+                let corners: Vec<_> = (0..8)
+                    .map(|i| Vec3::new([lo.x, hi.x][i & 1], [lo.y, hi.y][(i >> 1) & 1], [lo.z, hi.z][i >> 2]))
+                    .collect();
+                let d = eye.clamp(lo, hi).distance(eye);
+                let xs: Vec<f32> = corners.iter().filter_map(|&c| first_view(c)).map(|(x, _)| x).collect();
+                if d < 40.0 && !xs.is_empty() {
+                    let (a, b) = xs.iter().fold((f32::MAX, f32::MIN), |(a, b), &x| (a.min(x), b.max(x)));
+                    assert!(
+                        b < 0.3 || a > 0.7,
+                        "cottage at {lo}..{hi}, {d:.0} m off, covers {a:.2}..{b:.2} of the view"
+                    );
+                }
+            }
+        }
+        // And nothing built stands between the eye and the bridge or the castle.
+        for target in [
+            Vec3::new(886.75, 31.0, BRIDGE_Z),
+            Vec3::new(CASTLE_TOP.0, CASTLE_TOP.1 + 8.0, CASTLE_TOP.2),
+        ] {
+            for (lo, hi, st) in t.structures.iter_bounds() {
+                if !matches!(st, Structure::Cottage(_) | Structure::Watchtower(_)) {
+                    continue;
+                }
+                for k in 1..200 {
+                    let p = eye.lerp(target, k as f32 / 200.0);
+                    assert!(
+                        p.cmplt(lo).any() || p.cmpgt(hi).any(),
+                        "the view to {target} runs through {lo}..{hi}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -860,13 +1024,14 @@ mod tests {
 
     /// Where `p` lands in the first view, as fractions of the frame's width
     /// and height from its top-left corner, or None behind the eye. This is
-    /// the camera Sebastian sees on opening (`?cam=893,33.5,1024,-1.5,-0.15`):
-    /// feet on the arrival spot, eye 1.6 m up, the game's 70 degree field of
-    /// view at the side-by-side's 1280 by 760.
+    /// the camera Sebastian sees on opening (`?cam=858,33.5,1024,-1.45,-0.15`):
+    /// feet on the arrival spot, eye 1.6 m up, the game's 70 degree vertical
+    /// field of view. The page's surface is 1280 by 760, shown in the 1280 by
+    /// 720 screenshots, so fractions of the frame are the same in both.
     fn first_view(p: glam::Vec3) -> Option<(f32, f32)> {
         use glam::{Mat4, Vec3};
-        let (yaw, pitch) = (SPAWN_YAW, -0.15f32);
-        let eye = Vec3::new(ARRIVAL.0, 33.5 + 1.6, ARRIVAL.1);
+        let (yaw, pitch) = (SPAWN_YAW, SPAWN_PITCH);
+        let eye = Vec3::new(ARRIVAL.0, ARRIVAL_FEET_Y + 1.6, ARRIVAL.1);
         let dir = Vec3::new(yaw.cos() * pitch.cos(), pitch.sin(), yaw.sin() * pitch.cos());
         let vp = Mat4::perspective_infinite_reverse_rh(70f32.to_radians(), 1280.0 / 760.0, 0.05)
             * Mat4::look_to_rh(eye, dir, Vec3::Y);
@@ -875,39 +1040,136 @@ mod tests {
     }
 
     #[test]
+    fn first_view_is_composed_like_the_reference() {
+        let t = world();
+        let bridge = t
+            .structures
+            .iter()
+            .find_map(|st| match st {
+                crate::structures::Structure::Bridge(b) => Some(Vec3::new(b.centre, b.deck, b.z)),
+                _ => None,
+            })
+            .unwrap();
+        // The bridge a little right of centre, below the horizon.
+        let (x, y) = first_view(bridge).unwrap();
+        assert!(
+            (0.57..0.64).contains(&x) && (0.35..0.55).contains(&y),
+            "bridge at {x:.3},{y:.3}"
+        );
+        // The castle beyond it, upper right of centre.
+        let (x, y) = first_view(Vec3::from(CASTLE_TOP)).unwrap();
+        assert!(
+            (0.64..0.72).contains(&x) && (0.1..0.4).contains(&y),
+            "castle at {x:.3},{y:.3}"
+        );
+        // The watchtower's knoll left of centre.
+        let (x, _) = first_view(Vec3::from(TOWER_KNOLL)).unwrap();
+        assert!(x < 0.49, "knoll at {x:.3}");
+        // The river runs from the bridge out to the lower right.
+        let mut last = (0.0, 0.0);
+        for z in [952.0, 970.0, 990.0, 1005.0] {
+            let (x, y) = first_view(Vec3::new(t.river_x(z), water_level(t.river_x(z), z), z)).unwrap();
+            assert!(x > last.0 && y > last.1, "river at z {z}: {x:.3},{y:.3}");
+            last = (x, y);
+        }
+        assert!(last.0 > 0.8 && last.1 > 0.6, "river leaves the frame at {last:?}");
+        // The path comes in from the bottom left, crosses the lower middle and
+        // meets the bridge right of centre.
+        let along: Vec<Vec2> = (1..PATH.len())
+            .flat_map(|k| (0..20).map(move |i| path_point(k - 1).lerp(path_point(k), i as f32 / 20.0)))
+            .collect();
+        let seen: Vec<(f32, f32)> = along
+            .iter()
+            .filter_map(|p| first_view(Vec3::new(p.x, t.height_at(p.x, p.y).0, p.y)))
+            .filter(|&(x, y)| (0.0..1.0).contains(&x) && (0.0..1.0).contains(&y))
+            .collect();
+        let (x, y) = seen[0];
+        assert!(x < 0.4 && y > 0.9, "path enters the view at {x:.3},{y:.3}");
+        assert!(
+            seen.iter().any(|&(x, y)| (0.42..0.58).contains(&x) && y > 0.58),
+            "the path never crosses the lower middle"
+        );
+        let end = path_point(PATH.len() - 1);
+        let (x, _) = first_view(Vec3::new(end.x, t.height_at(end.x, end.y).0, end.y)).unwrap();
+        assert!((0.5..0.62).contains(&x), "path meets the bridge at {x:.3}");
+    }
+
+    /// The great oak's trunk spine at `t` (0 at the foot, 1 at the fork):
+    /// the hero trunk of `trees::Tree::broadleaf`, which forks at 0.36 of the
+    /// height and leans 0.08 of it along the long bough. The test below checks
+    /// this against the real mesh.
+    fn oak_spine(oak: &crate::trees::Tree, t: f32) -> Vec3 {
+        let d = oak.hero.unwrap();
+        oak.base + Vec3::Y * (0.36 * oak.height * t) + Vec3::new(d.x, 0.0, d.y) * oak.height * 0.08 * t.powf(1.5)
+    }
+
+    #[test]
     fn great_oak_frames_the_left_of_the_first_view() {
         let t = world();
         let oak = t.hero_tree.expect("the arrival has a great oak");
-        // Nothing of the tree reaches right of 45% of the width, where the
-        // valley, the bridge, the castle crag (about yaw -1.16, pitch 0.17 to
-        // 0.35) and the peaks must stay open, and its crown stays in the
-        // top-left quarter.
+        let fork = 0.36 * oak.height;
         let mut mesh = crate::mesh::MeshData::default();
         oak.mesh(&mut mesh);
+        let verts: Vec<(Vec3, u32)> = mesh
+            .vertices
+            .iter()
+            .map(|v| (Vec3::from(v.pos), (v.data >> 3) & 255))
+            .collect();
+        let bark = crate::block::BARK as u32;
+        // The spine really is the trunk's: bark all the way up it.
+        for k in 0..=10 {
+            let q = oak_spine(&oak, k as f32 / 10.0);
+            let near = verts
+                .iter()
+                .filter(|(p, m)| *m == bark && (p.y - q.y).abs() < 1.5)
+                .map(|(p, _)| Vec2::new(p.x - q.x, p.z - q.z).length())
+                .fold(f32::MAX, f32::min);
+            assert!(near < 1.8, "no trunk around the spine at {q}");
+        }
+        // Its foot shows at the left edge, standing on the ground in view.
+        let (x, y) = first_view(oak.base).expect("the oak's foot is behind the eye");
+        assert!(
+            (0.02..=0.12).contains(&x) && (0.0..1.0).contains(&y),
+            "foot at {x:.3},{y:.3}"
+        );
+        // The whole trunk shows, from the ground up to the crown, close to the
+        // left edge.
+        for k in 0..=10 {
+            let q = oak_spine(&oak, k as f32 / 10.0);
+            let (x, y) = first_view(q).expect("trunk behind the eye");
+            assert!(
+                (0.0..=0.15).contains(&x) && (0.0..1.0).contains(&y),
+                "trunk at {k}/10: {x:.3},{y:.3}"
+            );
+        }
+        // The eye stands well outside the crown.
+        let eye = Vec3::new(ARRIVAL.0, ARRIVAL_FEET_Y + 1.6, ARRIVAL.1);
+        let gap = Vec2::new(oak.base.x - eye.x, oak.base.z - eye.z).length();
+        assert!(gap >= 8.0, "eye {gap:.1} m from the trunk");
         let mut crown = 0;
-        let (mut trunk, mut trunk_edge) = (0, 0f32);
-        for v in &mesh.vertices {
-            let p = glam::Vec3::from(v.pos);
+        for &(p, m) in &verts {
             let Some((x, y)) = first_view(p) else { continue };
             if !(0.0..1.0).contains(&x) || !(0.0..1.0).contains(&y) {
                 continue;
             }
-            assert!(x <= 0.45, "oak at {x:.2}, {y:.2} of the frame, over the valley");
-            if p.y - oak.base.y < 3.0 {
-                trunk += 1;
-                trunk_edge = trunk_edge.max(x);
+            // Nothing of the tree reaches right of 45% of the width, where the
+            // valley, the bridge, the castle crag and the peaks stay open.
+            assert!(x <= 0.45, "oak at {x:.3},{y:.3} of the frame, over the valley");
+            let trunk = m == bark && p.y - oak.base.y < fork && {
+                let q = oak_spine(&oak, ((p.y - oak.base.y) / fork).clamp(0.0, 1.0));
+                Vec2::new(p.x - q.x, p.z - q.z).length() < 2.2
+            };
+            if trunk {
+                continue;
             }
-            if p.y - oak.base.y > 0.3 * oak.height {
-                assert!(
-                    y <= 0.5,
-                    "crown at {x:.2}, {y:.2} of the frame, below the top-left quarter"
-                );
-                crown += 1;
-            }
+            // The crown hangs in the top of the frame, with sky under it, and
+            // lower only at the very left edge.
+            assert!(
+                x <= 0.10 || y <= 0.25,
+                "crown at {x:.3},{y:.3} of the frame hangs into the view"
+            );
+            crown += 1;
         }
-        // The trunk's near side frames the left edge, and no wider than that.
-        assert!(trunk > 10, "trunk not in the view");
-        assert!(trunk_edge < 0.15, "trunk reaches {trunk_edge:.2} of the width");
-        assert!(crown > 50, "the crown should hang into the top-left corner");
+        assert!(crown > 200, "the crown should show in the top-left corner");
     }
 }

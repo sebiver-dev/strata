@@ -266,6 +266,11 @@ impl Structures {
         self.list.iter().map(|(_, _, s)| s)
     }
 
+    /// Every structure with its bounding box's corners (metres).
+    pub fn iter_bounds(&self) -> impl Iterator<Item = (Vec3, Vec3, &Structure)> {
+        self.list.iter().map(|(lo, hi, s)| (*lo, *hi, s))
+    }
+
     /// Whether a tree trunk at this point would stand in or crowd a structure.
     pub fn blocks_tree(&self, x: f32, z: f32) -> bool {
         self.list.iter().any(|(lo, hi, st)| {
@@ -402,7 +407,9 @@ fn cottage_door_near(s: &Structures, x: f32, z: f32) -> bool {
 fn hamlet(t: &Terrain, zb: f32, bx0: f32, seed: u32) -> Vec<Cottage> {
     use crate::cottage::Style;
     let river = |z: f32| t.river_x(z);
-    let path = |z: f32| vista::path_x(z).unwrap_or(river(z) + 22.0);
+    // The riverside house measures from a path on its own (east) bank; the
+    // arrival path runs down the west bank, so there it keeps to the old line.
+    let path = |z: f32| vista::path_x(z).filter(|&x| x > river(z)).unwrap_or(river(z) + 22.0);
     let cottage = Style::cottage();
     let house = Style::house();
     // (x, z, ridge along X, front side, deck, style)
@@ -491,7 +498,7 @@ fn hamlet(t: &Terrain, zb: f32, bx0: f32, seed: u32) -> Vec<Cottage> {
 }
 
 /// Whether a planned cottage keeps off everything it must not crowd: its walls
-/// stay out of the sight lines from the rise (`vista::keeps_clear`, whose
+/// stay out of the sight lines from the rise (`vista::keeps_walls_clear`, whose
 /// verge along the path is for trees; walls keep a smaller one), and its walls,
 /// steps and deck stay off the path, the bridge, the road and its fences, and
 /// the other houses. A low deck may reach into a sight line.
@@ -507,7 +514,7 @@ fn cottage_site_ok(t: &Terrain, c: &Cottage, bridge: (Vec3, Vec3), s: &Structure
         while x <= hi.x && ok {
             let walls = x >= wlo.x && x <= whi.x && z >= wlo.y && z <= whi.y;
             let path = vista::path_distance(x, z);
-            let sight = vista::keeps_clear(x, z) && path >= 3.5;
+            let sight = vista::keeps_walls_clear(x, z) && path >= 3.5;
             ok = !(walls && (sight || path < vista::PATH_HALF_WIDTH_M + 1.3))
                 && path > vista::PATH_HALF_WIDTH_M + 0.5
                 && (t.road_x(z) - x).abs() > crate::terrain::ROAD_HALF_WIDTH_M + 3.5
@@ -577,7 +584,9 @@ mod tests {
     fn the_hamlet_clusters_on_both_banks_off_the_path_and_the_bridge() {
         let t = world();
         let houses = cottages(&t);
-        assert!(houses.len() >= 12, "{} houses", houses.len());
+        // Three west-bank sites downstream of the bridge fall on the arrival
+        // path and are left out (`cottage_site_ok`).
+        assert!(houses.len() >= 10, "{} houses", houses.len());
         let bridge = t
             .structures
             .iter()

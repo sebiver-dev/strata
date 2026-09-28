@@ -12,7 +12,7 @@ use crate::block::*;
 use crate::mesh::{smooth_data, MeshData, Vertex};
 use crate::noise::{fbm2, hash3, unit};
 use crate::terrain::Terrain;
-use glam::{IVec3, Vec3};
+use glam::{IVec3, Vec2, Vec3};
 use std::f32::consts::TAU;
 
 /// What the ground around one grass voxel is like, 0..1 each.
@@ -48,6 +48,15 @@ pub fn verge(terrain: &Terrain, xm: f32, zm: f32) -> f32 {
     // The water's edge lies 10 to 17 m from the river's centre line.
     let bank = 1.0 - smoothstep(16.0, 26.0, (xm - terrain.river_x(zm)).abs());
     road.max(bank)
+}
+
+/// How much a spot (metres) is the meadow in front of the arrival view, 0..1:
+/// grass grows thickest and lushest there, as in the reference's foreground.
+pub fn vista_meadow(xm: f32, zm: f32) -> f32 {
+    let (ax, az) = crate::vista::ARRIVAL;
+    let yaw = crate::vista::SPAWN_YAW;
+    let centre = Vec2::new(ax, az) + Vec2::new(yaw.cos(), yaw.sin()) * 10.0;
+    1.0 - smoothstep(14.0, 26.0, Vec2::new(xm, zm).distance(centre))
 }
 
 /// A stream of random numbers for one plant.
@@ -162,8 +171,12 @@ fn grass(out: &mut MeshData, rng: &mut Rng, w: IVec3, floor: Vec3, spot: &Spot, 
     let mut height = open + (lush - open).max(0.0) * spot.verge;
     height += (tall - height) * spot.field;
 
+    let vista = vista_meadow(floor.x, floor.z);
+    height += (lush * 1.1 - height).max(0.0) * vista;
+
     let thick = spot.meadow.max(spot.verge).max(spot.field);
     let mut n = 4 + (thick * 1.5 + rng.f() * 0.9).floor() as u32 + (spot.field > 0.5) as u32;
+    n += (vista * 2.0).round() as u32;
     if crowded {
         n = n.saturating_sub(2).max(2);
     }

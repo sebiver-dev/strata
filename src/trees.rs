@@ -343,7 +343,9 @@ impl Tree {
         }
         for (i, c) in s.clumps.iter().enumerate() {
             let puff = c.radii.x < self.height * 0.2;
-            if level > 0 && puff {
+            // Further out keep every other puff, so crowns still break into
+            // lobes rather than reading as balls.
+            if level > 1 && puff || level == 1 && puff && i % 2 == 1 {
                 continue;
             }
             let mesh = ico(if level == 0 && !puff { 1 } else { 0 });
@@ -527,7 +529,7 @@ fn trunk(out: &mut MeshData, l: &Limb, flare: f32, sides: u32, seed: u32) {
         // Above the foot the buttresses carry on up as ridges that twist
         // around the trunk, like the fluted bole of an old oak.
         let up = p.y - base.y;
-        let ridge = 0.07 * (1.0 - f) * (1.0 - smoothstep(4.0, 9.0, up));
+        let ridge = 0.13 * (1.0 - f) * (1.0 - smoothstep(4.0, 9.0, up));
         for k in 0..sides {
             let a = k as f32 / sides as f32 * TAU;
             let lobe = ((a * lobes + phase).cos().max(0.0)).powi(2);

@@ -187,11 +187,14 @@ pub fn build_tile(terrain: &Terrain, tile: IVec2, level: u8) -> MeshData {
     // Heights on the grid corners plus a one-cell border for normals.
     let w = n + 3;
     let mut heights = Vec::with_capacity((w * w) as usize);
+    let mut channels = Vec::with_capacity((w * w) as usize);
     for j in -1..=n + 1 {
         for i in -1..=n + 1 {
             let x = origin.x + i as f32 * cell;
             let z = origin.y + j as f32 * cell;
-            heights.push(terrain.height_at(x, z).0);
+            let (hh, ch) = terrain.height_at(x, z);
+            heights.push(hh);
+            channels.push(ch);
         }
     }
     let h = |i: i32, j: i32| heights[((j + 1) * w + i + 1) as usize];
@@ -206,7 +209,11 @@ pub fn build_tile(terrain: &Terrain, tile: IVec2, level: u8) -> MeshData {
     for j in 0..=n {
         for i in 0..=n {
             let p = corner(i, j);
-            let mat = terrain.column_info(p.x, p.z).surface;
+            // Material from the slope across the cell, not the metre under the
+            // corner, so bands thinner than a cell do not paint whole cells.
+            let slope = ((h(i + 1, j) - h(i - 1, j)).abs()).max((h(i, j + 1) - h(i, j - 1)).abs()) / (2.0 * cell);
+            let channel = channels[((j + 1) * w + i + 1) as usize];
+            let mat = terrain.far_surface(p.x, p.z, p.y, channel, slope, cell);
             out.vertices.push(Vertex {
                 pos: p.to_array(),
                 data: smooth_data(mat, 3, normal(i, j)),
@@ -317,6 +324,80 @@ mod tests {
             }
             assert!((area - TILE_M * TILE_M).abs() < 1.0, "level {level} covers {area} m²");
         }
+    }
+
+    #[test]
+    fn thin_shore_bands_do_not_paint_whole_cells() {
+        // A far vertex shows sand above the water only where most of the ground
+        // around it really is sand, so a rim narrower than a cell stays grass.
+        let terrain = Terrain::new(20260927);
+        let (mut sand, mut thin) = (0, 0);
+        for k in 0..24 {
+            let z = 80.0 + k as f32 * 80.0;
+            let x = terrain.river_x(z);
+            for dx in [-1, 0, 1] {
+                let tile = IVec2::new((x / TILE_M) as i32 + dx, (z / TILE_M) as i32);
+                for level in 1..3u8 {
+                    let cell = LEVEL_CELL_M[level as usize];
+                    let m = build_tile(&terrain, tile, level);
+                    for v in &m.vertices {
+                        let p = Vec3::from(v.pos);
+                        if ((v.data >> 3) & 255) as u8 != SAND || p.y < water_level(p.x, p.z) {
+                            continue;
+                        }
+                        sand += 1;
+                        let mut real = 0;
+                        for j in -2..=2 {
+                            for i in -2..=2 {
+                                let (sx, sz) = (p.x + i as f32 * cell / 5.0, p.z + j as f32 * cell / 5.0);
+                                real += (terrain.column_info(sx, sz).surface == SAND) as i32;
+                            }
+                        }
+                        if real < 8 {
+                            thin += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            thin * 10 <= sand.max(1),
+            "{thin} of {sand} dry sand vertices sit on a thin rim"
+        );
+    }
+
+    #[test]
+    fn far_rock_mostly_stands_on_real_rock() {
+        // Rock keeps its metre-scale slope test; check that it still marks
+        // broad faces rather than thin risers.
+        let terrain = Terrain::new(20260927);
+        let (mut stone, mut thin) = (0, 0);
+        for tz in (6..26).step_by(3) {
+            for tx in (6..26).step_by(3) {
+                let level = 2;
+                let cell = LEVEL_CELL_M[level as usize];
+                let m = build_tile(&terrain, IVec2::new(tx, tz), level);
+                for v in &m.vertices {
+                    let p = Vec3::from(v.pos);
+                    if ((v.data >> 3) & 255) as u8 != STONE {
+                        continue;
+                    }
+                    stone += 1;
+                    let mut real = 0;
+                    for j in -2..=2 {
+                        for i in -2..=2 {
+                            let (sx, sz) = (p.x + i as f32 * cell / 5.0, p.z + j as f32 * cell / 5.0);
+                            real += (terrain.column_info(sx, sz).surface == STONE) as i32;
+                        }
+                    }
+                    thin += (real < 8) as i32;
+                }
+            }
+        }
+        assert!(
+            thin * 5 <= stone.max(1),
+            "{thin} of {stone} rock vertices sit on a thin riser"
+        );
     }
 
     #[test]

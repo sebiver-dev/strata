@@ -1481,7 +1481,10 @@ fn range_height(flat: vec2<f32>, scale: f32, seed: f32, base: f32, top: f32) -> 
 }
 
 // Snowy peaks beyond the edge of the world: two ranges of painted
-// silhouettes, hazy blue with sunlit snow on their crests. rgb, coverage.
+// silhouettes seen through the haze. Their snow keeps the terrain's rules
+// (column_info in terrain.rs and the snow cover in material()): it lies
+// above a ragged snowline, which comes lower where the face is gentle, and
+// slides off steep faces, which stay bare rock. rgb, coverage.
 fn far_peaks(dir: vec3<f32>) -> vec4<f32> {
     let flat = normalize(dir.xz + vec2(1e-5, 0.0));
     let e = asin(clamp(dir.y, -1.0, 1.0));
@@ -1489,32 +1492,47 @@ fn far_peaks(dir: vec3<f32>) -> vec4<f32> {
     let sun_flat = normalize(sun.xz + vec2(1e-5, 0.0));
     let light = sun_light();
     let haze = sky_dome(normalize(vec3(dir.x, 0.03, dir.z)));
+    let side = vec2(-flat.y, flat.x);
+    let az = atan2(flat.y, flat.x);
     var col = vec3(0.0);
     var cover = 0.0;
     // Far range first, then the nearer, bolder one over it.
     for (var k = 0; k < 2; k++) {
         let near = f32(k);
         let scale = mix(2.2, 3.4, near);
-        let h = range_height(flat, scale, 11.0 + near * 7.0, mix(0.035, 0.02, near), mix(0.16, 0.12, near));
+        let seed = 11.0 + near * 7.0;
+        let base = mix(0.035, 0.02, near);
+        let top = mix(0.16, 0.12, near);
+        let h = range_height(flat, scale, seed, base, top);
         if (e < h) {
-            // Slope along the ridge tells which side faces the sun.
-            let side = vec2(-flat.y, flat.x);
-            let dh = range_height(normalize(flat + side * 0.01), scale, 11.0 + near * 7.0, mix(0.035, 0.02, near), mix(0.16, 0.12, near)) - h;
-            let facing = clamp(0.5 - dh * 60.0 * dot(side, sun_flat), 0.0, 1.0);
-            // Gullies run down the faces, so light and snow come in streaks.
-            let az = atan2(flat.y, flat.x);
-            let gully = vnoise2(vec2(az * 90.0 + near * 13.0, e * 25.0)) * 0.6 + vnoise2(vec2(az * 260.0, e * 60.0)) * 0.4;
-            let lit = clamp(facing * 0.8 + (gully - 0.5) * 0.6, 0.0, 1.0);
-            let rock = lin(vec3(0.26, 0.30, 0.42)) * (0.2 + 0.6 * lit) * light * 0.3;
-            // Snow caps the high crests and reaches down the gullies.
-            let base = mix(0.035, 0.02, near);
-            let snow_top = base + mix(0.16, 0.12, near) * 0.35;
-            let snow_depth = (h - snow_top) * 0.8 + 0.012;
-            let snow_line = h - snow_depth * (0.4 + 0.9 * gully);
-            let snow = smoothstep(snow_line - 0.003, snow_line + 0.003, e) * step(snow_top, h);
+            // The face's slope is the ridge's own gradient along the skyline,
+            // taken over a span that widens below the crest, where the faces
+            // are broader. Ribs and gullies break it into facets.
+            let w = 0.006 + (h - e) * 0.5;
+            let hl = range_height(normalize(flat - side * w), scale, seed, base, top);
+            let hr = range_height(normalize(flat + side * w), scale, seed, base, top);
+            let dh = (hr - hl) / (2.0 * w);
+            let rib = vnoise2(vec2(az * 110.0 + e * 40.0 + near * 13.0, e * 7.0));
+            let facet = vnoise2(vec2(az * 260.0, e * 70.0));
+            let crest = 1.0 - smoothstep(0.0, 0.02, h - e);
+            let steep = abs(dh) * (0.3 + 1.4 * rib) + 0.3 * crest * abs(dh) + (facet - 0.5) * 0.35 + 0.08;
+            // Lit where the face turns towards the sun, and on the ribs.
+            let facing = clamp(0.5 - dh * 0.6 * dot(side, sun_flat), 0.0, 1.0);
+            let lit = clamp(facing * 0.8 + (rib - 0.5) * 0.5 + (facet - 0.5) * 0.2, 0.0, 1.0);
+            // Snow by altitude above a ragged line, lower on gentle faces, and
+            // none on steep ones.
+            let ragged = vnoise2(vec2(az * 24.0 + near * 5.0, near)) * 0.7 + vnoise2(vec2(az * 90.0, 3.0 + near)) * 0.3;
+            let gentle = 1.0 - smoothstep(0.25, 0.6, steep);
+            let line = base + top * (0.5 + 0.3 * (ragged - 0.5) - 0.12 * gentle);
+            let snow = smoothstep(line - 0.0025, line + 0.0025, e) * (1.0 - smoothstep(0.33, 0.5, steep));
             let snow_col = lin(vec3(0.95, 0.93, 0.98)) * (0.3 + 0.8 * lit) * light * 0.5;
+            // Bare rock, with the air between tinting it blue-grey: more for
+            // the far range and towards the foot, where the air is thicker.
+            let rock_lit = lin(vec3(0.30, 0.30, 0.34)) * (0.2 + 0.6 * lit) * light * 0.3;
+            let air = mix(0.45, 0.3, near) + 0.2 * (1.0 - smoothstep(0.0, top, e - base));
+            let rock = mix(rock_lit, haze * lin(vec3(0.62, 0.70, 0.90)), air);
             let body = mix(rock, snow_col, snow);
-            // The far range sinks further into the haze, and both fade towards their feet.
+            // Both ranges sink into the haze towards their feet.
             let fade = mix(0.5, 0.3, near) * (1.0 - smoothstep(0.0, 0.08, e - base) * 0.4);
             col = mix(body, haze, fade);
             cover = 1.0;

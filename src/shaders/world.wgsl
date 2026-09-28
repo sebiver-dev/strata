@@ -1167,10 +1167,10 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             let joint = min(min(fu, 1.0 - fu) * 0.9, min(fv, 1.0 - fv) * 0.5);
             let mortar = (1.0 - smoothstep(0.01, 0.025, joint)) * d_dm;
             let tint = hash2(vec2(col, row));
-            var c = mix(vec3(0.72, 0.68, 0.60), vec3(0.83, 0.79, 0.70), tint * (1.0 - calm * 0.7)) * (0.9 + 0.14 * fine);
+            var c = mix(vec3(0.80, 0.76, 0.68), vec3(0.89, 0.85, 0.76), tint * (1.0 - calm * 0.7)) * (0.9 + 0.14 * fine);
             // Rain streaks run down from ledges; a little moss on the tops.
             let streak = smoothstep(0.5, 0.9, vnoise(q * vec3(2.5, 0.2, 2.5)));
-            c *= 1.0 - 0.16 * streak - 0.06 * broad;
+            c *= 1.0 - 0.12 * streak - 0.04 * broad;
             let moss = smoothstep(0.62, 0.8, fbm(q * 0.9)) * select(0.15, 0.7, top);
             c = mix(c, vec3(0.38, 0.42, 0.24), moss * 0.5);
             c = mix(c, vec3(0.47, 0.44, 0.39), mortar * 0.7);

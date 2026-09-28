@@ -334,6 +334,18 @@ fn sun_disc(dir: vec3<f32>) -> vec3<f32> {
     return mix(sun, moon, g.sky.x) * disc;
 }
 
+// The bright haze right around a low sun: a tight warm aureole and a wider
+// soft glow, so the disc sits in light rather than on the sky.
+fn sun_glow(dir: vec3<f32>) -> vec3<f32> {
+    let mu = dot(dir, normalize(g.sun_dir.xyz));
+    if (mu <= 0.0) {
+        return vec3(0.0);
+    }
+    let ang = sqrt(max(2.0 * (1.0 - mu), 0.0));
+    let glow = exp(-ang / 0.022) * 0.9 + exp(-ang / 0.07) * 0.3;
+    return day_light() * vec3(1.0, 0.66, 0.34) * glow * golden_hour() * smoothstep(-0.02, 0.03, dir.y);
+}
+
 // Pinpoint stars on a fixed grid of directions, twinkling a little.
 fn stars(dir: vec3<f32>) -> vec3<f32> {
     if (g.sky.x < 0.01 || dir.y < 0.0) {
@@ -391,6 +403,7 @@ fn lamp_glow(dir: vec3<f32>, len: f32) -> vec3<f32> {
         return vec3(0.0);
     }
     var sum = 0.0;
+    var halo = 0.0;
     let count = u32(g.sky.y);
     let cam = g.camera_pos.xyz;
     for (var k = 0u; k < count; k++) {
@@ -399,8 +412,12 @@ fn lamp_glow(dir: vec3<f32>, len: f32) -> vec3<f32> {
         let h2 = max(dot(rel, rel) - t0 * t0, 0.04);
         let h = sqrt(h2);
         sum += (atan((len - t0) / h) + atan(t0 / h)) / h * g.lights[k].w;
+        // A small bright halo hugging the lantern, when nothing stands in front of it.
+        if (t0 > 0.0 && t0 < len + 0.3) {
+            halo += (exp(-h / 0.35) + 0.15 * exp(-h / 1.6)) * g.lights[k].w;
+        }
     }
-    return LAMP_COLOR * 0.012 * sum * on;
+    return LAMP_COLOR * (0.012 * sum + 0.6 * halo) * on;
 }
 
 fn underwater_color() -> vec3<f32> {
@@ -462,35 +479,129 @@ fn apply_fog(c: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
     return out + lamp_glow(dir, dist);
 }
 
+// Filmic tone curve (Narkowicz ACES fit) onto display-referred sRGB values,
+// so the grade after it looks the same whatever the surface format.
 fn finish(c: vec3<f32>) -> vec3<f32> {
-    // Filmic tone curve (Narkowicz ACES fit), then optional sRGB encode.
     let x = c * 0.9;
-    var m = clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), vec3(0.0), vec3(1.0));
-    if (g.params.y > 0.5) {
-        m = pow(m, vec3(1.0 / 2.2));
-    }
-    return m;
+    let m = clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), vec3(0.0), vec3(1.0));
+    return pow(m, vec3(1.0 / 2.2));
 }
 
 // ---------------------------------------------------------------- shadows
 
-// 1.0 in full sun, 0.0 in shadow. Outside the shadow map everything is lit.
-fn sun_shadow(world: vec3<f32>, n: vec3<f32>) -> f32 {
-    let p = g.sun_view_proj * vec4(world + n * 0.05, 1.0);
+// Matches renderer::SHADOW_RANGE_M: half the width of the shadow map in metres.
+const SHADOW_RANGE: f32 = 72.0;
+// Depth range of the sun's orthographic projection in metres (see sun_view_proj).
+const SHADOW_DEPTH_M: f32 = 500.0;
+
+// Twelve points spread evenly over the unit disc (a Poisson-disc set).
+const POISSON = array<vec2<f32>, 12>(
+    vec2(-0.326, -0.406), vec2(-0.840, -0.074), vec2(-0.696, 0.457), vec2(-0.203, 0.621),
+    vec2(0.962, -0.195), vec2(0.473, -0.480), vec2(0.519, 0.767), vec2(0.185, -0.893),
+    vec2(0.507, 0.064), vec2(0.896, 0.412), vec2(-0.322, -0.933), vec2(-0.792, -0.598),
+);
+
+// Interleaved gradient noise on the pixel under `world`: a different turn of
+// the sampling disc for each pixel, so the few taps blend into a smooth edge.
+fn shadow_noise(world: vec3<f32>) -> f32 {
+    let c = g.view_proj * vec4(world, 1.0);
+    let px = floor((c.xy / max(c.w, 1e-4) * 0.5 + 0.5) * g.screen.xy);
+    return fract(52.9829189 * fract(dot(px, vec2(0.06711056, 0.00583715))));
+}
+
+// One filtered shadow-map test at a point, 1 when lit. For light that only
+// needs to know roughly whether a spot is in shade (rims, light through leaves).
+fn shadow_tap(world: vec3<f32>) -> f32 {
+    let p = g.sun_view_proj * vec4(world, 1.0);
     let ndc = p.xyz / p.w;
     let edge = max(abs(ndc.x), abs(ndc.y));
     if (edge > 1.0 || ndc.z > 1.0 || ndc.z < 0.0) {
         return 1.0;
     }
     let uv = vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
-    let texel = 1.0 / g.screen.z;
-    // Four bilinear comparison taps give a 3x3 texel soft edge.
-    var s = 0.0;
-    for (var k = 0; k < 4; k++) {
-        let o = (vec2(f32(k & 1), f32(k >> 1u)) - 0.5) * texel * 1.5;
-        s += textureSampleCompareLevel(shadow_map, shadow_sampler, uv + o, ndc.z - 0.0004);
+    let s = textureSampleCompareLevel(shadow_map, shadow_sampler, uv, ndc.z - 0.0006);
+    return mix(s, 1.0, smoothstep(0.8, 1.0, edge));
+}
+
+// 1.0 in full sun, 0.0 in shadow. Outside the shadow map everything is lit.
+//
+// Soft shadows with a penumbra that widens with the distance to the caster
+// (percentage-closer soft shadows): a few taps find how far away the blockers
+// are, then a turned Poisson disc of filtered taps averages over the penumbra.
+// Each tap is compared against the receiver's own plane, tilted as the
+// surface is to the sun, so wide filters on slopes do not shadow themselves.
+fn sun_shadow(world: vec3<f32>, n: vec3<f32>) -> f32 {
+    let sun = normalize(g.sun_dir.xyz);
+    let texel_m = 2.0 * SHADOW_RANGE / g.screen.z;
+    let cos_t = clamp(dot(n, sun), 0.0, 1.0);
+    let sin_t = sqrt(1.0 - cos_t * cos_t);
+    let tan_t = min(sin_t / max(cos_t, 0.1), 8.0);
+    // Normal offset: step off the surface, further where the sun grazes it.
+    let pos = world + n * texel_m * (0.4 + 0.8 * sin_t);
+    let p = g.sun_view_proj * vec4(pos, 1.0);
+    let ndc = p.xyz / p.w;
+    let edge = max(abs(ndc.x), abs(ndc.y));
+    if (edge > 1.0 || ndc.z > 1.0 || ndc.z < 0.0) {
+        return 1.0;
     }
-    return mix(s / 4.0, 1.0, smoothstep(0.85, 1.0, edge));
+    let size = g.screen.z;
+    let uv = vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+
+    // Receiver plane: how shadow-map depth changes per texel across the surface.
+    var t1 = cross(n, vec3(0.0, 1.0, 0.0));
+    if (dot(t1, t1) < 1e-3) {
+        t1 = cross(n, vec3(1.0, 0.0, 0.0));
+    }
+    t1 = normalize(t1);
+    let t2 = cross(n, t1);
+    let a = (g.sun_view_proj * vec4(t1, 0.0)).xyz;
+    let b = (g.sun_view_proj * vec4(t2, 0.0)).xyz;
+    let det = a.x * b.y - a.y * b.x;
+    var grad = vec2(0.0);
+    if (abs(det) > 1e-9) {
+        // Per unit of NDC, then per texel (uv's y runs opposite to NDC's).
+        grad = vec2(a.z * b.y - b.z * a.y, a.x * b.z - b.x * a.z) / det;
+        grad = clamp(grad, vec2(-12.0), vec2(12.0)) * (2.0 / size) * vec2(1.0, -1.0);
+    }
+    // Slope-scaled bias for what the plane cannot know: each texel holds one
+    // depth for its whole footprint.
+    let bias = (0.03 + texel_m * (0.3 + 0.9 * tan_t)) / SHADOW_DEPTH_M;
+    let z = ndc.z - bias;
+
+    let ang = shadow_noise(world) * 6.2831853;
+    let rot = mat2x2<f32>(cos(ang), sin(ang), -sin(ang), cos(ang));
+
+    // Blocker search over the widest penumbra.
+    let search = 7.0;
+    let base = uv * size;
+    let hi = vec2<i32>(i32(size) - 1);
+    var blockers = 0.0;
+    var depth_sum = 0.0;
+    for (var k = 0; k < 8; k++) {
+        let o = rot * POISSON[k] * search;
+        let q = clamp(vec2<i32>(floor(base + o)), vec2<i32>(0), hi);
+        let d = textureLoad(shadow_map, q, 0);
+        let zk = z + dot(grad, o);
+        if (d < zk) {
+            blockers += 1.0;
+            depth_sum += zk - d;
+        }
+    }
+    let fade = smoothstep(0.8, 1.0, edge);
+    if (blockers < 0.5) {
+        return 1.0;
+    }
+    // Penumbra: the sun is a disc half a degree wide, widened by the haze it
+    // shines through at dusk. Contact shadows stay crisp, far ones go soft.
+    let gap_m = depth_sum / blockers * SHADOW_DEPTH_M;
+    let pen = clamp(gap_m * 0.03 / texel_m, 1.2, search + 1.0);
+
+    var s = 0.0;
+    for (var k = 0; k < 12; k++) {
+        let o = rot * POISSON[k] * pen;
+        s += textureSampleCompareLevel(shadow_map, shadow_sampler, uv + o / size, z + dot(grad, o));
+    }
+    return mix(s / 12.0, 1.0, fade);
 }
 
 // ---------------------------------------------------------------- materials
@@ -1131,6 +1242,80 @@ fn ggx_spec(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, rough: f32, f0: f32) -> f3
     return d * f * 0.25 * nl;
 }
 
+// ---------------------------------------------------------------- light
+
+// Light from the open sky: the dome's colour straight up and off to the side
+// of the sun. At dusk it is a cool blue-violet against the warm sun, and less
+// saturated than the painted sky itself.
+fn sky_fill() -> vec3<f32> {
+    let sun = normalize(g.sun_dir.xyz);
+    let golden = golden_hour();
+    var sky = sky_dome(vec3(0.0, 1.0, 0.0)) * 0.8 + sky_dome(normalize(vec3(-sun.z, 0.02, sun.x))) * 0.3;
+    sky = mix(sky, vec3(dot(sky, vec3(0.3, 0.5, 0.2))) * vec3(0.95, 0.95, 1.05), golden * 0.5);
+    return sky * mix(vec3(1.0), vec3(0.94, 0.86, 1.30) * 1.55, golden * 0.8);
+}
+
+// Everything but the sun disc lighting a surface facing `n`: the sky above
+// and the sunlit meadow below, blended over the hemisphere the surface sees.
+// Undersides take the warm green-gold of the grass and earth; shade under
+// something else still sees most of the sky, so it goes cool, never black.
+fn fill_light(n: vec3<f32>, sh: f32, sss: f32) -> vec3<f32> {
+    let sun = normalize(g.sun_dir.xyz);
+    let golden = golden_hour();
+    let sky = sky_fill();
+    let ground_albedo = lin(vec3(0.48, 0.45, 0.30));
+    let ground = ground_albedo * (sun_light() * max(sun.y, 0.0) * 0.9 + sky) * mix(1.0, 1.35, golden);
+    let up = 0.5 + 0.5 * n.y;
+    // Sunlit surfaces also see the warm sunward sky; shade leans violet-blue.
+    let sky_part = sky * mix(mix(vec3(0.92, 0.94, 1.1), vec3(1.0), sh), vec3(1.0), 1.0 - golden) * mix(0.8, 1.0, sh);
+    var fill = sky_part * up + ground * (1.0 - up);
+    // Thin layers pass skylight through to their undersides.
+    fill += sky * (1.0 - up) * sss * 0.3;
+    // Undersides of leaves see mostly other leaves: a cooler, dimmer green-blue
+    // rather than the meadow's warm yellow.
+    fill *= mix(vec3(1.0), vec3(0.62, 0.70, 0.86), sss * (1.0 - up));
+    // Light bounced about by the sunlit world around keeps deep shade from
+    // going black: a faint warm floor on every surface out of the sun.
+    fill += sun_light() * lin(vec3(0.50, 0.40, 0.33)) * 0.16 * (1.0 - sh) * (1.0 - 0.6 * sss);
+    return fill;
+}
+
+// Sunlight scattered through thin layers (leaves, grass blades, cloth): a
+// warm glow on the side away from the sun, strongest looking into the light.
+// `open_sun` says whether the sun reaches the layer at all.
+fn through_light(n: vec3<f32>, v: vec3<f32>, sss: f32, open_sun: f32) -> vec3<f32> {
+    if (sss <= 0.0) {
+        return vec3(0.0);
+    }
+    let sun = normalize(g.sun_dir.xyz);
+    let ahead = max(dot(-v, sun), 0.0);
+    // Forward scattering needs the sun on the far side of this very layer;
+    // leaves deep in the crown, lit only by other leaves, stay a cool green.
+    let lit = open_sun * open_sun;
+    // and it is the faces turned from the sun that it shines out of.
+    let behind = mix(0.2, 1.0, smoothstep(-0.1, 0.5, dot(-n, sun)));
+    let forward = (pow(ahead, 4.0) * 1.3 + ahead * 0.2) * lit * behind;
+    let diffuse = (0.4 * max(dot(-n, sun), 0.0) + 0.06) * mix(0.15, 1.0, lit);
+    let tint = mix(lin(vec3(0.80, 0.92, 0.50)), lin(vec3(1.0, 0.84, 0.45)), golden_hour());
+    return sss * (forward + diffuse) * tint * (sun_light() / 2.6);
+}
+
+// Back light: looking towards a low sun, the edges of things turned from the
+// camera catch a warm rim, as leaves and walls do against a bright sky.
+// Flat ground is left out so the meadow does not wash out.
+fn rim_light(n: vec3<f32>, v: vec3<f32>, sss: f32, open_sun: f32) -> vec3<f32> {
+    let sun = normalize(g.sun_dir.xyz);
+    let back = pow(max(dot(-v, sun), 0.0), 2.0);
+    let edge = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 3.0);
+    let side = clamp(dot(n, sun) * 0.6 + 0.55, 0.0, 1.0) * (1.0 - 0.85 * abs(n.y));
+    let warm = vec3(1.0, 0.70, 0.36);
+    // Weak on solid things (bark, stone); leaves take a little more, and
+    // `shade_terrain` adds it half as golden light so it does not outline
+    // the clumps in green.
+    let solid = mix(0.3, 0.6, sss);
+    return sun_light() * warm * back * edge * side * solid * open_sun * mix(0.15, 0.6, golden_hour());
+}
+
 // ---------------------------------------------------------------- terrain
 
 struct VOut {
@@ -1287,6 +1472,13 @@ fn shade_terrain(i: VOut) -> vec4<f32> {
         surf.albedo *= mix(0.45, 1.1, i.ao);
         surf.albedo = mix(surf.albedo, surf.albedo * vec3(1.25, 1.1, 0.7), i.ao * i.ao * 0.5);
     }
+    if (mat == 3u) {
+        // Near the eye the turf under the blades is darker and olive, so the
+        // blades carry the meadow's colour; far off, where no blades are
+        // drawn, the ground keeps it.
+        let near = 1.0 - smoothstep(PLANT_RANGE * 0.6, PLANT_RANGE, distance(i.world, g.camera_pos.xyz));
+        surf.albedo = mix(surf.albedo, surf.albedo * vec3(0.78, 0.70, 0.46), near * smoothstep(0.6, 0.9, n.y));
+    }
     var ao_in = i.ao;
     if (mat == 53u) {
         // Gold trim down the sides and across the top, and a ring on the cloth.
@@ -1306,31 +1498,27 @@ fn shade_terrain(i: VOut) -> vec4<f32> {
     // Translucent materials (leaves most of all) get softer occlusion and a
     // light that wraps past the terminator instead of cutting off hard.
     let ao = mix(mix(0.35, 0.6, surf.sss), 1.0, ao_in);
-    let facing = step(0.0, dot(n, sun));
-    let sh = sun_shadow(i.world, n) * facing;
     let wrap = surf.sss * 0.6;
+    let sn = dot(n, sun);
+    // Faces turned from the sun are in their own shade; skip the shadow map there.
+    var sh = 0.0;
+    if (sn > -wrap * 0.5) {
+        sh = sun_shadow(i.world, n) * smoothstep(-wrap * 0.5, 0.05, sn);
+    }
     let ndl = max((dot(nb, sun) + wrap) / (1.0 + wrap), 0.0);
+    // Whether the spot is in the shade of something else, seen from a little
+    // way towards the sun: lights the rims and the leaves the sun shines through.
+    let open_sun = shadow_tap(i.world + sun * 0.6 + n * 0.1);
 
     let light = sun_light();
-    let sky = 0.5 + 0.5 * nb.y;
-    // Skylight also reaches the undersides of thin layers through them.
-    let under = 0.35 + 0.4 * surf.sss;
-    // Light from the open sky: the dome's colour straight up, bluer in the
-    // shade than the warm sun. Light bounced off the sunlit ground below is warm.
-    var skylight = sky_dome(vec3(0.0, 1.0, 0.0)) * 0.8 + sky_dome(normalize(vec3(-sun.z, 0.02, sun.x))) * 0.3;
-    // The painted golden-hour sky is more saturated than the light it really sheds.
-    skylight = mix(skylight, vec3(dot(skylight, vec3(0.3, 0.5, 0.2))) * vec3(0.95, 0.95, 1.05), golden_hour() * 0.55);
-    // At dusk the shade is lit by the blue-violet sky away from the sun, so
-    // faces turned from it read cool against their warm sunlit rims.
-    skylight *= mix(vec3(1.0), vec3(0.82, 0.88, 1.22), golden_hour() * 0.7);
-    let bounce = light * lin(vec3(0.52, 0.47, 0.36)) * 0.16 * max(sun.y, 0.0);
-    let ambient = (skylight * (sky + (1.0 - sky) * surf.sss * 0.6) + bounce * (1.0 - sky) * under) * ao;
-    // Sunlight scattered through leaves and grass, strongest when looking towards the sun.
-    let through = pow(max(dot(-v, sun), 0.0), 4.0) * 1.6 + 0.35 * max(dot(-n, sun), 0.0) + 0.06;
-    let trans = surf.sss * through * mix(0.25, 1.0, sh) * lin(vec3(0.85, 0.95, 0.45)) * (light / 2.6);
+    let ambient = fill_light(nb, sh, surf.sss) * mix(0.55, 1.0, ao) * ao;
+    let trans = through_light(nb, v, surf.sss, open_sun);
+    let rim = rim_light(nb, v, surf.sss, open_sun);
 
     let lamps = lamp_light(i.world + n * 0.05, nb);
-    var c = surf.albedo * (light * ndl * sh + ambient * mix(0.55, 1.0, ao) + trans * ao + lamps * ao);
+    let key = light * mix(vec3(1.0), vec3(1.06, 0.97, 0.84), golden_hour());
+    var c = surf.albedo * (key * ndl * sh + ambient + trans * ao + lamps * ao);
+    c += rim * ao * mix(surf.albedo, vec3(0.30, 0.22, 0.12), 0.5);
     c += surf.emit * mix(0.25, 1.0, lamp_on());
     c += light * sh * ggx_spec(nb, v, sun, surf.rough, surf.f0);
     // A hint of sky reflected on glossy (wet) surfaces.
@@ -1622,7 +1810,9 @@ fn fs_sky(i: SkyOut) -> @location(0) vec4<f32> {
     let far = g.inv_view_proj * vec4(i.ndc, 0.5, 1.0);
     let dir = normalize(far.xyz / far.w - g.camera_pos.xyz);
     let cl = clouds(dir);
-    var c = mix(sky_color(dir) + sun_disc(dir) + stars(dir), cl.rgb, cl.a);
+    let glow = sun_glow(dir);
+    // The glow shines through the thin cloud right around the sun.
+    var c = mix(sky_color(dir) + sun_disc(dir) + stars(dir), cl.rgb, cl.a) + glow * mix(1.0, 0.6, cl.a);
     let peaks = far_peaks(dir);
     c = mix(c, peaks.rgb, peaks.a) + lamp_glow(dir, 400.0);
     if (g.params.z > 0.5) {
@@ -1725,20 +1915,31 @@ fn fs_post(i: SkyOut) -> @location(0) vec4<f32> {
     let q = i.ndc * 0.75;
     c *= 1.0 - 0.22 * dot(q, q);
     var m = finish(c);
-    // Grade: rich, painterly colour. More saturation, warm highlights and
-    // shadows leaning violet-blue against the warm sun, and a gentle S-curve.
+    // Grade, on display values: rich, painterly colour with warm highlights
+    // and shadows leaning violet-blue against the warm sun.
     let l = dot(m, vec3(0.2126, 0.7152, 0.0722));
-    // Less extra saturation in the highlights, so they roll off rather than clip.
-    m = mix(vec3(l), m, mix(1.18, 1.0, smoothstep(0.55, 0.95, l)));
+    // Extra saturation in the midtones; the highlights roll off rather than clip.
+    let mid = 4.0 * l * (1.0 - l);
+    m = mix(vec3(l), m, 1.0 + 0.08 * mid - 0.12 * smoothstep(0.75, 1.0, l));
     // Painterly greens: yellow-greens pulled towards a deeper, cooler green.
     let green = max(m.g - max(m.r, m.b), 0.0);
     m -= vec3(0.30, 0.22, -0.04) * green;
-    m += vec3(-0.01, -0.012, 0.03) * (1.0 - l) * (1.0 - l);
-    m += vec3(0.03, 0.012, -0.02) * l * l;
-    m = mix(m, m * m * (3.0 - 2.0 * m), 0.35);
+    // Split toning: cool shadows, warm highlights.
+    let shade = (1.0 - l) * (1.0 - l);
+    m += vec3(-0.012, -0.004, 0.035) * shade;
+    m += vec3(0.035, 0.014, -0.022) * l * l;
+    // A gentle S-curve about the middle grey that keeps a slope at black, so
+    // the darks keep their colour instead of crushing.
     m = clamp(m, vec3(0.0), vec3(1.0));
+    m += 0.3 * m * (1.0 - m) * (2.0 * m - 1.0);
+    // The deepest shade lifts to a dusky violet rather than black.
+    m = m * 0.975 + vec3(0.012, 0.010, 0.026);
     // Dither away banding in the sky gradient.
-    m += (hash2(i.clip.xy) - 0.5) / 255.0;
+    m = clamp(m + (hash2(i.clip.xy) - 0.5) / 255.0, vec3(0.0), vec3(1.0));
+    if (g.params.y < 0.5) {
+        // The surface encodes sRGB itself.
+        m = pow(m, vec3(2.2));
+    }
     return vec4(m, 1.0);
 }
 

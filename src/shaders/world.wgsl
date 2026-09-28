@@ -856,10 +856,11 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             wettable = false;
         }
         case 15u, 40u, 41u: { // lupin florets: violet, pink or white, each flower its own shade
-            var lo = vec3(0.28, 0.16, 0.62);
-            var hi = vec3(0.50, 0.36, 0.84);
-            if (mat == 40u) { lo = vec3(0.70, 0.30, 0.50); hi = vec3(0.92, 0.58, 0.74); }
-            if (mat == 41u) { lo = vec3(0.80, 0.78, 0.80); hi = vec3(0.96, 0.95, 0.92); }
+            // Soft, dusty tones as in the reference rather than saturated ones.
+            var lo = vec3(0.30, 0.22, 0.52);
+            var hi = vec3(0.50, 0.42, 0.72);
+            if (mat == 40u) { lo = vec3(0.62, 0.38, 0.52); hi = vec3(0.82, 0.62, 0.72); }
+            if (mat == 41u) { lo = vec3(0.76, 0.74, 0.76); hi = vec3(0.90, 0.88, 0.86); }
             s.albedo = mix(lo, hi, vnoise(q * 40.0));
             s.rough = 0.7;
             s.sss = 0.5;
@@ -1055,7 +1056,7 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             wettable = false;
         }
         case 33u: { // deep purple lupin florets
-            s.albedo = mix(vec3(0.16, 0.06, 0.36), vec3(0.30, 0.13, 0.54), vnoise(q * 40.0));
+            s.albedo = mix(vec3(0.20, 0.13, 0.38), vec3(0.34, 0.24, 0.52), vnoise(q * 40.0));
             s.rough = 0.7;
             s.sss = 0.45;
             wettable = false;
@@ -1093,7 +1094,7 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             // Long narrow fissures between plates of grey-brown bark.
             let plate = smoothstep(0.28, 0.55, ridge);
             let crack = smoothstep(0.55, 0.62, vnoise(vec3(q.x * 9.0, q.y * 7.0, q.z * 9.0))) * plate;
-            var c = mix(vec3(0.10, 0.08, 0.065), mix(vec3(0.25, 0.21, 0.17), vec3(0.33, 0.28, 0.22), vnoise(q * 1.7)), plate);
+            var c = mix(vec3(0.10, 0.08, 0.065), mix(vec3(0.31, 0.27, 0.22), vec3(0.42, 0.37, 0.30), vnoise(q * 1.7)), plate);
             c = mix(c, c * 0.65, crack * d_dm);
             c *= 0.85 + 0.3 * fine;
             // Moss settles on the upper sides of roots and boughs.
@@ -1169,10 +1170,10 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             let joint = min(min(fu, 1.0 - fu) * 0.9, min(fv, 1.0 - fv) * 0.5);
             let mortar = (1.0 - smoothstep(0.01, 0.025, joint)) * d_dm;
             let tint = hash2(vec2(col, row));
-            var c = mix(vec3(0.72, 0.68, 0.60), vec3(0.83, 0.79, 0.70), tint * (1.0 - calm * 0.7)) * (0.9 + 0.14 * fine);
+            var c = mix(vec3(0.80, 0.76, 0.68), vec3(0.89, 0.85, 0.76), tint * (1.0 - calm * 0.7)) * (0.9 + 0.14 * fine);
             // Rain streaks run down from ledges; a little moss on the tops.
             let streak = smoothstep(0.5, 0.9, vnoise(q * vec3(2.5, 0.2, 2.5)));
-            c *= 1.0 - 0.16 * streak - 0.06 * broad;
+            c *= 1.0 - 0.12 * streak - 0.04 * broad;
             let moss = smoothstep(0.62, 0.8, fbm(q * 0.9)) * select(0.15, 0.7, top);
             c = mix(c, vec3(0.38, 0.42, 0.24), moss * 0.5);
             c = mix(c, vec3(0.47, 0.44, 0.39), mortar * 0.7);

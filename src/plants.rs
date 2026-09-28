@@ -156,14 +156,14 @@ fn grass(out: &mut MeshData, rng: &mut Rng, w: IVec3, floor: Vec3, spot: &Spot, 
     // Heights vary in soft patches: ankle- to thigh-high on open ground,
     // knee- to hip-high and lush along verges, chest- to head-high in fields.
     let patch = fbm2(97, w.x as f32 / 9.0, w.z as f32 / 9.0, 2);
-    let open = 0.2 + 0.8 * patch * patch;
+    let open = 0.35 + 0.75 * patch * patch;
     let lush = 0.55 + 0.55 * patch;
     let tall = 1.1 + 0.6 * patch;
     let mut height = open + (lush - open).max(0.0) * spot.verge;
     height += (tall - height) * spot.field;
 
     let thick = spot.meadow.max(spot.verge).max(spot.field);
-    let mut n = 3 + (thick * 1.5 + rng.f() * 0.9).floor() as u32 + (spot.field > 0.5) as u32;
+    let mut n = 4 + (thick * 1.5 + rng.f() * 0.9).floor() as u32 + (spot.field > 0.5) as u32;
     if crowded {
         n = n.saturating_sub(2).max(2);
     }
@@ -193,7 +193,8 @@ fn grass(out: &mut MeshData, rng: &mut Rng, w: IVec3, floor: Vec3, spot: &Spot, 
         };
         // Long blades arc over further, so tall grass droops at the tips.
         let arc = rng.range(0.2, 0.8) + 0.6 * smoothstep(0.4, 1.4, len);
-        let half = (0.017 + 0.015 * len.min(1.4)) * rng.range(0.8, 1.2);
+        // Broad, painterly blades rather than hair-thin ones.
+        let half = (0.026 + 0.02 * len.min(1.4)) * rng.range(0.8, 1.25);
         let pick = rng.f();
         let mat = if pick < dry {
             DRY_GRASS

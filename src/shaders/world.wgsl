@@ -856,10 +856,11 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             wettable = false;
         }
         case 15u, 40u, 41u: { // lupin florets: violet, pink or white, each flower its own shade
-            var lo = vec3(0.28, 0.16, 0.62);
-            var hi = vec3(0.50, 0.36, 0.84);
-            if (mat == 40u) { lo = vec3(0.70, 0.30, 0.50); hi = vec3(0.92, 0.58, 0.74); }
-            if (mat == 41u) { lo = vec3(0.80, 0.78, 0.80); hi = vec3(0.96, 0.95, 0.92); }
+            // Soft, dusty tones as in the reference rather than saturated ones.
+            var lo = vec3(0.30, 0.22, 0.52);
+            var hi = vec3(0.50, 0.42, 0.72);
+            if (mat == 40u) { lo = vec3(0.62, 0.38, 0.52); hi = vec3(0.82, 0.62, 0.72); }
+            if (mat == 41u) { lo = vec3(0.76, 0.74, 0.76); hi = vec3(0.90, 0.88, 0.86); }
             s.albedo = mix(lo, hi, vnoise(q * 40.0));
             s.rough = 0.7;
             s.sss = 0.5;
@@ -1053,14 +1054,14 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             wettable = false;
         }
         case 33u: { // deep purple lupin florets
-            s.albedo = mix(vec3(0.16, 0.06, 0.36), vec3(0.30, 0.13, 0.54), vnoise(q * 40.0));
+            s.albedo = mix(vec3(0.20, 0.13, 0.38), vec3(0.34, 0.24, 0.52), vnoise(q * 40.0));
             s.rough = 0.7;
             s.sss = 0.45;
             wettable = false;
         }
         case 35u: { // boulder: speckled grey granite with hairline cracks and patches of moss on top
             let tone = vnoise(q * 0.35);
-            var c = mix(vec3(0.42, 0.42, 0.43), vec3(0.57, 0.55, 0.51), tone) * (0.85 + 0.25 * fine);
+            var c = mix(vec3(0.46, 0.43, 0.39), vec3(0.61, 0.57, 0.50), tone) * (0.85 + 0.25 * fine);
             // Dark mica and pale feldspar grains.
             let grain = hash3(floor(q * 38.0));
             c *= 1.0 + (0.28 * step(0.9, grain) - 0.3 * step(grain, 0.08)) * d_cm;
@@ -1075,10 +1076,10 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             let ragged = fbm(q * 1.7) - 0.5 + (vnoise(q * 11.0) - 0.5) * 0.35;
             let dry = smoothstep(water_level_at(p.xz), water_level_at(p.xz) + 0.3, p.y);
             // Moss only in patches on the upper faces, so grey stone shows around it.
-            let mossy = smoothstep(0.38, 0.62, vnoise(q * 0.9 + 11.0));
-            let moss_m = smoothstep(0.55, 0.85, n.y + ragged * 0.9) * dry * mossy;
+            let mossy = smoothstep(0.3, 0.7, vnoise(q * 0.9 + 11.0) + ragged * 0.5);
+            let moss_m = smoothstep(0.45, 0.95, n.y + ragged * 0.9) * dry * mossy;
             let tuft = vnoise(q * 23.0);
-            let moss = mix(vec3(0.26, 0.40, 0.10), vec3(0.50, 0.60, 0.20), vnoise(q * 5.0)) * (0.85 + 0.3 * tuft);
+            let moss = mix(vec3(0.28, 0.35, 0.12), vec3(0.46, 0.50, 0.21), vnoise(q * 5.0)) * (0.85 + 0.3 * tuft);
             c = mix(c, moss, moss_m);
             s.albedo = c;
             s.sss = moss_m * 0.6;
@@ -1091,7 +1092,7 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             // Long narrow fissures between plates of grey-brown bark.
             let plate = smoothstep(0.28, 0.55, ridge);
             let crack = smoothstep(0.55, 0.62, vnoise(vec3(q.x * 9.0, q.y * 7.0, q.z * 9.0))) * plate;
-            var c = mix(vec3(0.10, 0.08, 0.065), mix(vec3(0.25, 0.21, 0.17), vec3(0.33, 0.28, 0.22), vnoise(q * 1.7)), plate);
+            var c = mix(vec3(0.10, 0.08, 0.065), mix(vec3(0.31, 0.27, 0.22), vec3(0.42, 0.37, 0.30), vnoise(q * 1.7)), plate);
             c = mix(c, c * 0.65, crack * d_dm);
             c *= 0.85 + 0.3 * fine;
             // Moss settles on the upper sides of roots and boughs.
@@ -1184,6 +1185,26 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.albedo = mix(vec3(0.85, 0.63, 0.24), vec3(0.55, 0.40, 0.18), wear * 0.5);
             s.rough = mix(0.3, 0.55, wear);
             s.f0 = 0.6;
+            wettable = false;
+        }
+        case 56u: { // fence wood: weathered split timber, silvering brown with cracks and lichen
+            // Grain runs along the longest way a face can: up a post, along a rail.
+            let an = abs(n);
+            let along = select(p.y, p.x + p.z, an.y > 0.5);
+            let across = select(p.x + p.z, p.x - p.z, an.y > 0.5);
+            let streak = vnoise(vec3(across * 17.0, along * 1.3, 0.5));
+            let crack = 1.0 - smoothstep(0.03, 0.09, abs(vnoise(vec3(across * 9.0, along * 0.6, 3.1)) - 0.5));
+            let weather = smoothstep(0.3, 0.8, vnoise(q * 0.9) * 0.6 + broad * 0.4);
+            var c = mix(vec3(0.43, 0.31, 0.19), vec3(0.55, 0.50, 0.42), weather * 0.75);
+            c *= 0.82 + 0.3 * streak * d_cm + 0.08 * fine;
+            c *= 1.0 - 0.45 * crack * d_dm;
+            // Pale lichen and a little moss on what faces the sky.
+            let lichen = smoothstep(0.7, 0.85, vnoise(q * 4.1 + 7.0)) * d_dm;
+            c = mix(c, vec3(0.58, 0.60, 0.48), lichen * 0.35);
+            c = mix(c, vec3(0.26, 0.32, 0.12), smoothstep(0.6, 0.95, n.y) * smoothstep(0.55, 0.8, vnoise(q * 2.3)) * 0.4);
+            s.albedo = c;
+            s.rough = 0.9;
+            s.height = streak * 0.006 * d_cm - crack * 0.004 * d_dm;
             wettable = false;
         }
         default: {}

@@ -149,7 +149,7 @@ impl Tree {
         let phase = self.rand(6) * TAU;
         let lean_dir = Vec2::new(lean.x, lean.z).normalize_or_zero();
         // The great oak's crown is many smaller clumps with sky between them.
-        let cr = h * if self.hero.is_some() { 0.19 } else { 0.25 };
+        let cr = h * if self.hero.is_some() { 0.17 } else { 0.25 };
         let mut ends = Vec::new();
         for k in 0..count {
             let hero_bough = self.hero.is_some() && k == 0;
@@ -163,8 +163,8 @@ impl Tree {
             let mut length = h * (0.36 + 0.12 * self.rand(20 + k as u32)) * long;
             let mut rise = 0.25 + 0.4 * self.rand(30 + k as u32);
             if self.hero.is_some() {
-                // The great oak spreads wide and low.
-                length *= 1.1;
+                // The great oak spreads wide and low, its clumps far apart.
+                length *= 1.25;
                 rise *= 0.7;
             }
             if hero_bough {
@@ -179,14 +179,17 @@ impl Tree {
             let ctrl = start + (horiz * rise.cos() * 0.8 + Vec3::Y * rise.sin() * 0.6) * length * 0.55;
             let r_start = rt * (0.62 + 0.15 * self.rand(50 + k as u32));
             let (spine, radii) = bezier(start, ctrl, end, r_start, 0.07, 5);
-            if hero_bough {
-                // Clumps all along the long bough, so it hangs heavy with leaves.
-                for (i, &f) in [0.45f32, 0.72].iter().enumerate() {
+            if self.hero.is_some() {
+                // Clumps along every bough, each a separate rounded mass, so
+                // the crown breaks into many lobes with sky between them.
+                let along: &[f32] = if hero_bough { &[0.45, 0.72] } else { &[0.6] };
+                for (i, &f) in along.iter().enumerate() {
                     let p = spine[(f * 5.0) as usize];
+                    let size = if hero_bough { 0.85 } else { 0.7 };
                     clumps.push(Clump {
                         centre: p + Vec3::Y * cr * 0.35,
-                        radii: Vec3::new(1.05, 0.72, 1.05) * cr * 0.85,
-                        seed: self.seed.wrapping_add(90 + i as u32),
+                        radii: Vec3::new(1.05, 0.72, 1.05) * cr * size,
+                        seed: self.seed.wrapping_add(90 + k as u32 * 4 + i as u32),
                     });
                 }
             }
@@ -234,7 +237,9 @@ impl Tree {
         for i in 0..big {
             let (c, radii) = (clumps[i].centre, clumps[i].radii);
             let away = (c - canopy).normalize_or_zero();
-            for k in 0..2u32 {
+            // The great oak keeps only the upward puff, so sky shows between its clumps.
+            let puffs = if self.hero.is_some() { 1 } else { 2 };
+            for k in (2 - puffs)..2u32 {
                 let a = self.rand(200 + i as u32 * 4 + k) * TAU;
                 let side = Vec3::new(a.cos(), 0.0, a.sin());
                 // One puff bulges out sideways and a little down, the other up.
@@ -343,7 +348,9 @@ impl Tree {
         }
         for (i, c) in s.clumps.iter().enumerate() {
             let puff = c.radii.x < self.height * 0.2;
-            if level > 0 && puff {
+            // Further out keep every other puff, so crowns still break into
+            // lobes rather than reading as balls.
+            if level > 1 && puff || level == 1 && puff && i % 2 == 1 {
                 continue;
             }
             let mesh = ico(if level == 0 && !puff { 1 } else { 0 });
@@ -527,7 +534,7 @@ fn trunk(out: &mut MeshData, l: &Limb, flare: f32, sides: u32, seed: u32) {
         // Above the foot the buttresses carry on up as ridges that twist
         // around the trunk, like the fluted bole of an old oak.
         let up = p.y - base.y;
-        let ridge = 0.07 * (1.0 - f) * (1.0 - smoothstep(4.0, 9.0, up));
+        let ridge = 0.13 * (1.0 - f) * (1.0 - smoothstep(4.0, 9.0, up));
         for k in 0..sides {
             let a = k as f32 / sides as f32 * TAU;
             let lobe = ((a * lobes + phase).cos().max(0.0)).powi(2);

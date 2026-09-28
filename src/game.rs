@@ -207,9 +207,10 @@ impl Game {
         let mut settings = settings;
         // `?work=ms` gives background loading a bigger slice of each frame, so
         // screenshots in slow (software) browsers get the far field in time.
+        // It only ever raises the budget, so it never undoes `?budget=`.
         #[cfg(target_arch = "wasm32")]
         if let Some(ms) = crate::web::url_param("work").and_then(|v| v.parse::<f64>().ok()) {
-            settings.work_budget_ms = ms.clamp(1.0, 500.0);
+            settings.work_budget_ms = settings.work_budget_ms.max(ms.clamp(1.0, 500.0));
         }
         let world = World::new(settings.seed, settings.view_radius);
         #[allow(unused_mut)]

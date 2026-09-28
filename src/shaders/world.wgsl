@@ -1244,7 +1244,8 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             let streak = vnoise(vec3(across * 17.0, along * 1.3, 0.5));
             let crack = 1.0 - smoothstep(0.03, 0.09, abs(vnoise(vec3(across * 9.0, along * 0.6, 3.1)) - 0.5));
             let weather = smoothstep(0.3, 0.8, vnoise(q * 0.9) * 0.6 + broad * 0.4);
-            var c = mix(vec3(0.43, 0.31, 0.19), vec3(0.55, 0.50, 0.42), weather * 0.75);
+            // Mostly silvered grey-brown, with browner wood where the weather reaches less.
+            var c = mix(vec3(0.36, 0.30, 0.24), vec3(0.50, 0.48, 0.45), 0.45 + weather * 0.5);
             c *= 0.82 + 0.3 * streak * d_cm + 0.08 * fine;
             c *= 1.0 - 0.45 * crack * d_dm;
             // Pale lichen and a little moss on what faces the sky.

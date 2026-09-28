@@ -252,7 +252,7 @@ impl PathFence {
                 // Keep a sagging rail out of a hump in the ground.
                 let ground = t.height_at(mid.x, mid.z).0;
                 let mid = Vec3::new(mid.x, mid.y.max(ground + 0.18), mid.z);
-                let half = Vec2::new(0.07 + rr(5) * 0.02, 0.048 + rr(6) * 0.012);
+                let half = Vec2::new(0.055 + rr(5) * 0.015, 0.04 + rr(6) * 0.01);
                 let roll = rr(7) * 0.7;
                 rail(out, pa, mid, half, roll);
                 rail(out, mid, pb, half, roll + rr(8) * 0.2);

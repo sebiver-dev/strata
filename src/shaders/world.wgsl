@@ -818,14 +818,17 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             let edge = min(min(a.x, 1.0 - a.x), min(a.y, 1.0 - a.y));
             let glass = smoothstep(0.08, 0.12, edge);
             let bars = 1.0 - smoothstep(0.02, 0.04, min(abs(a.x - 0.5), abs(a.y - 0.5)));
-            let pane = glass * (1.0 - bars) * step(abs(n.y), 0.5);
+            // Far off, where a window is a pixel or two, the frame and bars blur
+            // into the glow and it burns a little brighter so it still reads.
+            let far = smoothstep(0.03, 0.15, pix);
+            let pane = mix(glass * (1.0 - bars), 0.9, far) * step(abs(n.y), 0.5);
             s.albedo = mix(vec3(0.16, 0.11, 0.07), vec3(0.95, 0.72, 0.42), pane);
             s.rough = mix(0.7, 0.1, pane);
             s.f0 = 0.04;
             // Lit all day but only bright once the light goes; each room its own warmth.
             let room = 0.75 + 0.5 * hash3(floor(p / 2.0));
             let flicker = 0.93 + 0.07 * vnoise(vec3(g.sun_dir.w * 3.0, floor(p.x / 2.0), floor(p.z / 2.0)));
-            s.emit = LAMP_COLOR * pane * (0.6 + 3.4 * lamp_on()) * room * flicker;
+            s.emit = LAMP_COLOR * pane * (0.6 + 3.4 * lamp_on()) * room * flicker * (1.0 + 1.5 * far);
             wettable = false;
         }
         case 22u: { // oak: dark planed timber with fine streaky grain
@@ -1026,10 +1029,10 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             let joint = min(min(fu, 1.0 - fu) * 0.9, min(fv, 1.0 - fv) * 0.5);
             let mortar = (1.0 - smoothstep(0.01, 0.025, joint)) * d_dm;
             let tint = hash2(vec2(col, row));
-            var c = mix(vec3(0.72, 0.68, 0.60), vec3(0.83, 0.79, 0.70), tint * (1.0 - calm * 0.7)) * (0.9 + 0.14 * fine);
+            var c = mix(vec3(0.80, 0.76, 0.68), vec3(0.89, 0.85, 0.76), tint * (1.0 - calm * 0.7)) * (0.9 + 0.14 * fine);
             // Rain streaks run down from ledges; a little moss on the tops.
             let streak = smoothstep(0.5, 0.9, vnoise(q * vec3(2.5, 0.2, 2.5)));
-            c *= 1.0 - 0.16 * streak - 0.06 * broad;
+            c *= 1.0 - 0.12 * streak - 0.04 * broad;
             let moss = smoothstep(0.62, 0.8, fbm(q * 0.9)) * select(0.15, 0.7, top);
             c = mix(c, vec3(0.38, 0.42, 0.24), moss * 0.5);
             c = mix(c, vec3(0.47, 0.44, 0.39), mortar * 0.7);

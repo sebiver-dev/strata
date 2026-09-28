@@ -36,18 +36,20 @@ const PARAPET: f32 = 0.5;
 const MERLON_H: f32 = 1.35;
 /// Merlons repeat this often along the wall.
 const MERLON_PITCH: f32 = 1.5;
-/// Corners of the curtain wall, going round; a tower stands on each.
-const RING: [Vec2; 7] = [
-    Vec2::new(-21.5, 10.0),
-    Vec2::new(0.0, 14.0),
-    Vec2::new(21.5, 10.0),
+/// Corners of the inner curtain wall, going round; a tower stands on each.
+/// The ring is convex but lopsided: longer and lower towards the river.
+const RING: [Vec2; 8] = [
+    Vec2::new(-22.0, 7.0),
+    Vec2::new(-8.0, 14.5),
+    Vec2::new(13.0, 12.0),
+    Vec2::new(21.5, 4.0),
     Vec2::new(21.5, -13.0),
     Vec2::new(12.5, -16.5),
     Vec2::new(3.5, -16.5),
-    Vec2::new(-21.5, -13.0),
+    Vec2::new(-19.5, -15.0),
 ];
 /// The ring edge the gatehouse replaces.
-const GATE_EDGE: usize = 4;
+const GATE_EDGE: usize = 5;
 /// Centre of the gate passage across the castle, and its half width.
 const GATE_X: f32 = 8.0;
 const GATE_HALF: f32 = 1.5;
@@ -66,7 +68,7 @@ const STEP: f32 = 0.5;
 /// The approach outside the gate: half width, and run of each step.
 const APPROACH_HALF: f32 = 2.5;
 const APPROACH_RUN: f32 = 1.0;
-/// The land the castle claims, as local corners (approach steps extra).
+/// The land the inner ward claims, as local corners (approach steps extra).
 const CLAIM_LO: Vec2 = Vec2::new(-25.0, -19.0);
 const CLAIM_HI: Vec2 = Vec2::new(25.0, 18.0);
 /// Terrain inside the walls is cleared up to this height above the floor.
@@ -74,10 +76,17 @@ const COURT_AIR: f32 = 12.0;
 /// The courtyard well: local centre and outer radius.
 const WELL: Vec2 = Vec2::new(12.0, 4.0);
 const WELL_R: f32 = 1.0;
+/// The outer curtain: half its thickness, and its top above the floor.
+const OUTER_HALF: f32 = 0.8;
+const OUTER_TOP: f32 = 4.5;
+/// Cells of the coarse site plan, in metres.
+const CELL: f32 = 2.0;
+/// The rim is where the ground has fallen this far below the floor.
+const RIM_DROP: f32 = 3.0;
 
 /// A round tower as laid out: local centre, radius, where its shaft starts
 /// (0 for the ground, or a height for a turret corbelled out of a wall), where
-/// its shaft ends and how tall its spire is, whether it stands on the curtain
+/// its shaft ends and how tall its spire is, whether it stands on a curtain
 /// wall, how many dormers its spire has, and whether it flies the pennant.
 #[derive(Clone, Copy, Debug)]
 struct TowerSpec {
@@ -104,42 +113,123 @@ const fn spec(x: f32, z: f32, r: f32, top: f32, spire: f32, perimeter: bool) -> 
     }
 }
 
-const TOWERS: [TowerSpec; 13] = [
-    // On the ring, in RING order.
-    spec(-21.5, 10.0, 3.0, 16.0, 16.0, true),
+const TOWERS: [TowerSpec; 17] = [
+    // On the ring, in RING order: no two alike.
+    spec(-22.0, 7.0, 2.8, 19.0, 16.0, true),
     TowerSpec {
         dormers: 3,
-        ..spec(0.0, 14.0, 3.4, 20.0, 18.5, true)
+        ..spec(-8.0, 14.5, 3.2, 23.0, 20.0, true)
     },
-    spec(21.5, 10.0, 3.0, 16.0, 16.0, true),
-    spec(21.5, -13.0, 2.7, 14.0, 13.5, true),
-    spec(12.5, -16.5, 2.5, 14.5, 11.0, true),
-    spec(3.5, -16.5, 2.5, 14.5, 11.0, true),
-    spec(-21.5, -13.0, 2.7, 14.0, 13.5, true),
+    spec(13.0, 12.0, 2.5, 15.0, 14.0, true),
+    spec(21.5, 4.0, 2.2, 13.0, 12.0, true),
+    spec(21.5, -13.0, 2.7, 17.5, 15.0, true),
+    spec(12.5, -16.5, 2.5, 14.5, 13.0, true),
+    spec(3.5, -16.5, 2.5, 16.0, 14.0, true),
+    spec(-19.5, -15.0, 2.9, 21.0, 17.0, true),
     // The great tower, its stair turret, and the tower at the keep's west end.
     TowerSpec {
         dormers: 4,
         pennant: true,
-        ..spec(-4.5, -2.0, 4.3, 35.0, 24.0, false)
+        ..spec(-4.5, -2.0, 4.2, 37.0, 30.0, false)
     },
-    spec(0.0, 1.0, 1.5, 38.0, 7.5, false),
+    spec(0.0, 1.0, 1.5, 40.0, 9.0, false),
     TowerSpec {
         dormers: 2,
-        ..spec(-14.5, -6.5, 3.0, 25.0, 15.0, false)
+        ..spec(-14.5, -6.5, 3.0, 27.0, 18.0, false)
     },
     // Turrets corbelled out of the keep's corners.
     TowerSpec {
         foot: 10.5,
-        ..spec(3.7, -10.7, 1.1, 17.0, 4.8, false)
+        ..spec(3.7, -10.7, 1.1, 17.0, 6.0, false)
     },
     TowerSpec {
         foot: 10.5,
-        ..spec(-13.2, -11.0, 1.1, 17.0, 4.8, false)
+        ..spec(-13.2, -11.0, 1.1, 17.0, 6.0, false)
     },
     TowerSpec {
         foot: 11.0,
-        ..spec(3.7, -2.7, 1.1, 17.5, 4.8, false)
+        ..spec(3.7, -2.7, 1.1, 17.5, 6.0, false)
     },
+    // The east ward: a tall tower at the palace's back corner, a turret on its
+    // front, and a tower out towards the east rim.
+    TowerSpec {
+        dormers: 2,
+        ..spec(37.5, -0.5, 3.2, 29.0, 21.0, false)
+    },
+    TowerSpec {
+        foot: 9.0,
+        ..spec(25.3, 10.3, 1.0, 15.0, 6.0, false)
+    },
+    spec(45.0, 15.0, 2.4, 17.0, 13.0, false),
+];
+
+/// A point on the outer curtain, placed from the rim: which way round the
+/// centre (an angle from local +X towards +Z), how far past the lip (negative
+/// is back from it) and the tower on it: radius, shaft top and spire height,
+/// or none when the radius is 0.
+#[derive(Clone, Copy, Debug)]
+struct Post {
+    angle: f32,
+    off: f32,
+    r: f32,
+    top: f32,
+    spire: f32,
+}
+
+const fn post(angle: f32, off: f32, r: f32, top: f32, spire: f32) -> Post {
+    Post {
+        angle,
+        off,
+        r,
+        top,
+        spire,
+    }
+}
+
+const fn corner(angle: f32, off: f32) -> Post {
+    post(angle, off, 0.0, 0.0, 0.0)
+}
+
+/// The outer curtain: runs of wall along the rim, a little back from the lip
+/// so their footings show on the faces, broken where the falls pour over.
+const CIRCUIT: [&[Post]; 3] = [
+    // Round the back corner, along the long east flank and the front to the
+    // first fall.
+    &[
+        post(-0.69, -3.0, 2.4, 11.0, 12.0),
+        corner(-0.3, -1.5),
+        post(0.1, -1.5, 2.3, 10.0, 11.5),
+        corner(0.33, -1.5),
+        post(0.55, -1.5, 2.6, 12.5, 13.5),
+        corner(0.85, -1.5),
+        post(1.2, -1.5, 1.9, 8.0, 10.0),
+    ],
+    // From the second fall round the river corner.
+    &[
+        post(2.15, -2.5, 2.2, 9.0, 11.0),
+        post(2.5, -2.5, 2.6, 13.0, 14.0),
+        corner(2.8, -1.5),
+    ],
+    // From the river fall along the river face and round the back.
+    &[
+        corner(3.1, -1.5),
+        post(-2.72, -3.0, 2.4, 11.5, 12.5),
+        corner(-2.36, -2.0),
+    ],
+];
+
+/// Towers standing out on the faces, on the ledges below the rim: which way
+/// round the centre, and radius, shaft top (above the floor) and spire height.
+/// Each stands where the rock under it is highest, a little out from the lip.
+const LEDGE_TOWERS: [(f32, f32, f32, f32); 3] = [(1.67, 2.4, 4.0, 13.0), (0.84, 2.2, 5.0, 12.0), (0.1, 2.3, 6.0, 12.0)];
+
+/// Tall banners hung on towers: the tower's centre, which way the banner
+/// faces, the height of its rod and its length. Windows keep clear of them.
+const TOWER_BANNERS: [(Vec2, Vec2, f32, f32); 4] = [
+    (Vec2::new(-8.0, 14.5), Vec2::new(0.0, 1.0), 19.0, 6.0),
+    (Vec2::new(-4.5, -2.0), Vec2::new(0.25, 1.0), 32.0, 7.5),
+    (Vec2::new(-14.5, -6.5), Vec2::new(-0.2, 1.0), 23.0, 5.5),
+    (Vec2::new(37.5, -0.5), Vec2::new(0.3, 1.0), 25.0, 6.5),
 ];
 
 /// A hall under a steep gabled roof: local corners, eave height, whether the
@@ -161,13 +251,21 @@ const KEEP: Hall = Hall {
     pitch: 1.9,
 };
 const CHAPEL: Hall = Hall {
-    lo: Vec2::new(-20.5, 0.5),
-    hi: Vec2::new(-14.0, 7.0),
+    lo: Vec2::new(-20.0, -1.0),
+    hi: Vec2::new(-13.5, 5.5),
     eave: 9.5,
     along_x: false,
     pitch: 1.9,
 };
-const HALLS: [Hall; 2] = [KEEP, CHAPEL];
+/// The palace in the east ward, facing the valley.
+const PALACE: Hall = Hall {
+    lo: Vec2::new(25.0, 0.5),
+    hi: Vec2::new(41.0, 10.5),
+    eave: 12.5,
+    along_x: true,
+    pitch: 1.7,
+};
+const HALLS: [Hall; 3] = [KEEP, CHAPEL, PALACE];
 
 impl Hall {
     fn mid(&self) -> Vec2 {
@@ -218,18 +316,45 @@ struct Tower {
     base: f32,
     /// Highest ground under the tower (absolute metres).
     ground_hi: f32,
+    /// Ground under its centre, where the pale shaft rises from (absolute metres).
+    seat: f32,
 }
 
 impl Tower {
     /// Radius of the spire's eaves.
     fn eave_r(&self) -> f32 {
-        self.s.r + if self.s.foot > 0.0 { 0.45 } else { 0.75 }
+        self.s.r + if self.s.foot > 0.0 { 0.35 } else { 0.5 }
     }
 
     /// Radius of the spire at `h` metres above its eaves.
     fn spire_r(&self, h: f32) -> f32 {
         let u = (h / self.s.spire).clamp(0.0, 1.0);
         self.eave_r() * (1.0 - u).powf(1.3)
+    }
+}
+
+/// A straight run of the outer curtain between two posts.
+#[derive(Clone, Debug)]
+struct Run {
+    a: Vec2,
+    b: Vec2,
+    /// Unit vector across the run, out over the rim.
+    out: Vec2,
+    /// Bottom of its footing (absolute metres).
+    base: f32,
+    /// How far from each end the towers on its posts reach.
+    trim: (f32, f32),
+}
+
+impl Run {
+    /// Distance along the run and across it (positive outwards) of a local point.
+    fn coords(&self, q: Vec2) -> (f32, f32) {
+        let d = (self.b - self.a).normalize();
+        ((q - self.a).dot(d), (q - self.a).dot(self.out))
+    }
+
+    fn len(&self) -> f32 {
+        self.a.distance(self.b)
     }
 }
 
@@ -244,6 +369,8 @@ pub struct Castle {
     /// Lowest ground inside the walls.
     pub ground_lo: f32,
     towers: Vec<Tower>,
+    /// The outer curtain's runs of wall.
+    runs: Vec<Run>,
     /// Bottom of each ring edge's footing (absolute metres).
     wall_base: Vec<f32>,
     /// Bottom of the gatehouse's footing.
@@ -252,6 +379,12 @@ pub struct Castle {
     approach: Vec<(f32, f32)>,
     /// Voxel centres of the lanterns.
     lanterns: Vec<Vec3>,
+    /// A coarse plan of the site in 2 m cells from `grid_lo` (local), each
+    /// holding the height above the floor below which anything of the castle
+    /// may lie in it: a quick way out for the empty air around it.
+    grid_lo: Vec2,
+    grid_w: usize,
+    grid: Vec<f32>,
     lo: Vec3,
     hi: Vec3,
 }
@@ -272,6 +405,23 @@ fn edge_normal(i: usize) -> Vec2 {
     } else {
         -n
     }
+}
+
+/// The part of a convex polygon on the inner side of the line through `a`
+/// whose inward normal is `n`.
+fn clip(poly: &[Vec2], a: Vec2, n: Vec2) -> Vec<Vec2> {
+    let mut out = Vec::new();
+    for (i, &p) in poly.iter().enumerate() {
+        let q = poly[(i + 1) % poly.len()];
+        let (dp, dq) = ((p - a).dot(n), (q - a).dot(n));
+        if dp >= 0.0 {
+            out.push(p);
+        }
+        if (dp >= 0.0) != (dq >= 0.0) {
+            out.push(p + (q - p) * (dp / (dp - dq)));
+        }
+    }
+    out
 }
 
 /// Distance inside the ring's centre line (negative outside).
@@ -311,10 +461,14 @@ impl Castle {
             floor: 0.0,
             ground_lo: 0.0,
             towers: Vec::new(),
+            runs: Vec::new(),
             wall_base: Vec::new(),
             gate_base: 0.0,
             approach: Vec::new(),
             lanterns: Vec::new(),
+            grid_lo: Vec2::ZERO,
+            grid_w: 0,
+            grid: Vec::new(),
             lo: Vec3::ZERO,
             hi: Vec3::ZERO,
         };
@@ -355,17 +509,87 @@ impl Castle {
             }
             (lo, hi)
         };
-        castle.towers = TOWERS
-            .iter()
-            .map(|s| {
-                let (lo, hi) = disc(s.at, s.r);
-                Tower {
-                    s: *s,
-                    base: lo.min(castle.floor) - 1.5,
-                    ground_hi: hi,
+        let floor = castle.floor;
+        let place = |s: TowerSpec| {
+            let (lo, hi) = disc(s.at, s.r);
+            Tower {
+                s,
+                base: lo.min(floor) - 1.5,
+                ground_hi: hi,
+                seat: ground(s.at).max(lo.min(floor) + 1.5),
+            }
+        };
+        castle.towers = TOWERS.iter().map(|s| place(*s)).collect();
+        // The outer curtain: posts found from the rim, the ground sampled
+        // under every run so its footing reaches down the face.
+        let lip = |angle: f32| {
+            let d = Vec2::new(angle.cos(), angle.sin());
+            let mut r = 10.0;
+            while r < 90.0 && ground(d * r) > floor - RIM_DROP {
+                r += 0.25;
+            }
+            d * r
+        };
+        for chain in CIRCUIT {
+            let pts: Vec<Vec2> = chain
+                .iter()
+                .map(|p| {
+                    // Towers on the curtain keep their feet on the top.
+                    let off = if p.r > 0.0 { p.off.min(-p.r - 2.0) } else { p.off };
+                    let q = lip(p.angle);
+                    q + q.normalize() * off
+                })
+                .collect();
+            for (p, &q) in chain.iter().zip(&pts) {
+                if p.r > 0.0 {
+                    castle.towers.push(place(spec(q.x, q.y, p.r, p.top, p.spire, true)));
                 }
-            })
-            .collect();
+            }
+            for k in 1..pts.len() {
+                let (a, b) = (pts[k - 1], pts[k]);
+                if a.distance(b) < 0.5 {
+                    continue;
+                }
+                let d = (b - a).normalize();
+                let mut out = d.perp();
+                if out.dot((a + b) * 0.5) < 0.0 {
+                    out = -out;
+                }
+                let len = a.distance(b);
+                let mut lo = floor;
+                let mut s = 0.0;
+                while s <= len {
+                    for off in [-OUTER_HALF - 0.4, 0.0, OUTER_HALF + 0.4] {
+                        lo = lo.min(ground(a + d * s + out * off));
+                    }
+                    s += 1.0;
+                }
+                castle.runs.push(Run {
+                    a,
+                    b,
+                    out,
+                    base: lo - 1.5,
+                    trim: (chain[k - 1].r, chain[k].r),
+                });
+            }
+        }
+        // Towers out on the ledges: along each one's line, the spot a little
+        // out from the lip where the rock under the whole tower is highest.
+        for (angle, r, top, spire) in LEDGE_TOWERS {
+            let d = Vec2::new(angle.cos(), angle.sin());
+            let rim = lip(angle).length();
+            let mut best = (f32::MIN, rim);
+            let mut k = rim + r * 0.7;
+            while k < rim + 16.0 {
+                let (lo, _) = disc(d * k, r);
+                if lo > best.0 + 0.25 {
+                    best = (lo, k);
+                }
+                k += 0.5;
+            }
+            let q = d * best.1;
+            castle.towers.push(place(spec(q.x, q.y, r, top, spire, true)));
+        }
         castle.wall_base = (0..RING.len())
             .map(|i| {
                 let (a, b) = (RING[i], RING[(i + 1) % RING.len()]);
@@ -407,17 +631,97 @@ impl Castle {
         }
         castle.lanterns = castle.lantern_spots();
         castle.set_bounds();
+        castle.build_grid();
         Some(castle)
+    }
+
+    fn build_grid(&mut self) {
+        let (mut lo, mut hi) = (Vec2::new(CLAIM_LO.x, CLAIM_LO.y - 45.0), CLAIM_HI);
+        for t in &self.towers {
+            lo = lo.min(t.s.at - t.eave_r() - 1.0);
+            hi = hi.max(t.s.at + t.eave_r() + 1.0);
+        }
+        for r in &self.runs {
+            lo = lo.min(r.a.min(r.b) - 2.0);
+            hi = hi.max(r.a.max(r.b) + 2.0);
+        }
+        for h in &HALLS {
+            lo = lo.min(h.lo - 1.0);
+            hi = hi.max(h.hi + 1.0);
+        }
+        let (w, d) = (
+            ((hi.x - lo.x) / CELL).ceil() as usize,
+            ((hi.y - lo.y) / CELL).ceil() as usize,
+        );
+        let m = CELL * 0.75 + 0.5;
+        let rise = self.approach.iter().map(|&(s, _)| s - self.floor).fold(0.0, f32::max);
+        let mut grid = vec![f32::MIN; w * d];
+        for j in 0..d {
+            for i in 0..w {
+                let q = lo + (Vec2::new(i as f32, j as f32) + 0.5) * CELL;
+                let mut top = f32::MIN;
+                for t in &self.towers {
+                    if q.distance(t.s.at) < t.eave_r() + 0.5 + m {
+                        top = top.max(t.s.top + t.s.spire + 1.0);
+                    }
+                }
+                for r in &self.runs {
+                    let (along, across) = r.coords(q);
+                    if along > -m && along < r.len() + m && across.abs() < OUTER_HALF + m {
+                        top = top.max(OUTER_TOP + 1.5);
+                    }
+                }
+                for h in &HALLS {
+                    if h.contains(q, m) {
+                        top = top.max(h.ridge() + 1.0);
+                    }
+                }
+                // The ring, the gatehouse and the courtyard's cleared air.
+                if inward(q) > -WALL_HALF - m {
+                    top = top.max(COURT_AIR.max(GATEHOUSE_TOP + MERLON_H) + 1.0);
+                }
+                if (q.x - GATE_X).abs() < APPROACH_HALF + m && q.y < GATEHOUSE_HI.y + m {
+                    top = top.max(rise + 4.5).max(GATEHOUSE_TOP + MERLON_H + 1.0);
+                }
+                grid[j * w + i] = top;
+            }
+        }
+        self.grid_lo = lo;
+        self.grid_w = w;
+        self.grid = grid;
+    }
+
+    /// Height above the floor below which the castle may have something at a
+    /// local point.
+    fn reach(&self, q: Vec2) -> f32 {
+        let c = ((q - self.grid_lo) / CELL).floor();
+        if c.x < 0.0 || c.y < 0.0 || c.x as usize >= self.grid_w {
+            return f32::MIN;
+        }
+        let i = c.y as usize * self.grid_w + c.x as usize;
+        self.grid.get(i).copied().unwrap_or(f32::MIN)
     }
 
     fn set_bounds(&mut self) {
         let run = self.approach.len() as f32 * APPROACH_RUN;
-        let corners = [
+        let mut corners = vec![
             Vec2::new(CLAIM_LO.x, CLAIM_LO.y - run),
             Vec2::new(CLAIM_HI.x, CLAIM_LO.y - run),
             Vec2::new(CLAIM_LO.x, CLAIM_HI.y),
             Vec2::new(CLAIM_HI.x, CLAIM_HI.y),
         ];
+        for t in &self.towers {
+            let e = t.eave_r() + 1.0;
+            corners.extend([t.s.at - Vec2::splat(e), t.s.at + Vec2::splat(e)]);
+        }
+        for r in &self.runs {
+            for q in [r.a, r.b] {
+                corners.extend([q - Vec2::splat(2.0), q + Vec2::splat(2.0)]);
+            }
+        }
+        for h in &HALLS {
+            corners.extend([h.lo - Vec2::splat(1.0), h.hi + Vec2::splat(1.0)]);
+        }
         let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
         for q in corners {
             let w = self.world(q);
@@ -430,6 +734,9 @@ impl Castle {
         }
         for &b in &self.wall_base {
             bottom = bottom.min(b);
+        }
+        for r in &self.runs {
+            bottom = bottom.min(r.base);
         }
         for &(s, g) in &self.approach {
             bottom = bottom.min(g.min(s) - 1.5);
@@ -530,6 +837,9 @@ impl Castle {
     pub fn block(&self, p: Vec3, ground: f32) -> Option<Block> {
         let q = self.local(p.x, p.z);
         let dy = p.y - self.floor;
+        if dy > self.reach(q) {
+            return None;
+        }
         let solid_from = |bottom: f32| (p.y >= bottom.min(ground - 1.0)).then_some(BUILT);
         if dy > -1.0 && dy < 4.0 && self.lanterns.iter().any(|&v| in_voxel(p, v)) {
             return Some(LANTERN);
@@ -539,16 +849,26 @@ impl Castle {
             if d > t.eave_r() + 0.5 {
                 continue;
             }
+            // Ground towers stand on the rock; only what rises out of it collides.
             let bottom = if t.s.foot > 0.0 {
                 self.floor + t.s.foot - 2.0
             } else {
-                t.base
+                t.base.max(ground - 1.0)
             };
             if d < t.s.r && p.y >= bottom && dy < t.s.top {
                 return Some(BUILT);
             }
             if dy >= t.s.top && d < t.spire_r(dy - t.s.top).max(0.3) && dy < t.s.top + t.s.spire {
                 return Some(BUILT);
+            }
+        }
+        for r in &self.runs {
+            let (along, across) = r.coords(q);
+            if along > -0.3 && along < r.len() + 0.3 && across.abs() < OUTER_HALF {
+                let bottom = r.base.max(ground - 1.0);
+                if p.y >= bottom && dy < OUTER_TOP + 1.2 {
+                    return Some(BUILT);
+                }
             }
         }
         for h in &HALLS {
@@ -599,7 +919,10 @@ impl Castle {
                 return Some(BUILT);
             }
         }
-        if q.distance(WELL) < WELL_R + 0.1 && dy < 0.9 {
+        // The well, and room under its little roof, so no one stands with
+        // their head in it.
+        let w = q - WELL;
+        if (w.length() < WELL_R + 0.1 && dy < 0.9) || (w.x.abs() < 1.1 && w.y.abs() < 1.0 && dy < 3.2) {
             return Some(BUILT);
         }
         (dy < COURT_AIR).then_some(AIR)
@@ -619,6 +942,7 @@ impl Castle {
 
     fn build(&self, out: &mut MeshData, near: bool) {
         self.walls(out, near);
+        self.circuit(out, near);
         self.gatehouse(out, near);
         for t in &self.towers {
             self.tower(out, t, near);
@@ -627,6 +951,7 @@ impl Castle {
             self.hall(out, h, near);
         }
         self.keep_extras(out, near);
+        self.palace_extras(out, near);
         self.chapel_extras(out, near);
         self.banners(out, near);
         if near {
@@ -649,6 +974,13 @@ impl Castle {
         }
         let e = inward(q);
         if e > -WALL_HALF - 0.3 && e < WALL_HALF + 0.3 && dy < WALK + MERLON_H + 0.5 {
+            return true;
+        }
+        let behind_run = self.runs.iter().any(|r| {
+            let (along, across) = r.coords(q);
+            along > -0.5 && along < r.len() + 0.5 && across.abs() < OUTER_HALF + 0.4
+        });
+        if behind_run && dy < OUTER_TOP + 1.7 {
             return true;
         }
         let g = q.x > GATEHOUSE_LO.x - 0.3
@@ -892,15 +1224,19 @@ impl Castle {
                 false,
             );
         } else {
+            // A coursed plinth a little above the lowest rock under the tower;
+            // out on the faces the pale shaft rises from the ledge it stands on.
+            // Out on a ledge the footing is a battered spur down to the rock.
             let plinth = if s.perimeter {
-                (t.ground_hi + 1.0).max(t.base + 2.0).min(f + 2.0)
+                (t.seat + 1.0).min(f + 2.0)
             } else {
                 f + 0.6
             };
+            let batter = (0.45 + 0.12 * (plinth - t.base - 2.5).max(0.0)).min(r);
             lathe(
                 out,
                 c,
-                &[(t.base, r + 0.45), (plinth - 0.4, r + 0.3), (plinth, r + 0.02)],
+                &[(t.base, r + batter), (plinth - 0.4, r + 0.3), (plinth, r + 0.02)],
                 segs,
                 MASONRY,
                 false,
@@ -933,7 +1269,12 @@ impl Castle {
         let e0 = top + 0.15;
         lathe(out, c, &[(top, ring_r), (e0, re)], segs, OAK, false);
         let mut prof = vec![(e0, re)];
-        for u in [0.03f32, 0.08, 0.15, 0.24, 0.35, 0.48, 0.62, 0.76, 0.88, 0.96, 1.0] {
+        let steps: &[f32] = if near {
+            &[0.03, 0.08, 0.15, 0.24, 0.35, 0.48, 0.62, 0.76, 0.88, 0.96, 1.0]
+        } else {
+            &[0.06, 0.18, 0.35, 0.55, 0.78, 1.0]
+        };
+        for &u in steps {
             prof.push((e0 + u * s.spire, re * (1.0 - u).powf(1.3)));
         }
         lathe(out, c, &prof, segs, ROOF, true);
@@ -984,7 +1325,11 @@ impl Castle {
         // Pointed windows in rows round the shaft, each row turned a little.
         let n = ((r * 1.3).round() as i32).clamp(2, 6);
         let (ww, wh, gap) = if big { (0.42, 1.6, 4.0) } else { (0.3, 1.1, 3.4) };
-        let mut dy = if s.foot > 0.0 { s.foot + 1.0 } else { 4.0 };
+        let mut dy = if s.foot > 0.0 {
+            s.foot + 1.0
+        } else {
+            4.0f32.max(t.seat - f + 3.0)
+        };
         let mut row = 0;
         let outward = s.at.normalize_or_zero();
         while dy + wh + ww * 1.2 < s.top - 1.9 {
@@ -993,6 +1338,16 @@ impl Castle {
                 let dl = Vec2::new(a.cos(), a.sin());
                 let probe = s.at + dl * (r + 0.4);
                 if self.buried(probe, dy + wh * 0.5, own) || self.buried(probe, dy + wh + ww, own) {
+                    continue;
+                }
+                // Not behind a banner.
+                let bannered = TOWER_BANNERS.iter().any(|&(at, dir, top, len)| {
+                    at == s.at
+                        && dl.dot(dir.normalize()) > 0.7
+                        && dy < top + 0.3
+                        && dy + wh + ww * 1.8 > top - len - 1.0
+                });
+                if bannered {
                     continue;
                 }
                 // Low down, ringside towers only look out, over ground they clear.
@@ -1097,6 +1452,9 @@ impl Castle {
                 for k in 0..count {
                     let off = (k as f32 - (count - 1) as f32 * 0.5) * 3.0;
                     for &dy in rows {
+                        if dy + wh + ww * 1.8 > h.eave - 0.4 {
+                            continue;
+                        }
                         let q = mid + dir * s * half_depth + along * off;
                         let probe = q + dir * s * 0.4;
                         if self.buried(probe, dy + wh * 0.5, None) || self.buried(probe, dy + wh, None) {
@@ -1271,28 +1629,126 @@ impl Castle {
                 banner(out, top, self.dir(d), self.dir(n), 0.65, 4.2, near);
             }
         }
-        // Tall ones on the front tower, the great tower and the gatehouse.
-        let hang_round = |out: &mut MeshData, ti: usize, dy: f32, len: f32, dir: Vec2| {
-            let t = &self.towers[ti];
+        // Tall ones down the faces of towers, clear of their windows.
+        for &(at, dir, top, len) in &TOWER_BANNERS {
+            let Some(t) = self.towers.iter().find(|t| t.s.at == at) else {
+                continue;
+            };
             let dl = dir.normalize();
-            let q = t.s.at + dl * (t.s.r + 0.12);
+            let q = at + dl * (t.s.r + 0.12);
             let n3 = self.dir(dl);
             let t3 = Vec3::new(-n3.z, 0.0, n3.x);
-            banner(out, self.pt(q, dy), t3, n3, 0.7, len, near);
-        };
-        hang_round(out, 1, 17.0, 6.5, Vec2::Y);
-        hang_round(out, 7, 31.0, 7.5, Vec2::new(0.25, 1.0));
-        hang_round(out, 9, 21.5, 5.5, Vec2::new(-0.2, 1.0));
-        for x in [GATE_X - 3.2, GATE_X + 3.2] {
-            let q = Vec2::new(x, GATEHOUSE_LO.y - 0.12);
-            banner(
+            banner(out, self.pt(q, top), t3, n3, 0.7, len, near);
+        }
+        // One over the gate arch, between the gate towers.
+        let q = Vec2::new(GATE_X, GATEHOUSE_LO.y - 0.12);
+        banner(
+            out,
+            self.pt(q, GATEHOUSE_TOP - 0.7),
+            self.dir(Vec2::X),
+            self.dir(-Vec2::Y),
+            0.6,
+            3.6,
+            near,
+        );
+    }
+
+    /// The outer curtain: a coursed footing reaching down to the rock, the
+    /// pale wall, a string course, and merlons along the outer edge.
+    fn circuit(&self, out: &mut MeshData, near: bool) {
+        let f = self.floor;
+        for r in &self.runs {
+            let d = (r.b - r.a).normalize();
+            let len = r.len();
+            let along = self.dir(d);
+            let axes = [along, Vec3::Y, along.cross(Vec3::Y)];
+            let body = |out: &mut MeshData, q: Vec2, half_len: f32, y0: f32, y1: f32, half_t: f32| {
+                let w = self.world(q);
+                let mat = if y1 <= f + 0.7 { MASONRY } else { ASHLAR };
+                soft_box(
+                    out,
+                    Vec3::new(w.x, (y0 + y1) * 0.5, w.y),
+                    axes,
+                    Vec3::new(half_len, (y1 - y0) * 0.5, half_t),
+                    mat,
+                );
+            };
+            let mid = (r.a + r.b) * 0.5;
+            body(out, mid, len * 0.5 + 0.2, r.base, f + 0.6, OUTER_HALF + 0.15);
+            body(out, mid, len * 0.5, f + 0.5, f + OUTER_TOP, OUTER_HALF);
+            body(
                 out,
-                self.pt(q, GATEHOUSE_TOP - 0.7),
-                self.dir(Vec2::X),
-                self.dir(-Vec2::Y),
-                0.6,
-                4.0,
-                near,
+                mid + r.out * 0.05,
+                len * 0.5,
+                f + OUTER_TOP - 0.45,
+                f + OUTER_TOP - 0.2,
+                OUTER_HALF + 0.12,
+            );
+            // Merlons along the outer edge, clear of the towers at the ends.
+            let (ra, rb) = (r.trim.0 + 0.4, r.trim.1 + 0.4);
+            let span = len - ra - rb;
+            let count = if near {
+                (span / MERLON_PITCH).floor().max(0.0) as i32
+            } else {
+                0
+            };
+            let start = ra + (span - (count - 1) as f32 * MERLON_PITCH) * 0.5;
+            for k in 0..count {
+                let q = r.a + d * (start + k as f32 * MERLON_PITCH) + r.out * (OUTER_HALF - PARAPET * 0.5);
+                body(
+                    out,
+                    q,
+                    0.42,
+                    f + OUTER_TOP - 0.05,
+                    f + OUTER_TOP + MERLON_H - 0.15,
+                    PARAPET * 0.5,
+                );
+            }
+            if near {
+                // A low parapet between the merlons.
+                let q = mid + r.out * (OUTER_HALF - PARAPET * 0.5);
+                body(
+                    out,
+                    q,
+                    len * 0.5,
+                    f + OUTER_TOP - 0.05,
+                    f + OUTER_TOP + 0.4,
+                    PARAPET * 0.5,
+                );
+            }
+        }
+    }
+
+    /// The palace's dormers and chimneys.
+    fn palace_extras(&self, out: &mut MeshData, near: bool) {
+        let h = &PALACE;
+        let f = self.floor;
+        let (half_w, _) = h.halves();
+        let mid = h.mid();
+        for x in [28.5f32, 32.0, 35.5] {
+            let q = Vec2::new(x, mid.y + half_w - 1.3);
+            let foot = self.pt(q, h.eave + 1.3 * h.pitch + 0.05);
+            dormer(out, foot, self.dir(Vec2::Y), 0.6, 1.5, 2.2, near);
+        }
+        for (x, z) in [(27.0f32, 3.0f32), (33.8, 3.2)] {
+            let q = Vec2::new(x, z);
+            let y0 = f + h.roof_at(q) - 0.6;
+            let y1 = f + h.ridge() + 1.6;
+            self.lbox(
+                out,
+                q - Vec2::new(0.45, 0.35),
+                q + Vec2::new(0.45, 0.35),
+                y0,
+                y1,
+                ASHLAR,
+            );
+            self.lbox(
+                out,
+                q - Vec2::new(0.6, 0.5),
+                q + Vec2::new(0.6, 0.5),
+                y1,
+                y1 + 0.2,
+                ASHLAR,
             );
         }
     }
@@ -1300,8 +1756,34 @@ impl Castle {
     /// Courtyard paving, the wall stair and the well.
     fn courtyard(&self, out: &mut MeshData) {
         let f = self.floor;
-        let pts: Vec<Vec3> = RING.iter().map(|&q| self.pt(q, 0.0)).collect();
-        panel(out, &pts, MASONRY);
+        // Paved in 4 m squares clipped to the ring, so each piece goes to the
+        // chunk it lies in and the floor streams in with the walls around it.
+        let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+        for q in RING {
+            lo = lo.min(q);
+            hi = hi.max(q);
+        }
+        let mut z = lo.y;
+        while z < hi.y {
+            let mut x = lo.x;
+            while x < hi.x {
+                let mut poly = vec![
+                    Vec2::new(x, z),
+                    Vec2::new(x + 4.0, z),
+                    Vec2::new(x + 4.0, z + 4.0),
+                    Vec2::new(x, z + 4.0),
+                ];
+                for (i, &a) in RING.iter().enumerate() {
+                    poly = clip(&poly, a, edge_normal(i));
+                }
+                if poly.len() >= 3 {
+                    let pts: Vec<Vec3> = poly.iter().map(|&q| self.pt(q, 0.0)).collect();
+                    panel(out, &pts, MASONRY);
+                }
+                x += 4.0;
+            }
+            z += 4.0;
+        }
         // The stair: solid steps against the east wall, rising to the walk.
         let steps = (WALK / STEP) as i32;
         for k in 0..steps {
@@ -1577,10 +2059,33 @@ fn banner(out: &mut MeshData, top: Vec3, t: Vec3, n: Vec3, w: f32, len: f32, nea
         0.05,
         GILT,
     );
-    // A gilt lozenge on the field.
-    let e = top + down * (len * 0.42) + n * 0.02;
-    let (a, b) = (w * 0.45, w * 0.7);
+    // The device, standing proud of the cloth: a gilt lozenge under a crown.
+    let o = n * 0.05;
+    let e = top + down * (len * 0.55) + o;
+    let (a, b) = (w * 0.55, w * 0.85);
     panel(out, &[e - t * a, e + down * b, e + t * a, e - down * b], GILT);
+    let c = e - down * (b + w * 0.25);
+    let (band, hw) = (w * 0.2, w * 0.5);
+    panel(
+        out,
+        &[
+            c - t * hw,
+            c + t * hw,
+            c + t * hw - down * band,
+            c - t * hw - down * band,
+        ],
+        GILT,
+    );
+    for k in [-1.0f32, 0.0, 1.0] {
+        let x = t * (k * w * 0.36);
+        let tip = if k == 0.0 { 0.5 } else { 0.38 };
+        let b0 = c - down * band + x;
+        panel(
+            out,
+            &[b0 - t * (w * 0.13), b0 + t * (w * 0.13), b0 - down * (w * tip)],
+            GILT,
+        );
+    }
     if near {
         // Gilt edging down the sides and round the point.
         let o = n * 0.02;
@@ -1670,7 +2175,7 @@ mod tests {
             assert!(parapet, "no parapet on wall {i}");
         }
         // Towers and the keep are solid.
-        assert!(solid(at(&t, &c, TOWERS[7].at, 20.0)));
+        assert!(solid(at(&t, &c, TOWERS[8].at, 20.0)));
         assert!(solid(at(&t, &c, KEEP.mid(), 5.0)));
     }
 
@@ -1705,7 +2210,7 @@ mod tests {
             assert!(!solid(at(&t, &c, Vec2::new(x, z), top + 1.75)));
         }
         // Off the top step, onto the walk along the east wall.
-        let walk = Vec2::new(RING[2].x - 0.25, 2.0);
+        let walk = Vec2::new(RING[3].x - 0.25, -5.0);
         assert!(solid(at(&t, &c, walk, WALK - 0.25)));
         assert!(!solid(at(&t, &c, walk, WALK + 0.25)));
         assert!(!solid(at(&t, &c, walk, WALK + 1.75)));
@@ -1724,11 +2229,88 @@ mod tests {
     }
 
     #[test]
-    fn spires_are_tall_and_below_the_sky() {
+    fn spires_are_needles_and_below_the_sky() {
         let (_, c) = castle();
         assert!(c.tip() < crate::terrain::WORLD_CHUNKS_Y as f32 * 16.0 - 2.0);
-        for s in TOWERS {
-            assert!(s.spire >= 2.0 * 2.0 * s.r, "{s:?}");
+        for t in &c.towers {
+            assert!(t.s.spire >= 4.5 * t.s.r, "{:?}", t.s);
+        }
+        // The great tower is the tallest, and the others are of many heights.
+        let tip = |t: &Tower| t.s.top + t.s.spire;
+        let great = c.towers.iter().find(|t| t.s.pennant).expect("great tower");
+        assert!(c.towers.iter().all(|t| t.s.pennant || tip(t) < tip(great) - 10.0));
+        let mut tips: Vec<i32> = c.towers.iter().map(|t| tip(t).round() as i32).collect();
+        tips.sort();
+        tips.dedup();
+        assert!(tips.len() * 3 >= c.towers.len() * 2, "{tips:?}");
+    }
+
+    #[test]
+    fn it_spreads_along_the_crag_and_steps_down_its_faces() {
+        let (t, c) = castle();
+        // Wider than the inner ward alone, and not mirror-symmetric.
+        let xs = c.towers.iter().map(|t| t.s.at.x);
+        let (lo, hi) = xs.fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)));
+        assert!(hi - lo > 75.0, "spans {lo}..{hi}");
+        assert!((hi + lo).abs() > 10.0);
+        // Some towers stand down on ledges below the rim, on the rock.
+        let low = c.towers.iter().filter(|t| t.seat < c.floor - 8.0).count();
+        assert!(low >= 2, "{low} towers below the rim");
+        // The outer curtain runs along the rim: just inside the lip.
+        for r in &c.runs {
+            let m = c.world((r.a + r.b) * 0.5);
+            assert!((t.height_at(m.x, m.y).0 - c.floor).abs() < 2.5);
+            let o = c.world((r.a + r.b) * 0.5 + r.out * 6.5);
+            assert!(
+                t.height_at(o.x, o.y).0 < c.floor - RIM_DROP,
+                "run at {} not on the rim",
+                r.a
+            );
+        }
+    }
+
+    #[test]
+    fn the_falls_pour_clear_of_the_castle() {
+        let (t, c) = castle();
+        for f in &vista::CLIFF_FALLS {
+            let d = f.out();
+            for along in [-2.5f32, -1.5, -0.5, 0.5, 1.5] {
+                for side in [-1.0f32, 0.0, 1.0] {
+                    let w = f.lip() + d * along + d.perp() * side * f.half_w;
+                    let g = t.height_at(w.x, w.y).0;
+                    let mut y = g + 0.25;
+                    while y < c.floor + 2.0 {
+                        let p = Vec3::new(w.x, y, w.y);
+                        assert!(!solid(c.block(p, g)), "castle in the fall at {p}");
+                        y += 0.5;
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_east_ward_is_open_to_walk() {
+        let (t, c) = castle();
+        for q in [
+            Vec2::new(30.0, -10.0),
+            Vec2::new(30.0, -22.0),
+            Vec2::new(45.0, 5.0),
+            Vec2::new(24.0, -20.0),
+        ] {
+            let w = c.world(q);
+            let g = t.height_at(w.x, w.y).0;
+            for dy in [0.25, 0.75, 1.25, 1.75] {
+                let p = Vec3::new(w.x, g + dy, w.y);
+                assert!(!solid(c.block(p, g)), "blocked at {q} {dy}");
+            }
+        }
+        // The palace and the outer curtain are solid.
+        assert!(solid(at(&t, &c, PALACE.mid(), 5.0)));
+        for r in &c.runs {
+            let m = c.world((r.a + r.b) * 0.5);
+            let g = t.height_at(m.x, m.y).0;
+            assert!(solid(c.block(Vec3::new(m.x, g + 1.0, m.y), g)), "run at {} open", r.a);
         }
     }
 
@@ -1749,6 +2331,18 @@ mod tests {
             let m = c.world((RING[i] + RING[(i + 1) % RING.len()]) * 0.5);
             assert!(c.wall_base[i] < t.height_at(m.x, m.y).0);
         }
+        // The outer curtain's footing reaches below the ground all along it.
+        for r in &c.runs {
+            let mut s = 0.0;
+            while s <= r.len() {
+                let q = r.a + (r.b - r.a) * (s / r.len());
+                for off in [-OUTER_HALF, 0.0, OUTER_HALF] {
+                    let w = c.world(q + r.out * off);
+                    assert!(r.base < t.height_at(w.x, w.y).0, "run at {q}");
+                }
+                s += 0.5;
+            }
+        }
     }
 
     #[test]
@@ -1759,8 +2353,8 @@ mod tests {
         let mut far = MeshData::default();
         c.far(&mut far);
         let (nt, ft) = (near.indices.len() / 3, far.indices.len() / 3);
-        assert!(nt < 45_000, "near model has {nt} triangles");
-        assert!(ft < 12_000 && ft * 2 < nt, "far model has {ft} triangles");
+        assert!(nt < 66_000, "near model has {nt} triangles");
+        assert!(ft < 18_000 && ft * 3 < nt, "far model has {ft} triangles");
         let top = |m: &MeshData| m.vertices.iter().map(|v| v.pos[1]).fold(f32::MIN, f32::max);
         assert!((top(&near) - top(&far)).abs() < 0.5);
         assert!(top(&near) <= c.tip() + 0.5);

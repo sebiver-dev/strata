@@ -249,13 +249,15 @@ fn day_dome(dir: vec3<f32>) -> vec3<f32> {
     let golden = golden_hour();
     if (golden > 0.0) {
         let side = 0.5 + 0.5 * dot(normalize(vec2(dir.x, dir.z) + 1e-5), normalize(sun.xz + 1e-5));
-        let zenith = vec3(0.07, 0.08, 0.26);
-        let middle = mix(vec3(0.30, 0.20, 0.45), vec3(0.55, 0.30, 0.32), side);
+        let zenith = vec3(0.06, 0.08, 0.28);
+        let middle = mix(vec3(0.20, 0.19, 0.44), vec3(0.52, 0.30, 0.30), side * side);
         let horizon = mix(vec3(0.60, 0.30, 0.30), vec3(1.25, 0.52, 0.16), side * side);
         var p = mix(horizon, middle, smoothstep(0.0, 0.25, y));
         p = mix(p, zenith, smoothstep(0.22, 0.8, y));
-        // The glow around the low sun.
-        p += vec3(1.6, 0.75, 0.22) * pow(max(mu, 0.0), 16.0) + vec3(0.45, 0.2, 0.06) * pow(max(mu, 0.0), 4.0);
+        // The glow around the low sun: warm and wide, but held below white so
+        // the land and clouds in front of it keep their shapes.
+        let m1 = max(mu, 0.0);
+        p += vec3(0.95, 0.52, 0.16) * pow(m1, 60.0) + vec3(0.38, 0.17, 0.05) * pow(m1, 8.0);
         c = mix(c, p, golden);
     }
     return c;
@@ -278,41 +280,72 @@ fn fbm2(p: vec2<f32>) -> f32 {
     return f;
 }
 
-// A layer of drifting cumulus and streaks, lit by the sun: warm gold and pink
-// where the light passes through them, violet-grey underneath. Returns the
-// cloud colour and coverage.
+// Cloud density of the upper deck at `uv` on the cloud plane: broad billows
+// bent by a slow warp, so they read as painted masses rather than noise.
+fn deck_shape(uv: vec2<f32>) -> f32 {
+    let warp = vec2(vnoise2(uv * 0.55 + 1.3), vnoise2(uv * 0.55 + 7.7)) - 0.5;
+    return fbm2(uv + warp * 1.6);
+}
+
+// Painted sunset clouds in two layers: a deck of billows across the upper sky
+// and long banks lying low along the horizon behind the peaks. Their edges
+// towards the sun catch gold, pink further round the sky; their bodies and
+// undersides fall into violet-grey. Returns the cloud colour and coverage.
 fn clouds(dir: vec3<f32>) -> vec4<f32> {
-    if (dir.y < 0.005) {
+    if (dir.y < -0.01) {
         return vec4(0.0);
     }
-    // Where the ray meets a cloud deck far overhead; the horizon compresses.
-    let uv = dir.xz / (dir.y + 0.06) * 1.6 + vec2(g.sun_dir.w * 0.004, g.sun_dir.w * 0.0015);
-    let stretch = vec2(uv.x * 0.7 + uv.y * 0.3, uv.y * 1.6 - uv.x * 0.2);
-    let shape = fbm2(stretch * 1.3);
-    let detail = fbm2(stretch * 4.5 + 7.0);
-    let dens = smoothstep(0.38, 0.66, shape * 0.8 + detail * 0.3);
-    if (dens <= 0.0) {
-        return vec4(0.0);
-    }
-    // Thickness towards the sun: denser behind means darker under here.
+    let y = max(dir.y, 0.0);
     let sun = normalize(g.sun_dir.xyz);
-    let ahead = fbm2(stretch * 1.3 + sun.xz * 0.35);
-    let thick = smoothstep(0.4, 0.85, ahead);
     let mu = dot(dir, sun);
-    let light = sun_light();
+    let t = g.sun_dir.w;
     let golden = golden_hour();
-    let lit = light * mix(vec3(1.0, 0.95, 0.9), vec3(1.0, 0.42, 0.16), golden)
-        * (0.26 + 0.8 * hg(mu, 0.55)) * mix(1.0, 0.3, thick);
-    // The shaded bodies take the colour of the sky around them, greyed.
-    let shade = mix(sky_dome_base(vec3(0.0, 1.0, 0.0)) * 0.9, vec3(0.20, 0.13, 0.24), golden);
-    // Edges glow where they are thin; the silver lining around the sun.
-    let edge = (1.0 - dens) * pow(max(mu, 0.0), 6.0) * 1.5;
-    var c = shade + lit * (0.55 + edge);
-    // Clouds near the horizon fade into the haze.
-    let fade = smoothstep(0.005, 0.12, dir.y);
     let night = g.sky.x;
+    let toward = pow(max(mu, 0.0), 3.0);
+    // Sunlit colour: gold near the sun, rose and salmon further round.
+    let gold = mix(vec3(0.85, 0.25, 0.24), vec3(1.35, 0.46, 0.13), toward);
+    let lit_col = mix(sun_light() * 0.42, gold, golden);
+    // Shade: violet-grey, lighter and pinker low down where the haze is.
+    let under = mix(vec3(0.20, 0.15, 0.27), vec3(0.42, 0.28, 0.36), 1.0 - smoothstep(0.02, 0.3, y));
+    let shade_col = mix(sky_dome_base(vec3(0.0, 1.0, 0.0)) * 0.9, under, golden);
+
+    // The upper deck, on a plane far overhead; towards the horizon it compresses.
+    let uv = dir.xz / (y + 0.12) * 0.75 + vec2(t * 0.003, t * 0.001);
+    let stretch = vec2(uv.x * 0.8 + uv.y * 0.35, uv.y * 1.5 - uv.x * 0.25);
+    // Billowed edges from one finer octave, and broad gaps of open sky.
+    let extra = (vnoise2(stretch * 6.0 + 2.0) - 0.5) * 0.12 + (smoothstep(0.3, 0.7, vnoise2(uv * 0.22 + 4.0)) - 0.5) * 0.12;
+    let shape = deck_shape(stretch) + extra;
+    let deck_cover = smoothstep(0.06, 0.2, y) * (1.0 - 0.35 * smoothstep(0.5, 0.9, y));
+    var dens = smoothstep(0.52, 0.6, shape) * deck_cover;
+    // Which side of the cloud faces the sun: density falls away towards it.
+    let sun_uv = normalize(sun.xz + 1e-5);
+    let ahead = deck_shape(stretch + vec2(sun_uv.x * 0.8 + sun_uv.y * 0.35, sun_uv.y * 1.5 - sun_uv.x * 0.25) * 0.09) + extra;
+    var lit = clamp(0.3 + (shape - ahead) * 7.0, 0.0, 1.0);
+    // Thin edges glow all round, and the whole deck is brighter near the sun.
+    lit = max(lit, (1.0 - smoothstep(0.52, 0.58, shape)) * 0.7);
+    lit = clamp(lit * mix(0.7, 1.4, toward), 0.0, 1.0);
+
+    // Horizon banks: long, flat and layered, stretched along the skyline.
+    let az = atan2(dir.z, dir.x);
+    let band = vec2(az * 5.0 + t * 0.002, y * 38.0);
+    let bank_shape = fbm2(band + vec2(vnoise2(vec2(az * 2.0, 3.0)) * 2.0, 0.0));
+    let bank_cover = smoothstep(-0.01, 0.02, y) * (1.0 - smoothstep(0.07, 0.16, y));
+    let bank = smoothstep(0.46, 0.62, bank_shape) * bank_cover;
+    // Their tops catch the light, their bottoms sit in the haze.
+    let bank_top = clamp(0.35 + (bank_shape - fbm2(band - vec2(0.0, 0.5))) * 4.0, 0.0, 1.0);
+    let bank_lit = clamp(bank_top * mix(0.5, 1.4, toward), 0.0, 1.0);
+
+    let a = max(dens, bank);
+    if (a <= 0.001) {
+        return vec4(0.0);
+    }
+    let k = bank / max(dens + bank, 1e-4);
+    let l = mix(lit, bank_lit, k);
+    var c = mix(shade_col, lit_col * (0.7 + 0.5 * l), smoothstep(0.1, 0.9, l));
+    // Near the sun the thin cloud is shot through with light.
+    c += gold * golden * pow(max(mu, 0.0), 24.0) * (1.0 - a) * 1.5;
     c = mix(c, vec3(0.012, 0.016, 0.03), night);
-    return vec4(c, dens * fade * mix(0.9, 0.5, night));
+    return vec4(c, a * mix(0.92, 0.5, night));
 }
 
 fn sky_color(dir: vec3<f32>) -> vec3<f32> {
@@ -325,7 +358,7 @@ fn sky_color(dir: vec3<f32>) -> vec3<f32> {
 // The sun disc with a darker, warmer rim; at night the moon, with faint maria.
 fn sun_disc(dir: vec3<f32>) -> vec3<f32> {
     let mu = dot(dir, normalize(g.sun_dir.xyz));
-    let r = sqrt(max(1.0 - mu * mu, 0.0)) / mix(0.0085, 0.016, golden_hour());
+    let r = sqrt(max(1.0 - mu * mu, 0.0)) / mix(0.0085, 0.022, golden_hour());
     let disc = (1.0 - smoothstep(0.9, 1.0, r)) * step(0.0, mu);
     let limb = mix(vec3(1.0), vec3(1.0, 0.75, 0.5), r * r);
     let sun = day_light() * limb * mix(vec3(14.0), vec3(3.2, 1.9, 0.9), golden_hour());
@@ -342,7 +375,7 @@ fn sun_glow(dir: vec3<f32>) -> vec3<f32> {
         return vec3(0.0);
     }
     let ang = sqrt(max(2.0 * (1.0 - mu), 0.0));
-    let glow = exp(-ang / 0.022) * 0.9 + exp(-ang / 0.07) * 0.3;
+    let glow = exp(-ang / 0.02) * 0.8 + exp(-ang / 0.06) * 0.14;
     return day_light() * vec3(1.0, 0.66, 0.34) * glow * golden_hour() * smoothstep(-0.02, 0.03, dir.y);
 }
 
@@ -371,7 +404,7 @@ const LAMP_RANGE: f32 = 12.0;
 
 // How much the lanterns count: they burn all the time but only matter at dusk.
 fn lamp_on() -> f32 {
-    return max(smoothstep(0.05, 0.8, g.sky.x), golden_hour() * 0.75);
+    return max(smoothstep(0.05, 0.8, g.sky.x), golden_hour() * 0.9);
 }
 
 // Light from nearby lanterns on a surface at `p` facing `n`.
@@ -392,7 +425,7 @@ fn lamp_light(p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
         let ndl = max(dot(n, l * inverseSqrt(d2 + 1e-4)), 0.0) * 0.85 + 0.15;
         sum += ndl * window * window / (d2 + 0.35) * g.lights[k].w;
     }
-    return LAMP_COLOR * 7.0 * sum * on;
+    return LAMP_COLOR * 9.0 * sum * on;
 }
 
 // Light the air scatters towards the eye around each lantern along a view ray
@@ -412,12 +445,15 @@ fn lamp_glow(dir: vec3<f32>, len: f32) -> vec3<f32> {
         let h2 = max(dot(rel, rel) - t0 * t0, 0.04);
         let h = sqrt(h2);
         sum += (atan((len - t0) / h) + atan(t0 / h)) / h * g.lights[k].w;
-        // A small bright halo hugging the lantern, when nothing stands in front of it.
+        // A small bright halo hugging the lantern, when nothing stands in front
+        // of it. It widens a little with distance so a far lantern still
+        // shows as a soft warm spot rather than a single pixel.
         if (t0 > 0.0 && t0 < len + 0.3) {
-            halo += (exp(-h / 0.35) + 0.15 * exp(-h / 1.6)) * g.lights[k].w;
+            let r = 1.0 + t0 * 0.02;
+            halo += (exp(-h / (0.3 * r)) + 0.2 * exp(-h / (1.4 * r))) * g.lights[k].w;
         }
     }
-    return LAMP_COLOR * (0.012 * sum + 0.6 * halo) * on;
+    return LAMP_COLOR * (0.014 * sum + 0.9 * halo) * on;
 }
 
 fn underwater_color() -> vec3<f32> {
@@ -460,20 +496,28 @@ fn apply_fog(c: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
     // blue-violet in shade, with their own warm sunlit rims.
     let side_dir = normalize(vec3(-sun.z, 0.06, sun.x));
     let cool = mix(sky_dome(horizon_dir), sky_dome(side_dir) * vec3(0.66, 0.74, 1.2), golden * 0.85);
-    let glow = light * hg(dot(dir, sun), mix(0.7, 0.9, golden)) * mix(0.5, 0.1, golden) * vec3(1.0, 0.8, 0.55);
+    // Towards a low sun the glow is capped so far walls and roofs in front of
+    // it fade into warm haze instead of burning out.
+    let glow = light * min(hg(dot(dir, sun), mix(0.7, 0.78, golden)), 2.5) * mix(0.5, 0.075, golden) * vec3(1.0, 0.72, 0.45);
     let air = cool * 0.95 + glow;
     var out = c * trans + air * (1.0 - trans);
 
-    // Valley mist: a thin, patchy layer lying on the river and the low
-    // meadows, thickest in the evening, lit warm on the side towards the sun.
-    let mist_fall = 1.0 / 3.5;
+    // Valley mist: soft banks lying on the river and the low meadows and in
+    // the folds between the hills, thickest in the evening and thinning fast
+    // with height, lit pale gold on the side towards the sun.
+    let mist_fall = 1.0 / 5.0;
     let hm = g.camera_pos.y - (cam_water + 1.5);
     let dym = to.y * mist_fall;
     let mist_integral = select((1.0 - exp(-dym)) / dym, 1.0 - 0.5 * dym, abs(dym) < 1e-3);
-    let patchy = 0.3 + 1.4 * vnoise2((g.camera_pos.xz + to.xz * 0.6) / 70.0);
-    let amount = mix(0.35, 1.0, golden_hour()) * (1.0 - 0.6 * g.sky.x);
-    let mist = 0.0022 * exp(-max(hm, -8.0) * mist_fall) * dist * max(mist_integral, 0.0) * patchy * amount;
-    let mist_col = mix(air, air * vec3(0.9, 0.85, 1.05), golden_hour()) + glow * 0.4;
+    // Banks a hundred metres or so across, drifting slowly.
+    let at = g.camera_pos.xz + to.xz * 0.7 + vec2(g.sun_dir.w * 0.3, 0.0);
+    let bank = vnoise2(at / 110.0) * 0.65 + vnoise2(at / 37.0) * 0.35;
+    let patchy = 0.12 + 1.6 * smoothstep(0.3, 0.72, bank);
+    let amount = mix(0.35, 1.0, golden) * (1.0 - 0.6 * g.sky.x);
+    let mist = 0.0026 * exp(-max(hm, -8.0) * mist_fall) * dist * max(mist_integral, 0.0) * patchy * amount;
+    let sun_side = hg(dot(dir, sun), 0.55) * golden;
+    let mist_col = mix(air, air * vec3(0.95, 0.9, 1.08) * 1.1, golden) + glow * 0.5
+        + light * vec3(0.30, 0.19, 0.10) * sun_side;
     let mt = exp(-mist);
     out = out * mt + mist_col * (1.0 - mt);
     return out + lamp_glow(dir, dist);
@@ -1252,7 +1296,7 @@ fn sky_fill() -> vec3<f32> {
     let golden = golden_hour();
     var sky = sky_dome(vec3(0.0, 1.0, 0.0)) * 0.8 + sky_dome(normalize(vec3(-sun.z, 0.02, sun.x))) * 0.3;
     sky = mix(sky, vec3(dot(sky, vec3(0.3, 0.5, 0.2))) * vec3(0.95, 0.95, 1.05), golden * 0.5);
-    return sky * mix(vec3(1.0), vec3(0.94, 0.86, 1.30) * 1.55, golden * 0.8);
+    return sky * mix(vec3(1.0), vec3(0.96, 0.91, 1.16) * 1.5, golden * 0.8);
 }
 
 // Everything but the sun disc lighting a surface facing `n`: the sky above
@@ -1269,6 +1313,15 @@ fn fill_light(n: vec3<f32>, sh: f32, sss: f32) -> vec3<f32> {
     // Sunlit surfaces also see the warm sunward sky; shade leans violet-blue.
     let sky_part = sky * mix(mix(vec3(0.92, 0.94, 1.1), vec3(1.0), sh), vec3(1.0), 1.0 - golden) * mix(0.8, 1.0, sh);
     var fill = sky_part * up + ground * (1.0 - up);
+    // Walls also see the low sky they face: at dusk the glowing horizon
+    // behind the viewer lights faces turned from the sun a soft warm rose,
+    // so distant walls against the sun are not black cut-outs.
+    let wall = (1.0 - abs(n.y)) * golden;
+    if (wall > 0.01) {
+        let horizon = min(sky_dome(normalize(vec3(n.x, 0.08, n.z))), vec3(1.2));
+        let grey = dot(horizon, vec3(0.3, 0.5, 0.2));
+        fill += mix(vec3(grey) * vec3(1.05, 0.95, 0.85), horizon, 0.35) * wall * 0.3 * mix(1.0, 0.7, sh);
+    }
     // Thin layers pass skylight through to their undersides.
     fill += sky * (1.0 - up) * sss * 0.3;
     // Undersides of leaves see mostly other leaves: a cooler, dimmer green-blue
@@ -1294,25 +1347,31 @@ fn through_light(n: vec3<f32>, v: vec3<f32>, sss: f32, open_sun: f32) -> vec3<f3
     let lit = open_sun * open_sun;
     // and it is the faces turned from the sun that it shines out of.
     let behind = mix(0.2, 1.0, smoothstep(-0.1, 0.5, dot(-n, sun)));
-    let forward = (pow(ahead, 4.0) * 1.3 + ahead * 0.2) * lit * behind;
-    let diffuse = (0.4 * max(dot(-n, sun), 0.0) + 0.06) * mix(0.15, 1.0, lit);
-    let tint = mix(lin(vec3(0.80, 0.92, 0.50)), lin(vec3(1.0, 0.84, 0.45)), golden_hour());
+    let forward = (pow(ahead, 4.0) * 0.9 + ahead * 0.2) * lit * behind;
+    // Undersides glow a little wherever light comes through the layer above.
+    let diffuse = (0.4 * max(dot(-n, sun), 0.0) + 0.1 + 0.12 * max(-n.y, 0.0)) * mix(0.25, 1.0, lit);
+    let tint = mix(lin(vec3(0.80, 0.92, 0.50)), lin(vec3(1.0, 0.72, 0.36)), golden_hour());
     return sss * (forward + diffuse) * tint * (sun_light() / 2.6);
 }
 
 // Back light: looking towards a low sun, the edges of things turned from the
 // camera catch a warm rim, as leaves and walls do against a bright sky.
 // Flat ground is left out so the meadow does not wash out.
-fn rim_light(n: vec3<f32>, v: vec3<f32>, sss: f32, open_sun: f32) -> vec3<f32> {
+fn rim_light(n: vec3<f32>, v: vec3<f32>, sss: f32, open_sun: f32, dist: f32) -> vec3<f32> {
     let sun = normalize(g.sun_dir.xyz);
     let back = pow(max(dot(-v, sun), 0.0), 2.0);
     let edge = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 3.0);
-    let side = clamp(dot(n, sun) * 0.6 + 0.55, 0.0, 1.0) * (1.0 - 0.85 * abs(n.y));
+    // Ground, even on a slope, stays out of it: seen edge-on at the crest of
+    // a meadow it would draw a bright band along the skyline.
+    let side = clamp(dot(n, sun) * 0.6 + 0.55, 0.0, 1.0) * (1.0 - smoothstep(0.45, 0.8, abs(n.y)));
     let warm = vec3(1.0, 0.70, 0.36);
     // Weak on solid things (bark, stone); leaves take a little more, and
     // `shade_terrain` adds it half as golden light so it does not outline
     // the clumps in green.
-    let solid = mix(0.3, 0.6, sss);
+    // Far off, a building's outline against the sun is all that carries its
+    // shape, so solid things take the rim fully there.
+    let far = smoothstep(80.0, 350.0, dist);
+    let solid = mix(mix(0.3, 0.6, sss), 1.1, far);
     return sun_light() * warm * back * edge * side * solid * open_sun * mix(0.15, 0.6, golden_hour());
 }
 
@@ -1475,9 +1534,12 @@ fn shade_terrain(i: VOut) -> vec4<f32> {
     if (mat == 3u) {
         // Near the eye the turf under the blades is darker and olive, so the
         // blades carry the meadow's colour; far off, where no blades are
-        // drawn, the ground keeps it.
-        let near = 1.0 - smoothstep(PLANT_RANGE * 0.6, PLANT_RANGE, distance(i.world, g.camera_pos.xyz));
-        surf.albedo = mix(surf.albedo, surf.albedo * vec3(0.78, 0.70, 0.46), near * smoothstep(0.6, 0.9, n.y));
+        // drawn, the ground takes it back. The change is spread over a few
+        // hundred metres and stops short of the full turf colour, so there
+        // is no pale band just past the last blades.
+        let d_cam = distance(i.world, g.camera_pos.xyz);
+        let tint = mix(vec3(0.78, 0.70, 0.46), vec3(0.92, 0.88, 0.74), smoothstep(PLANT_RANGE * 0.6, 320.0, d_cam));
+        surf.albedo = mix(surf.albedo, surf.albedo * tint, smoothstep(0.6, 0.9, n.y));
     }
     var ao_in = i.ao;
     if (mat == 53u) {
@@ -1505,7 +1567,10 @@ fn shade_terrain(i: VOut) -> vec4<f32> {
     if (sn > -wrap * 0.5) {
         sh = sun_shadow(i.world, n) * smoothstep(-wrap * 0.5, 0.05, sn);
     }
-    let ndl = max((dot(nb, sun) + wrap) / (1.0 + wrap), 0.0);
+    var ndl = max((dot(nb, sun) + wrap) / (1.0 + wrap), 0.0);
+    // Painted golden-hour light: a low sun still lays warm light across the
+    // flat meadow (the cosine is flattened), so sun and shadow part clearly.
+    ndl = mix(ndl, sqrt(ndl), 0.6 * golden_hour());
     // Whether the spot is in the shade of something else, seen from a little
     // way towards the sun: lights the rims and the leaves the sun shines through.
     let open_sun = shadow_tap(i.world + sun * 0.6 + n * 0.1);
@@ -1513,13 +1578,21 @@ fn shade_terrain(i: VOut) -> vec4<f32> {
     let light = sun_light();
     let ambient = fill_light(nb, sh, surf.sss) * mix(0.55, 1.0, ao) * ao;
     let trans = through_light(nb, v, surf.sss, open_sun);
-    let rim = rim_light(nb, v, surf.sss, open_sun);
+    let rim = rim_light(nb, v, surf.sss, open_sun, length(to_cam));
 
     let lamps = lamp_light(i.world + n * 0.05, nb);
-    let key = light * mix(vec3(1.0), vec3(1.06, 0.97, 0.84), golden_hour());
+    let key = light * mix(vec3(1.0), vec3(1.12, 0.96, 0.78), golden_hour());
     var c = surf.albedo * (key * ndl * sh + ambient + trans * ao + lamps * ao);
     c += rim * ao * mix(surf.albedo, vec3(0.30, 0.22, 0.12), 0.5);
-    c += surf.emit * mix(0.25, 1.0, lamp_on());
+    // Lamplit glass: each window or lantern burns a little brighter or dimmer
+    // than the next, and the brightest are eased back so they keep their
+    // colour instead of all clipping to the same pale orange.
+    var emit = surf.emit * mix(0.25, 1.0, lamp_on());
+    let emit_l = dot(emit, vec3(0.2126, 0.7152, 0.0722));
+    if (emit_l > 0.0) {
+        emit *= (0.7 + 0.6 * hash3(floor(i.world / 3.0) + 0.5)) / (1.0 + emit_l * 0.12);
+    }
+    c += emit;
     c += light * sh * ggx_spec(nb, v, sun, surf.rough, surf.f0);
     // A hint of sky reflected on glossy (wet) surfaces.
     let fres = surf.f0 + (1.0 - surf.f0) * pow(1.0 - max(dot(nb, v), 0.0), 5.0);
@@ -1536,7 +1609,10 @@ fn shade_terrain(i: VOut) -> vec4<f32> {
         c = mix(c, c * 1.2 + vec3(0.04, 0.045, 0.04), 0.4 * inside * pulse);
         c += vec3(1.0, 0.92, 0.66) * rim * 0.55 * pulse;
     }
-    return vec4(apply_fog(c, i.world), 1.0);
+    // Alpha above 1 marks how much of the pixel is lamplight, so the bloom
+    // gives lanterns and windows a soft halo that sunlit white does not get.
+    let glow = clamp(dot(emit, vec3(0.2126, 0.7152, 0.0722)) / max(dot(c, vec3(0.2126, 0.7152, 0.0722)), 1e-4), 0.0, 1.0);
+    return vec4(apply_fog(c, i.world), 1.0 + glow);
 }
 
 // ---------------------------------------------------------------- water
@@ -1546,7 +1622,7 @@ fn shade_terrain(i: VOut) -> vec4<f32> {
 fn water_slope(xz: vec2<f32>, t: f32, dist: f32) -> vec2<f32> {
     var grad = vec2(0.0);
     var wavelength = 3.0;
-    var amp = 0.022;
+    var amp = 0.015;
     var angle = 0.4;
     let fade = exp(-dist / 45.0);
     for (var k = 0; k < 6; k++) {
@@ -1560,8 +1636,10 @@ fn water_slope(xz: vec2<f32>, t: f32, dist: f32) -> vec2<f32> {
         amp *= 0.58;
         angle += 2.39;
     }
+    // Irregular ripples on two scales break up the regular wave trains.
     let r = vec2(vnoise2(xz * 5.0 + vec2(t * 0.9, t * 0.4)), vnoise2(xz * 5.0 - vec2(t * 0.5, t * 0.8)));
-    grad += (r - 0.5) * 0.08 * fade;
+    let r2 = vec2(vnoise2(xz * 1.3 + vec2(t * 0.3, -t * 0.2)), vnoise2(xz * 1.3 + vec2(-t * 0.25, t * 0.35) + 5.0));
+    grad += (r - 0.5) * 0.08 * fade + (r2 - 0.5) * 0.07;
     return grad;
 }
 
@@ -1680,7 +1758,7 @@ fn shade_water(i: VOut) -> vec4<f32> {
 
     let sh = sun_shadow(p, vec3(0.0, 1.0, 0.0));
     // Light absorbed per metre (red goes first), and light scattered back by the water body.
-    let absorb = exp(-path * vec3(0.42, 0.11, 0.08));
+    let absorb = exp(-path * vec3(0.55, 0.18, 0.12));
     let scatter = lin(vec3(0.06, 0.24, 0.26)) * (0.45 + 0.9 * sh * max(sun.y, 0.0));
     var body = behind * absorb + scatter * (1.0 - absorb);
 
@@ -1689,7 +1767,9 @@ fn shade_water(i: VOut) -> vec4<f32> {
     let foam_n = vnoise2(p.xz * 4.0 + vec2(t * 0.3, -t * 0.2)) * 0.6 + vnoise2(p.xz * 11.0 - t * 0.5) * 0.4;
     // Around rocks in the current the white water is broken into streaks.
     let streak = vnoise2(vec2(p.x * 7.0, p.z * 1.5 - t * 1.4));
-    let foam = (1.0 - smoothstep(0.0, 0.45, depth_below)) * smoothstep(0.35, 0.65, foam_n * 0.7 + streak * 0.3);
+    // Only a faint, broken lace where the water is very shallow, not a line
+    // drawn along every bank.
+    let foam = (1.0 - smoothstep(0.0, 0.2, depth_below)) * smoothstep(0.5, 0.75, foam_n * 0.7 + streak * 0.3) * 0.45;
     // The pool at the foot of a fall churns white, calming downstream.
     let fall_d = below_fall(p.xz);
     var churn = (1.0 - smoothstep(0.0, 9.0, fall_d)) * smoothstep(-2.0, 0.0, fall_d);
@@ -1704,7 +1784,15 @@ fn shade_water(i: VOut) -> vec4<f32> {
             + vnoise2(vec2(along * 13.0, p.y * 1.7 + t * 4.1)) * 0.4;
         white = 0.2 + 0.7 * smoothstep(0.35, 0.75, pour);
     }
-    body = mix(body, lin(vec3(0.92, 0.95, 0.95)) * (0.5 + 0.8 * sh), white * 0.8);
+    // Foam is lit like any rough white surface: warm where the sun reaches
+    // it, the colour of the sky in shade. A falling sheet faces its own way,
+    // so one turned from the sun is in shade, not a glowing panel.
+    var foam_sun = sh * 0.45;
+    if (face_n.y < 0.5) {
+        foam_sun = sun_shadow(p, face_n) * max(dot(face_n, sun), 0.0) * 0.9;
+    }
+    let foam_col = lin(vec3(0.92, 0.93, 0.92)) * (sun_light() * foam_sun + sky_fill() * 0.7);
+    body = mix(body, foam_col, white * 0.8);
 
     // Reflection: screen-space first, the sky where the screen has no answer.
     let r = reflect(-v, n);
@@ -1712,7 +1800,9 @@ fn shade_water(i: VOut) -> vec4<f32> {
     let ssr = trace_reflection(p + n * 0.02, r, dist);
     let refl = mix(sky_refl, ssr.rgb, ssr.w);
 
-    let fresnel = 0.02 + 0.98 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
+    // A little more mirror than physical water, as painted rivers are: the
+    // banks, cottages and lanterns show in it rather than the riverbed.
+    let fresnel = 0.04 + 0.96 * pow(1.0 - max(dot(n, v), 0.0), 4.0);
     var c = mix(body, refl, fresnel * (1.0 - white * 0.8));
     // A tight highlight on each wave facet, so the sun's path sparkles instead of
     // burning a white band across the water.
@@ -1741,32 +1831,49 @@ fn vs_fullscreen(@builtin(vertex_index) vi: u32) -> SkyOut {
 fn range_height(flat: vec2<f32>, scale: f32, seed: f32, base: f32, top: f32) -> f32 {
     let q = flat * scale + vec2(seed, seed * 1.7);
     let r = 1.0 - abs(fbm2(q) * 2.0 - 1.0);
-    return base + top * r * r;
+    return base + top * r * r * r;
 }
 
-// Snowy peaks beyond the edge of the world: two ranges of painted
-// silhouettes seen through the haze. Their snow keeps the terrain's rules
-// (column_info in terrain.rs and the snow cover in material()): it lies
+// Snowy peaks beyond the edge of the world: three ranges of painted
+// silhouettes, one behind the other. The air between turns each farther range
+// lighter and bluer-violet, with a bank of mist lying along its foot in front
+// of it, and faces turned to the sun go warm. Their snow keeps the terrain's
+// rules (column_info in terrain.rs and the snow cover in material()): it lies
 // above a ragged snowline, which comes lower where the face is gentle, and
 // slides off steep faces, which stay bare rock. rgb, coverage.
 fn far_peaks(dir: vec3<f32>) -> vec4<f32> {
     let flat = normalize(dir.xz + vec2(1e-5, 0.0));
     let e = asin(clamp(dir.y, -1.0, 1.0));
+    if (e > 0.42) {
+        return vec4(0.0);
+    }
     let sun = normalize(g.sun_dir.xyz);
     let sun_flat = normalize(sun.xz + vec2(1e-5, 0.0));
     let light = sun_light();
+    let golden = golden_hour();
     let haze = sky_dome(normalize(vec3(dir.x, 0.03, dir.z)));
     let side = vec2(-flat.y, flat.x);
     let az = atan2(flat.y, flat.x);
+    // How much this compass direction looks into the sun.
+    let sunward = pow(max(dot(flat, sun_flat), 0.0), 8.0);
+    // Around the sun the ranges stay low, so it sets over them rather than
+    // behind them.
+    let low = 1.0 - 0.6 * pow(max(dot(flat, sun_flat), 0.0), 12.0) * golden;
+    // The air between the ranges: a dusky lavender, taking on the warm
+    // horizon behind it with distance; the mist lying between them is paler.
+    let lav = mix(sky_dome(normalize(vec3(-sun_flat.y, 0.1, sun_flat.x))) * vec3(0.8, 0.8, 1.2), vec3(0.21, 0.17, 0.31), golden);
+    let mist_col = mix(lav * 1.3, haze, 0.55) + vec3(0.25, 0.12, 0.05) * sunward * golden;
     var col = vec3(0.0);
     var cover = 0.0;
-    // Far range first, then the nearer, bolder one over it.
-    for (var k = 0; k < 2; k++) {
-        let near = f32(k);
-        let scale = mix(2.2, 3.4, near);
-        let seed = 11.0 + near * 7.0;
-        let base = mix(0.035, 0.02, near);
-        let top = mix(0.16, 0.12, near);
+    // Farthest range first, then the nearer, bolder ones over it.
+    for (var k = 0; k < 3; k++) {
+        let near = f32(k) * 0.5;
+        // The farthest range is the tallest, its great peaks standing over
+        // the lower, nearer ridges.
+        let scale = mix(1.5, 3.4, near);
+        let seed = 11.0 + f32(k) * 7.0;
+        let base = mix(0.045, 0.012, near) * low;
+        let top = mix(0.36, 0.16, near) * low;
         let h = range_height(flat, scale, seed, base, top);
         if (e < h) {
             // The face's slope is the ridge's own gradient along the skyline,
@@ -1776,29 +1883,38 @@ fn far_peaks(dir: vec3<f32>) -> vec4<f32> {
             let hl = range_height(normalize(flat - side * w), scale, seed, base, top);
             let hr = range_height(normalize(flat + side * w), scale, seed, base, top);
             let dh = (hr - hl) / (2.0 * w);
-            let rib = vnoise2(vec2(az * 110.0 + e * 40.0 + near * 13.0, e * 7.0));
+            let rib = vnoise2(vec2(az * 110.0 + e * 40.0 + f32(k) * 13.0, e * 7.0));
             let facet = vnoise2(vec2(az * 260.0, e * 70.0));
             let crest = 1.0 - smoothstep(0.0, 0.02, h - e);
             let steep = abs(dh) * (0.3 + 1.4 * rib) + 0.3 * crest * abs(dh) + (facet - 0.5) * 0.35 + 0.08;
             // Lit where the face turns towards the sun, and on the ribs.
             let facing = clamp(0.5 - dh * 0.6 * dot(side, sun_flat), 0.0, 1.0);
-            let lit = clamp(facing * 0.8 + (rib - 0.5) * 0.5 + (facet - 0.5) * 0.2, 0.0, 1.0);
+            // Looking into the sun the faces are backlit and in their own shade.
+            let lit = clamp(facing * 0.8 + (rib - 0.5) * 0.5 + (facet - 0.5) * 0.2, 0.0, 1.0) * (1.0 - 0.7 * sunward);
             // Snow by altitude above a ragged line, lower on gentle faces, and
             // none on steep ones.
-            let ragged = vnoise2(vec2(az * 24.0 + near * 5.0, near)) * 0.7 + vnoise2(vec2(az * 90.0, 3.0 + near)) * 0.3;
+            let ragged = vnoise2(vec2(az * 24.0 + f32(k) * 5.0, near)) * 0.7 + vnoise2(vec2(az * 90.0, 3.0 + f32(k))) * 0.3;
             let gentle = 1.0 - smoothstep(0.25, 0.6, steep);
             let line = base + top * (0.5 + 0.3 * (ragged - 0.5) - 0.12 * gentle);
             let snow = smoothstep(line - 0.0025, line + 0.0025, e) * (1.0 - smoothstep(0.33, 0.5, steep));
-            let snow_col = lin(vec3(0.95, 0.93, 0.98)) * (0.3 + 0.8 * lit) * light * 0.5;
-            // Bare rock, with the air between tinting it blue-grey: more for
-            // the far range and towards the foot, where the air is thicker.
-            let rock_lit = lin(vec3(0.30, 0.30, 0.34)) * (0.2 + 0.6 * lit) * light * 0.3;
-            let air = mix(0.45, 0.3, near) + 0.2 * (1.0 - smoothstep(0.0, top, e - base));
-            let rock = mix(rock_lit, haze * lin(vec3(0.62, 0.70, 0.90)), air);
-            let body = mix(rock, snow_col, snow);
-            // Both ranges sink into the haze towards their feet.
-            let fade = mix(0.5, 0.3, near) * (1.0 - smoothstep(0.0, 0.08, e - base) * 0.4);
-            col = mix(body, haze, fade);
+            // Snow and rock: cool violet in shade, warm rose-gold where the
+            // low sun reaches them.
+            let warm = mix(vec3(1.0), vec3(1.25, 0.82, 0.62), golden);
+            let snow_col = mix(lin(vec3(0.60, 0.62, 0.80)) * 0.55, lin(vec3(0.98, 0.92, 0.90)) * warm, lit) * light * 0.45;
+            let rock_col = mix(lin(vec3(0.26, 0.25, 0.36)) * 0.6, lin(vec3(0.46, 0.40, 0.40)) * warm, lit) * light * 0.35;
+            let body = mix(rock_col, snow_col, snow);
+            // The air between: more for the far ranges and towards each foot,
+            // where it is thicker.
+            let foot = 1.0 - smoothstep(0.0, top * 0.7, e - base);
+            // Farther ranges are paler and bluer, the nearest nearly its own colour.
+            let air_col = mix(lav * mix(1.7, 1.0, near), haze * 0.75, mix(0.35, 0.1, near));
+            let air = clamp(mix(0.62, 0.34, near) + 0.22 * foot, 0.0, 0.95);
+            // Snow shines through the air more than rock does.
+            col = mix(body, air_col, air * (1.0 - 0.35 * snow));
+            // A bank of mist lying along the foot, ragged on top.
+            let mist_top = base * 0.6 + 0.02 * (0.4 + vnoise2(vec2(az * 30.0 + f32(k) * 3.0, f32(k))));
+            let mist = (1.0 - smoothstep(mist_top - 0.02, mist_top, e)) * 0.9;
+            col = mix(col, mist_col, mist);
             cover = 1.0;
         }
     }
@@ -1872,18 +1988,33 @@ fn downsample(uv: vec2<f32>, karis: bool) -> vec3<f32> {
 
 @fragment
 fn fs_bloom_first(i: SkyOut) -> @location(0) vec4<f32> {
-    // Only what is brighter than a lit white surface blooms, with a soft knee.
-    let c = downsample(screen_uv(i.ndc), true);
-    let l = max(max(c.r, c.g), c.b);
-    let knee = 0.6;
+    // Only light brighter than a warm white blooms, with a soft knee. It is
+    // measured by luminance, so the bright orange sky around a low sun (much
+    // red, little green) stays below it while the sun disc, lanterns and lit
+    // windows glow.
+    let uv = screen_uv(i.ndc);
+    let c = downsample(uv, true);
+    let l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    let knee = 0.9;
     let t = clamp(l - (BLOOM_THRESHOLD - knee), 0.0, 2.0 * knee);
     let keep = max(t * t / (4.0 * knee), l - BLOOM_THRESHOLD) / max(l, 1e-4);
-    return vec4(c * keep, 1.0);
+    // Lamplight (marked in alpha by the terrain pass) blooms whatever its
+    // brightness, into a halo. Four bilinear taps cover the same footprint.
+    let px = 1.0 / vec2<f32>(textureDimensions(hdr_input));
+    var lamp = vec4(0.0);
+    for (var k = 0; k < 4; k++) {
+        let o = vec2(f32(k & 1), f32(k >> 1u)) * 2.0 - 1.0;
+        let s = textureSampleLevel(hdr_input, post_sampler, uv + o * px, 0.0);
+        lamp += vec4(min(s.rgb, vec3(16.0)) * clamp(s.a - 1.0, 0.0, 1.0), 0.0);
+    }
+    return vec4(c * keep + lamp.rgb * 0.25 * EMIT_BLOOM, 1.0);
 }
 
 // Scene brightness (linear) above which light blooms, and how much bloom adds.
-const BLOOM_THRESHOLD: f32 = 1.6;
-const BLOOM_STRENGTH: f32 = 0.05;
+const BLOOM_THRESHOLD: f32 = 2.2;
+const BLOOM_STRENGTH: f32 = 0.12;
+// How much more lamplight blooms than other light of the same brightness.
+const EMIT_BLOOM: f32 = 3.0;
 
 @fragment
 fn fs_bloom_down(i: SkyOut) -> @location(0) vec4<f32> {
@@ -1926,14 +2057,14 @@ fn fs_post(i: SkyOut) -> @location(0) vec4<f32> {
     m -= vec3(0.30, 0.22, -0.04) * green;
     // Split toning: cool shadows, warm highlights.
     let shade = (1.0 - l) * (1.0 - l);
-    m += vec3(-0.012, -0.004, 0.035) * shade;
-    m += vec3(0.035, 0.014, -0.022) * l * l;
+    m += vec3(-0.014, -0.002, 0.030) * shade;
+    m += vec3(0.030, 0.018, -0.022) * l * l;
     // A gentle S-curve about the middle grey that keeps a slope at black, so
     // the darks keep their colour instead of crushing.
     m = clamp(m, vec3(0.0), vec3(1.0));
-    m += 0.3 * m * (1.0 - m) * (2.0 * m - 1.0);
-    // The deepest shade lifts to a dusky violet rather than black.
-    m = m * 0.975 + vec3(0.012, 0.010, 0.026);
+    m += 0.42 * m * (1.0 - m) * (2.0 * m - 1.0);
+    // The deepest shade lifts to a dusky blue rather than black.
+    m = m * 0.98 + vec3(0.008, 0.009, 0.020);
     // Dither away banding in the sky gradient.
     m = clamp(m + (hash2(i.clip.xy) - 0.5) / 255.0, vec3(0.0), vec3(1.0));
     if (g.params.y < 0.5) {

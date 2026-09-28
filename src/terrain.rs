@@ -627,7 +627,8 @@ fn tall_grass(seed: u32, x: i32, y: i32, z: i32, verge: f32) -> bool {
     let (xm, zm) = (x as f32 * VOXEL_SIZE, z as f32 * VOXEL_SIZE);
     let chance = (0.14 + 0.78 * meadow(seed, xm, zm))
         .max(0.97 * tall_meadow(seed, xm, zm))
-        .max(0.85 * verge);
+        .max(0.85 * verge)
+        .max(0.95 * crate::plants::vista_meadow(xm, zm));
     unit(crate::noise::hash3(seed.wrapping_add(32), x, y, z)) < chance
 }
 

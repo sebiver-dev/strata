@@ -454,7 +454,7 @@ pub fn tuft(out: &mut MeshData, seed: u32, w: IVec3, spot: &Spot) {
     // Drifts: sparse at their edges, crowded in the middle.
     if spot.sheltered {
         crowded = true;
-    } else if lupins > 0.66 && roll < 0.04 + 1.6 * (lupins - 0.66) {
+    } else if lupins > 0.68 && roll < 0.03 + 1.0 * (lupins - 0.68) {
         let at = spot_at(&mut rng);
         // Mostly violet, with pink and white spires mixed in; some drifts
         // run pinker or paler than others.
@@ -462,14 +462,14 @@ pub fn tuft(out: &mut MeshData, seed: u32, w: IVec3, spot: &Spot) {
         let pick = rng.f() * 0.75 + drift * 0.35;
         let mat = if pick < 0.25 {
             LUPIN_DEEP
-        } else if pick < 0.5 {
+        } else if pick < 0.62 {
             LUPIN
-        } else if pick < 0.75 {
+        } else if pick < 0.82 {
             LUPIN_PINK
         } else {
             LUPIN_WHITE
         };
-        let height = rng.range(0.6, 1.3);
+        let height = rng.range(0.5, 0.9);
         lupin(out, &mut rng, at, height, mat);
         crowded = true;
     } else if roll < daisies * 2.0 {

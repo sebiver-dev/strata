@@ -856,10 +856,11 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             wettable = false;
         }
         case 15u, 40u, 41u: { // lupin florets: violet, pink or white, each flower its own shade
-            var lo = vec3(0.28, 0.16, 0.62);
-            var hi = vec3(0.50, 0.36, 0.84);
-            if (mat == 40u) { lo = vec3(0.70, 0.30, 0.50); hi = vec3(0.92, 0.58, 0.74); }
-            if (mat == 41u) { lo = vec3(0.80, 0.78, 0.80); hi = vec3(0.96, 0.95, 0.92); }
+            // Soft, dusty tones as in the reference rather than saturated ones.
+            var lo = vec3(0.30, 0.22, 0.52);
+            var hi = vec3(0.50, 0.42, 0.72);
+            if (mat == 40u) { lo = vec3(0.62, 0.38, 0.52); hi = vec3(0.82, 0.62, 0.72); }
+            if (mat == 41u) { lo = vec3(0.76, 0.74, 0.76); hi = vec3(0.90, 0.88, 0.86); }
             s.albedo = mix(lo, hi, vnoise(q * 40.0));
             s.rough = 0.7;
             s.sss = 0.5;
@@ -1053,7 +1054,7 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             wettable = false;
         }
         case 33u: { // deep purple lupin florets
-            s.albedo = mix(vec3(0.16, 0.06, 0.36), vec3(0.30, 0.13, 0.54), vnoise(q * 40.0));
+            s.albedo = mix(vec3(0.20, 0.13, 0.38), vec3(0.34, 0.24, 0.52), vnoise(q * 40.0));
             s.rough = 0.7;
             s.sss = 0.45;
             wettable = false;
@@ -1091,7 +1092,7 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             // Long narrow fissures between plates of grey-brown bark.
             let plate = smoothstep(0.28, 0.55, ridge);
             let crack = smoothstep(0.55, 0.62, vnoise(vec3(q.x * 9.0, q.y * 7.0, q.z * 9.0))) * plate;
-            var c = mix(vec3(0.10, 0.08, 0.065), mix(vec3(0.25, 0.21, 0.17), vec3(0.33, 0.28, 0.22), vnoise(q * 1.7)), plate);
+            var c = mix(vec3(0.10, 0.08, 0.065), mix(vec3(0.31, 0.27, 0.22), vec3(0.42, 0.37, 0.30), vnoise(q * 1.7)), plate);
             c = mix(c, c * 0.65, crack * d_dm);
             c *= 0.85 + 0.3 * fine;
             // Moss settles on the upper sides of roots and boughs.

@@ -16,6 +16,7 @@ use crate::mesh::{smooth_data, MeshData, Vertex};
 use crate::model;
 use crate::noise::{hash2, unit};
 use crate::terrain::{Terrain, WATER_LEVEL_M};
+use crate::vista;
 use glam::{IVec3, Vec2, Vec3};
 use std::collections::HashMap;
 
@@ -627,19 +628,10 @@ impl Structures {
         }
         let _ = bx1;
 
-        // The watchtower takes the highest knoll in view a few hundred metres out, the
-        // castle a broad height further off, so both frame the view on arrival.
-        let tower = best_site(
-            t,
-            spawn,
-            (SPAWN_YAW - 0.6, SPAWN_YAW + 0.5),
-            (130.0, 320.0),
-            3.0,
-            72.0,
-            2.5,
-            0.02,
-        );
-        if let Some(c) = tower {
+        // The watchtower and the castle stand on the knoll and the bluff composed
+        // for the view on arrival (see `vista`).
+        {
+            let c = Vec2::new(vista::TOWER_KNOLL.0, vista::TOWER_KNOLL.2);
             let c = Vec2::new(snap(c.x, 0.25), snap(c.y, 0.25));
             let (lo, hi) = ground_range(t, c - 3.0, c + 3.0);
             s.add(Structure::Tower(Tower {
@@ -653,18 +645,8 @@ impl Structures {
                 seed: seed ^ 20,
             }));
         }
-        if let Some(c) = best_site(
-            t,
-            spawn,
-            (SPAWN_YAW - 0.65, SPAWN_YAW + 0.35),
-            (380.0, 700.0),
-            20.0,
-            82.0,
-            16.0,
-            0.03,
-        ) {
-            s.add(Structure::Castle(Castle::plan(t, c.x, c.y, seed ^ 40)));
-        }
+        let (cx, _, cz) = vista::CASTLE_TOP;
+        s.add(Structure::Castle(Castle::plan(t, cx, cz, seed ^ 40)));
         s.build_models(t);
         s
     }
@@ -838,42 +820,7 @@ impl Structures {
 }
 
 /// Which way the player faces on arrival (`Player::new`), as a yaw in radians.
-pub const SPAWN_YAW: f32 = -1.2;
-
-/// The highest, most level site (centre in metres) within a wedge seen from
-/// `from`: yaws and distances as ranges, a square of half-size `half` whose
-/// ground varies by less than `rough` metres, below `max_h`, away from the
-/// river and road. `far_penalty` trades height for nearness.
-#[allow(clippy::too_many_arguments)]
-fn best_site(
-    t: &Terrain,
-    from: Vec3,
-    yaws: (f32, f32),
-    dists: (f32, f32),
-    half: f32,
-    max_h: f32,
-    rough: f32,
-    far_penalty: f32,
-) -> Option<Vec2> {
-    let mut best: Option<(f32, Vec2)> = None;
-    for j in 0..24 {
-        for i in 0..24 {
-            let d = dists.0 + (dists.1 - dists.0) * j as f32 / 23.0;
-            let yaw = yaws.0 + (yaws.1 - yaws.0) * i as f32 / 23.0;
-            let p = Vec2::new(from.x + d * yaw.cos(), from.z + d * yaw.sin());
-            if (p.x - t.river_x(p.y)).abs() < half + 30.0 || t.road_distance(p.x, p.y) < half + 8.0 {
-                continue;
-            }
-            let (lo, hi) = ground_range(t, p - half, p + half);
-            let h = t.height_at(p.x, p.y).0;
-            let score = h - (hi - lo) * 1.5 - d * far_penalty;
-            if h < max_h && hi - lo < rough && best.is_none_or(|b| score > b.0) {
-                best = Some((score, p));
-            }
-        }
-    }
-    best.map(|b| b.1)
-}
+pub const SPAWN_YAW: f32 = crate::vista::SPAWN_YAW;
 
 fn cottage_door_near(s: &Structures, x: f32, z: f32) -> bool {
     s.list.iter().any(|(_, _, st)| match st {

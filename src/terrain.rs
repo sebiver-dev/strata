@@ -6,6 +6,7 @@ use crate::chunk::{local_index, Chunk, CHUNK, CHUNK_VOLUME};
 use crate::noise::{fbm2, hash2, ridged2, unit, value3};
 use crate::structures::Structures;
 use crate::trees::{Kind as TreeKind, Tree};
+use crate::vista;
 use glam::{IVec2, IVec3, Vec2, Vec3};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -26,11 +27,15 @@ const HOME_Z_M: f32 = WORLD_SIZE_M * 0.5;
 /// lip, the drop in metres (whole voxels), and how many metres the valley floor
 /// takes to follow it down (short makes a cliff). A few small drops close
 /// together make a cascade. Keep Z and drop in step with fall() in world.wgsl.
-pub const FALLS: [(f32, f32, f32); 10] = [
+pub const FALLS: [(f32, f32, f32); 13] = [
     (380.0, 1.0, 50.0),
     (388.0, 1.0, 50.0),
     (396.0, 1.5, 50.0),
     (690.0, 8.0, 6.0),
+    // The cascade seen through the bridge's arches from the spawn rise.
+    (925.0, 1.0, 40.0),
+    (932.0, 1.0, 40.0),
+    (939.0, 1.0, 40.0),
     (1290.0, 1.0, 50.0),
     (1297.0, 1.0, 50.0),
     (1304.0, 1.0, 50.0),
@@ -70,6 +75,16 @@ fn drop_below_home() -> f32 {
     FALLS.iter().filter(|f| f.0 > HOME_Z_M).map(|f| f.1).sum()
 }
 
+/// The river's level along its course with each fall smoothed into a short
+/// ramp: a reference for banks that should follow the water without steps.
+pub fn smooth_water_level(z_m: f32) -> f32 {
+    WATER_LEVEL_M - drop_below_home()
+        + FALLS
+            .iter()
+            .map(|&(z0, d, _)| d * (1.0 - smoothstep(z0 - 4.0, z0 + 8.0, z_m)))
+            .sum::<f32>()
+}
+
 /// Height of still water (river and lakes) at a point, in metres.
 pub fn water_level(x_m: f32, z_m: f32) -> f32 {
     WATER_LEVEL_M - drop_below_home()
@@ -104,7 +119,7 @@ pub fn below_fall(x_m: f32, z_m: f32, reach: f32) -> Option<f32> {
         .reduce(f32::min)
 }
 
-fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+pub(crate) fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
@@ -150,7 +165,7 @@ impl Terrain {
     /// X coordinate (metres) of the valley road's centre line at a given Z. It
     /// follows the east bank of the river, swinging a little on its own.
     pub fn road_x(&self, z_m: f32) -> f32 {
-        self.river_x(z_m) + 40.0 + 8.0 * (z_m / 130.0 + 1.3).sin()
+        self.river_x(z_m) + 40.0 + 8.0 * (z_m / 130.0 + 1.3).sin() + vista::road_detour(z_m)
     }
 
     /// Z coordinate of side road `k` at a given X, if that X is on it.
@@ -200,6 +215,10 @@ impl Terrain {
             let z = (k as f32 + 0.5) * s;
             add(self.road_x(z) + side(k), z, towards(side(k), IVec3::X));
         }
+        // The path from the spawn rise down to the bridge has its own, closer set.
+        for (x, z, towards) in vista::path_lanterns() {
+            add(x, z, IVec3::X * towards as i32);
+        }
         for (r, z0) in SIDE_ROADS_Z.iter().enumerate() {
             let start = self.road_x(*z0);
             // Side-road lanterns start a little way up so they do not crowd the junction.
@@ -219,7 +238,8 @@ impl Terrain {
     /// Ground height in metres, plus how strongly this point is river channel (0..1).
     pub fn height_at(&self, x_m: f32, z_m: f32) -> (f32, f32) {
         let s = self.seed;
-        let d = (x_m - self.river_x(z_m)).abs();
+        let rx = self.river_x(z_m);
+        let d = (x_m - rx).abs();
         // Steep valley walls rise to tall peaks within a few hundred metres.
         let valley = smoothstep(30.0, 280.0, d);
 
@@ -243,10 +263,15 @@ impl Terrain {
         // The valley floor climbs with the river's steps; the mountains far from
         // it barely need to, and must stay under the sky limit.
         h += floor_rise(z_m, self.road_distance(x_m, z_m)) * (1.0 - 0.85 * valley);
+        // The spawn view is composed: the rise, the gorge, the knoll and the hills.
+        h = vista::before_channel(s, x_m, z_m, rx, h);
 
-        let channel = 1.0 - smoothstep(7.0, 17.0, d);
+        let (c0, c1) = vista::channel_edges(x_m, z_m, rx);
+        let channel = 1.0 - smoothstep(c0, c1, d);
         let bed = water_level(x_m, z_m) - 2.8 + 0.8 * fbm2(s.wrapping_add(6), x_m / 12.0, z_m / 12.0, 2);
         h += (bed - h) * channel;
+        // The castle bluff stands straight out of the water.
+        h = vista::after_channel(s, x_m, z_m, rx, h, || self.road_distance(x_m, z_m));
 
         (
             h.clamp(3.0, (WORLD_CHUNKS_Y * CHUNK) as f32 * VOXEL_SIZE - 6.0),
@@ -273,7 +298,7 @@ impl Terrain {
             } else {
                 (SAND, SAND)
             }
-        } else if h > snow_line && slope < 1.0 {
+        } else if h > snow_line && slope < 1.0 && !vista::snow_free(x_m, z_m) {
             (SNOW, STONE)
         } else if slope > 1.05 {
             (STONE, STONE)
@@ -288,7 +313,9 @@ impl Terrain {
                 (x_m * 2.0) as i32,
                 (z_m * 2.0) as i32,
             ));
-            d < ROAD_HALF_WIDTH_M + 0.5 * fray || self.structures.path_at(self, x_m, z_m)
+            d < ROAD_HALF_WIDTH_M + 0.5 * fray
+                || vista::on_path(x_m, z_m, fray)
+                || self.structures.path_at(self, x_m, z_m)
         } {
             (PATH, DIRT)
         } else {
@@ -338,7 +365,7 @@ impl Terrain {
             return None;
         }
         // Keep roads and buildings clear of trunks, and room around the great oak.
-        if self.road_distance(xm, zm) < 5.0 || self.structures.blocks_tree(xm, zm) {
+        if self.road_distance(xm, zm) < 5.0 || self.structures.blocks_tree(xm, zm) || vista::keeps_clear(xm, zm) {
             return None;
         }
         if let Some(hero) = &self.hero_tree {
@@ -445,9 +472,10 @@ impl Terrain {
         let side = CHUNK as f32 * VOXEL_SIZE;
         let lo_m = origin.as_vec3() * VOXEL_SIZE;
         let built = self.structures.touches(lo_m, lo_m + side);
+        let curtains = vista::curtain_touches(lo_m, lo_m + side);
         // The fall lip bows by a few metres, so look a little upstream for the highest water.
         let top_water = water_level(ox, oz - 4.0).max(water_level(ox + side, oz - 4.0));
-        if chunk_bottom_m > tree_top.max(top_water) && !built {
+        if chunk_bottom_m > tree_top.max(top_water) && !built && !curtains {
             return Chunk::Uniform(AIR);
         }
 
@@ -465,6 +493,12 @@ impl Terrain {
                 let upper = water_level(xm, zm - VOXEL_SIZE);
                 if upper > water && self.height_at(xm, zm - VOXEL_SIZE).0 < upper - VOXEL_SIZE {
                     water = upper;
+                }
+                // Down the castle bluff the cliff falls hug the rock.
+                if curtains {
+                    if let Some(top) = vista::curtain_top(xm, zm, col.height_m, |x, z| self.height_at(x, z).0) {
+                        water = water.max(top);
+                    }
                 }
                 for y in 0..CHUNK {
                     let wy = origin.y + y;
@@ -530,18 +564,10 @@ impl Terrain {
         Chunk::from_dense(data)
     }
 
-    /// A pleasant starting spot on the river bank near the middle of the world.
+    /// Where the player arrives: on the composed spawn rise above the river.
     pub fn spawn_point(&self) -> glam::Vec3 {
-        let z = WORLD_SIZE_M * 0.5;
-        let rx = self.river_x(z);
-        for off in [26.0, 34.0, 44.0, -26.0, -34.0, -44.0, 60.0] {
-            let x = rx + off;
-            let (h, _) = self.height_at(x, z);
-            if h > water_level(x, z) + 0.8 {
-                return glam::Vec3::new(x, h + 1.0, z);
-            }
-        }
-        glam::Vec3::new(rx + 30.0, 60.0, z)
+        let (x, z) = vista::ARRIVAL;
+        glam::Vec3::new(x, self.height_at(x, z).0 + 1.0, z)
     }
 }
 

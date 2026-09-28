@@ -51,16 +51,37 @@ const CHUNK_M: f32 = 16.0;
 // between the falls either side of HOME_Z (terrain::HOME_Z_M).
 const WATER_LEVEL: f32 = 24.5;
 const HOME_Z: f32 = 1024.0;
-const FALL_COUNT: u32 = 10u;
+const FALL_COUNT: u32 = 13u;
 
 // Matches terrain::FALLS: the Z of each fall's lip and its drop in metres.
 fn fall(k: u32) -> vec2<f32> {
-    var falls = array<vec2<f32>, 10>(
+    var falls = array<vec2<f32>, 13>(
         vec2(380.0, 1.0), vec2(388.0, 1.0), vec2(396.0, 1.5), vec2(690.0, 8.0),
+        vec2(925.0, 1.0), vec2(932.0, 1.0), vec2(939.0, 1.0),
         vec2(1290.0, 1.0), vec2(1297.0, 1.0), vec2(1304.0, 1.0), vec2(1540.0, 4.0),
         vec2(1790.0, 1.5), vec2(1798.0, 1.5),
     );
     return falls[k];
+}
+
+const CLIFF_FALL_COUNT: u32 = 3u;
+
+// Matches vista::CLIFF_FALLS: where each waterfall off the castle bluff lands
+// (CliffFall::foot, x and z in metres).
+fn cliff_fall(k: u32) -> vec2<f32> {
+    var feet = array<vec2<f32>, 3>(
+        vec2(1062.6, 679.9), vec2(1045.8, 681.6), vec2(1019.7, 649.4),
+    );
+    return feet[k];
+}
+
+// Metres from the nearest spot where a cliff fall lands.
+fn from_cliff_fall(xz: vec2<f32>) -> f32 {
+    var best = 1e4;
+    for (var k = 0u; k < CLIFF_FALL_COUNT; k++) {
+        best = min(best, distance(xz, cliff_fall(k)));
+    }
+    return best;
 }
 
 // Matches terrain::fall_z: the lip bows a little across the river.
@@ -1302,7 +1323,9 @@ fn shade_water(i: VOut) -> vec4<f32> {
     let foam = (1.0 - smoothstep(0.0, 0.45, depth_below)) * smoothstep(0.35, 0.65, foam_n * 0.7 + streak * 0.3);
     // The pool at the foot of a fall churns white, calming downstream.
     let fall_d = below_fall(p.xz);
-    let churn = (1.0 - smoothstep(0.0, 9.0, fall_d)) * smoothstep(-2.0, 0.0, fall_d);
+    var churn = (1.0 - smoothstep(0.0, 9.0, fall_d)) * smoothstep(-2.0, 0.0, fall_d);
+    // So does the plunge pool where a fall off the castle bluff lands.
+    churn = max(churn, 1.0 - smoothstep(1.0, 7.0, from_cliff_fall(p.xz)));
     let churn_n = vnoise2(vec2(p.x * 3.0, p.z * 2.0 - t * 2.2)) * 0.5 + vnoise2(p.xz * 7.0 + t * 0.7) * 0.5;
     var white = max(foam, churn * smoothstep(0.2, 0.55, churn_n * (0.6 + 0.5 * churn)));
     if (face_n.y < 0.5) {

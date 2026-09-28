@@ -188,7 +188,7 @@ fn build_voxels(world: &World, cpos: IVec3) -> MeshData {
                     let at = (w.as_vec3() + 0.5) * VOXEL_SIZE;
                     spot.sheltered = rocks
                         .iter()
-                        .any(|&(c, r, top)| at.y < top + 1.0 && c.distance(glam::Vec2::new(at.x, at.z)) < r + 1.0)
+                        .any(|&(c, r, top)| at.y < top + 1.0 && c.distance(glam::Vec2::new(at.x, at.z)) < r + 0.4)
                         || (-2..=2).any(|dz| {
                             (-2..=2).any(|dx| (-1..=1).any(|dy| pad.get(p + IVec3::new(dx, dy, dz)) == BUILT))
                         });

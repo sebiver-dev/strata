@@ -106,40 +106,48 @@ const fn spec(x: f32, z: f32, r: f32, top: f32, spire: f32, perimeter: bool) -> 
 
 const TOWERS: [TowerSpec; 13] = [
     // On the ring, in RING order.
-    spec(-21.5, 10.0, 3.0, 16.0, 16.0, true),
+    spec(-21.5, 10.0, 3.0, 16.0, 17.0, true),
     TowerSpec {
         dormers: 3,
         ..spec(0.0, 14.0, 3.4, 20.0, 18.5, true)
     },
-    spec(21.5, 10.0, 3.0, 16.0, 16.0, true),
-    spec(21.5, -13.0, 2.7, 14.0, 13.5, true),
-    spec(12.5, -16.5, 2.5, 14.5, 11.0, true),
-    spec(3.5, -16.5, 2.5, 14.5, 11.0, true),
-    spec(-21.5, -13.0, 2.7, 14.0, 13.5, true),
+    spec(21.5, 10.0, 3.0, 16.0, 15.0, true),
+    spec(21.5, -13.0, 2.7, 14.0, 15.0, true),
+    spec(12.5, -16.5, 2.5, 14.5, 13.0, true),
+    spec(3.5, -16.5, 2.5, 14.5, 12.0, true),
+    spec(-21.5, -13.0, 2.7, 14.0, 14.0, true),
     // The great tower, its stair turret, and the tower at the keep's west end.
     TowerSpec {
         dormers: 4,
         pennant: true,
-        ..spec(-4.5, -2.0, 4.3, 35.0, 24.0, false)
+        ..spec(-4.5, -2.0, 4.3, 35.0, 30.0, false)
     },
-    spec(0.0, 1.0, 1.5, 38.0, 7.5, false),
+    spec(0.0, 1.0, 1.5, 38.0, 9.0, false),
     TowerSpec {
         dormers: 2,
-        ..spec(-14.5, -6.5, 3.0, 25.0, 15.0, false)
+        ..spec(-14.5, -6.5, 3.0, 25.0, 18.0, false)
     },
     // Turrets corbelled out of the keep's corners.
     TowerSpec {
         foot: 10.5,
-        ..spec(3.7, -10.7, 1.1, 17.0, 4.8, false)
+        ..spec(3.7, -10.7, 1.1, 17.0, 6.0, false)
     },
     TowerSpec {
         foot: 10.5,
-        ..spec(-13.2, -11.0, 1.1, 17.0, 4.8, false)
+        ..spec(-13.2, -11.0, 1.1, 17.0, 6.0, false)
     },
     TowerSpec {
         foot: 11.0,
-        ..spec(3.7, -2.7, 1.1, 17.5, 4.8, false)
+        ..spec(3.7, -2.7, 1.1, 17.5, 6.0, false)
     },
+];
+
+/// Tall banners hung on towers: the tower's centre, which way the banner
+/// faces, the height of its rod and its length. Windows keep clear of them.
+const TOWER_BANNERS: [(Vec2, Vec2, f32, f32); 3] = [
+    (Vec2::new(0.0, 14.0), Vec2::new(0.0, 1.0), 17.0, 6.5),
+    (Vec2::new(-4.5, -2.0), Vec2::new(0.25, 1.0), 31.0, 7.5),
+    (Vec2::new(-14.5, -6.5), Vec2::new(-0.2, 1.0), 21.5, 5.5),
 ];
 
 /// A hall under a steep gabled roof: local corners, eave height, whether the
@@ -223,7 +231,7 @@ struct Tower {
 impl Tower {
     /// Radius of the spire's eaves.
     fn eave_r(&self) -> f32 {
-        self.s.r + if self.s.foot > 0.0 { 0.45 } else { 0.75 }
+        self.s.r + if self.s.foot > 0.0 { 0.35 } else { 0.5 }
     }
 
     /// Radius of the spire at `h` metres above its eaves.
@@ -272,6 +280,23 @@ fn edge_normal(i: usize) -> Vec2 {
     } else {
         -n
     }
+}
+
+/// The part of a convex polygon on the inner side of the line through `a`
+/// whose inward normal is `n`.
+fn clip(poly: &[Vec2], a: Vec2, n: Vec2) -> Vec<Vec2> {
+    let mut out = Vec::new();
+    for (i, &p) in poly.iter().enumerate() {
+        let q = poly[(i + 1) % poly.len()];
+        let (dp, dq) = ((p - a).dot(n), (q - a).dot(n));
+        if dp >= 0.0 {
+            out.push(p);
+        }
+        if (dp >= 0.0) != (dq >= 0.0) {
+            out.push(p + (q - p) * (dp / (dp - dq)));
+        }
+    }
+    out
 }
 
 /// Distance inside the ring's centre line (negative outside).
@@ -599,7 +624,10 @@ impl Castle {
                 return Some(BUILT);
             }
         }
-        if q.distance(WELL) < WELL_R + 0.1 && dy < 0.9 {
+        // The well, and room under its little roof, so no one stands with
+        // their head in it.
+        let w = q - WELL;
+        if (w.length() < WELL_R + 0.1 && dy < 0.9) || (w.x.abs() < 1.1 && w.y.abs() < 1.0 && dy < 3.2) {
             return Some(BUILT);
         }
         (dy < COURT_AIR).then_some(AIR)
@@ -933,7 +961,12 @@ impl Castle {
         let e0 = top + 0.15;
         lathe(out, c, &[(top, ring_r), (e0, re)], segs, OAK, false);
         let mut prof = vec![(e0, re)];
-        for u in [0.03f32, 0.08, 0.15, 0.24, 0.35, 0.48, 0.62, 0.76, 0.88, 0.96, 1.0] {
+        let steps: &[f32] = if near {
+            &[0.03, 0.08, 0.15, 0.24, 0.35, 0.48, 0.62, 0.76, 0.88, 0.96, 1.0]
+        } else {
+            &[0.06, 0.18, 0.35, 0.55, 0.78, 1.0]
+        };
+        for &u in steps {
             prof.push((e0 + u * s.spire, re * (1.0 - u).powf(1.3)));
         }
         lathe(out, c, &prof, segs, ROOF, true);
@@ -993,6 +1026,16 @@ impl Castle {
                 let dl = Vec2::new(a.cos(), a.sin());
                 let probe = s.at + dl * (r + 0.4);
                 if self.buried(probe, dy + wh * 0.5, own) || self.buried(probe, dy + wh + ww, own) {
+                    continue;
+                }
+                // Not behind a banner.
+                let bannered = TOWER_BANNERS.iter().any(|&(at, dir, top, len)| {
+                    at == s.at
+                        && dl.dot(dir.normalize()) > 0.7
+                        && dy < top + 0.3
+                        && dy + wh + ww * 1.8 > top - len - 1.0
+                });
+                if bannered {
                     continue;
                 }
                 // Low down, ringside towers only look out, over ground they clear.
@@ -1097,6 +1140,9 @@ impl Castle {
                 for k in 0..count {
                     let off = (k as f32 - (count - 1) as f32 * 0.5) * 3.0;
                     for &dy in rows {
+                        if dy + wh + ww * 1.8 > h.eave - 0.4 {
+                            continue;
+                        }
                         let q = mid + dir * s * half_depth + along * off;
                         let probe = q + dir * s * 0.4;
                         if self.buried(probe, dy + wh * 0.5, None) || self.buried(probe, dy + wh, None) {
@@ -1271,37 +1317,59 @@ impl Castle {
                 banner(out, top, self.dir(d), self.dir(n), 0.65, 4.2, near);
             }
         }
-        // Tall ones on the front tower, the great tower and the gatehouse.
-        let hang_round = |out: &mut MeshData, ti: usize, dy: f32, len: f32, dir: Vec2| {
-            let t = &self.towers[ti];
+        // Tall ones down the faces of towers, clear of their windows.
+        for &(at, dir, top, len) in &TOWER_BANNERS {
             let dl = dir.normalize();
-            let q = t.s.at + dl * (t.s.r + 0.12);
+            let r = self.towers.iter().find(|t| t.s.at == at).map_or(0.0, |t| t.s.r);
+            let q = at + dl * (r + 0.12);
             let n3 = self.dir(dl);
             let t3 = Vec3::new(-n3.z, 0.0, n3.x);
-            banner(out, self.pt(q, dy), t3, n3, 0.7, len, near);
-        };
-        hang_round(out, 1, 17.0, 6.5, Vec2::Y);
-        hang_round(out, 7, 31.0, 7.5, Vec2::new(0.25, 1.0));
-        hang_round(out, 9, 21.5, 5.5, Vec2::new(-0.2, 1.0));
-        for x in [GATE_X - 3.2, GATE_X + 3.2] {
-            let q = Vec2::new(x, GATEHOUSE_LO.y - 0.12);
-            banner(
-                out,
-                self.pt(q, GATEHOUSE_TOP - 0.7),
-                self.dir(Vec2::X),
-                self.dir(-Vec2::Y),
-                0.6,
-                4.0,
-                near,
-            );
+            banner(out, self.pt(q, top), t3, n3, 0.7, len, near);
         }
+        // One over the gate arch, between the gate towers.
+        let q = Vec2::new(GATE_X, GATEHOUSE_LO.y - 0.12);
+        banner(
+            out,
+            self.pt(q, GATEHOUSE_TOP - 0.7),
+            self.dir(Vec2::X),
+            self.dir(-Vec2::Y),
+            0.6,
+            3.6,
+            near,
+        );
     }
 
     /// Courtyard paving, the wall stair and the well.
     fn courtyard(&self, out: &mut MeshData) {
         let f = self.floor;
-        let pts: Vec<Vec3> = RING.iter().map(|&q| self.pt(q, 0.0)).collect();
-        panel(out, &pts, MASONRY);
+        // Paved in 4 m squares clipped to the ring, so each piece goes to the
+        // chunk it lies in and the floor streams in with the walls around it.
+        let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+        for q in RING {
+            lo = lo.min(q);
+            hi = hi.max(q);
+        }
+        let mut z = lo.y;
+        while z < hi.y {
+            let mut x = lo.x;
+            while x < hi.x {
+                let mut poly = vec![
+                    Vec2::new(x, z),
+                    Vec2::new(x + 4.0, z),
+                    Vec2::new(x + 4.0, z + 4.0),
+                    Vec2::new(x, z + 4.0),
+                ];
+                for (i, &a) in RING.iter().enumerate() {
+                    poly = clip(&poly, a, edge_normal(i));
+                }
+                if poly.len() >= 3 {
+                    let pts: Vec<Vec3> = poly.iter().map(|&q| self.pt(q, 0.0)).collect();
+                    panel(out, &pts, MASONRY);
+                }
+                x += 4.0;
+            }
+            z += 4.0;
+        }
         // The stair: solid steps against the east wall, rising to the walk.
         let steps = (WALK / STEP) as i32;
         for k in 0..steps {
@@ -1477,13 +1545,25 @@ fn arch_pts(foot: Vec3, t: Vec3, w: f32, h: f32) -> Vec<Vec3> {
     pts
 }
 
+/// Whether the window at `foot` is shuttered: a fixed hash of where it is.
+fn shuttered(foot: Vec3) -> bool {
+    let k = (foot * 4.0).round();
+    let h = (k.x as i32).wrapping_mul(73_856_093)
+        ^ (k.y as i32).wrapping_mul(19_349_663)
+        ^ (k.z as i32).wrapping_mul(83_492_791);
+    (h as u32).wrapping_mul(2_654_435_761) >> 30 == 0
+}
+
 /// A pointed window: warm panes in a stone surround with a sill. `foot` is
 /// the bottom centre on the wall face, `n` the face's outward normal.
 fn window(out: &mut MeshData, foot: Vec3, n: Vec3, w: f32, h: f32, near: bool) {
     let t = Vec3::new(-n.z, 0.0, n.x);
     let glass = foot + n * 0.06;
     let pts = arch_pts(glass, t, w, h);
-    panel(out, &pts, WINDOW);
+    // About one room in four keeps its oak shutters closed, so the lit windows
+    // scatter over the walls instead of every one burning alike.
+    let closed = shuttered(foot);
+    panel(out, &pts, if closed { OAK } else { WINDOW });
     if !near {
         return;
     }
@@ -1577,10 +1657,33 @@ fn banner(out: &mut MeshData, top: Vec3, t: Vec3, n: Vec3, w: f32, len: f32, nea
         0.05,
         GILT,
     );
-    // A gilt lozenge on the field.
-    let e = top + down * (len * 0.42) + n * 0.02;
-    let (a, b) = (w * 0.45, w * 0.7);
+    // The device, standing proud of the cloth: a gilt lozenge under a crown.
+    let o = n * 0.05;
+    let e = top + down * (len * 0.55) + o;
+    let (a, b) = (w * 0.55, w * 0.85);
     panel(out, &[e - t * a, e + down * b, e + t * a, e - down * b], GILT);
+    let c = e - down * (b + w * 0.25);
+    let (band, hw) = (w * 0.2, w * 0.5);
+    panel(
+        out,
+        &[
+            c - t * hw,
+            c + t * hw,
+            c + t * hw - down * band,
+            c - t * hw - down * band,
+        ],
+        GILT,
+    );
+    for k in [-1.0f32, 0.0, 1.0] {
+        let x = t * (k * w * 0.36);
+        let tip = if k == 0.0 { 0.5 } else { 0.38 };
+        let b0 = c - down * band + x;
+        panel(
+            out,
+            &[b0 - t * (w * 0.13), b0 + t * (w * 0.13), b0 - down * (w * tip)],
+            GILT,
+        );
+    }
     if near {
         // Gilt edging down the sides and round the point.
         let o = n * 0.02;
@@ -1724,12 +1827,25 @@ mod tests {
     }
 
     #[test]
-    fn spires_are_tall_and_below_the_sky() {
+    fn spires_are_needles_and_below_the_sky() {
         let (_, c) = castle();
         assert!(c.tip() < crate::terrain::WORLD_CHUNKS_Y as f32 * 16.0 - 2.0);
         for s in TOWERS {
-            assert!(s.spire >= 2.0 * 2.0 * s.r, "{s:?}");
+            assert!(s.spire >= 4.5 * s.r, "{s:?}");
         }
+        // The great tower is the tallest by a long way.
+        let tip = |s: &TowerSpec| s.top + s.spire;
+        let great = TOWERS.iter().find(|s| s.pennant).expect("great tower");
+        assert!(TOWERS.iter().all(|s| s.pennant || tip(s) < tip(great) - 10.0));
+    }
+
+    #[test]
+    fn banners_hang_clear_of_windows_and_the_well_has_headroom() {
+        let (t, c) = castle();
+        for &(at, _, _, _) in &TOWER_BANNERS {
+            assert!(c.towers.iter().any(|t| t.s.at == at), "no tower at {at}");
+        }
+        assert!(solid(at(&t, &c, WELL + Vec2::new(0.9, 0.0), 2.5)));
     }
 
     #[test]

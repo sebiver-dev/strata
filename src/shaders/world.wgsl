@@ -50,17 +50,40 @@ const CHUNK_M: f32 = 16.0;
 // Matches terrain::WATER_LEVEL_M: the water level along the home reach,
 // between the falls either side of HOME_Z (terrain::HOME_Z_M).
 const WATER_LEVEL: f32 = 24.5;
+// Matches bridge::BANNER_W: banner edges lie on multiples of it along X.
+const BANNER_W: f32 = 0.8;
 const HOME_Z: f32 = 1024.0;
-const FALL_COUNT: u32 = 10u;
+const FALL_COUNT: u32 = 13u;
 
 // Matches terrain::FALLS: the Z of each fall's lip and its drop in metres.
 fn fall(k: u32) -> vec2<f32> {
-    var falls = array<vec2<f32>, 10>(
+    var falls = array<vec2<f32>, 13>(
         vec2(380.0, 1.0), vec2(388.0, 1.0), vec2(396.0, 1.5), vec2(690.0, 8.0),
+        vec2(925.0, 1.0), vec2(932.0, 1.0), vec2(939.0, 1.0),
         vec2(1290.0, 1.0), vec2(1297.0, 1.0), vec2(1304.0, 1.0), vec2(1540.0, 4.0),
         vec2(1790.0, 1.5), vec2(1798.0, 1.5),
     );
     return falls[k];
+}
+
+const CLIFF_FALL_COUNT: u32 = 3u;
+
+// Matches vista::CLIFF_FALLS: where each waterfall off the castle bluff lands
+// (CliffFall::foot, x and z in metres).
+fn cliff_fall(k: u32) -> vec2<f32> {
+    var feet = array<vec2<f32>, 3>(
+        vec2(1062.6, 679.9), vec2(1045.8, 681.6), vec2(1019.7, 649.4),
+    );
+    return feet[k];
+}
+
+// Metres from the nearest spot where a cliff fall lands.
+fn from_cliff_fall(xz: vec2<f32>) -> f32 {
+    var best = 1e4;
+    for (var k = 0u; k < CLIFF_FALL_COUNT; k++) {
+        best = min(best, distance(xz, cliff_fall(k)));
+    }
+    return best;
 }
 
 // Matches terrain::fall_z: the lip bows a little across the river.
@@ -606,20 +629,23 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.rough = 0.9;
             wettable = false;
         }
-        case 8u: { // leaves: clumps of leaves, waxy and translucent
-            let clump = vnoise(q * 4.0);
-            let leaf = vnoise(q * 11.0 + 0.5);
-            let shape = smoothstep(0.25, 0.6, clump * 0.6 + leaf * 0.4);
-            let hue = vnoise(q * 1.7 + 3.0);
-            var c = mix(vec3(0.11, 0.26, 0.08), vec3(0.25, 0.40, 0.12), hue);
-            c = mix(c, vec3(0.36, 0.42, 0.12), smoothstep(0.6, 0.8, broad) * 0.5);
-            // Dark gaps between clumps read as depth inside the crown.
-            c *= mix(0.85, mix(0.68, 1.02, shape), d_dm);
+        case 8u: { // leaves: overlapping leaves in soft clumps, waxy and translucent
+            let clump = vnoise(q * 2.2);
+            let leaf = vnoise(q * 9.0 + 0.5);
+            let fine_leaf = vnoise(q * 23.0 + 1.7);
+            let shape = smoothstep(0.3, 0.7, clump * 0.5 + leaf * 0.35 + fine_leaf * 0.15);
+            let hue = vnoise(q * 0.9 + 3.0);
+            var c = mix(vec3(0.10, 0.25, 0.07), vec3(0.24, 0.42, 0.11), hue);
+            c = mix(c, vec3(0.38, 0.46, 0.13), smoothstep(0.6, 0.8, broad) * 0.5);
+            // Leaves facing up catch the sky; the undersides and the gaps
+            // between clumps fall into shade, so the crown reads as masses.
+            c *= mix(0.7, 1.08, smoothstep(-0.4, 0.8, n.y));
+            c *= mix(0.85, mix(0.6, 1.06, shape), d_dm);
             s.albedo = c;
-            s.rough = 0.5;
+            s.rough = 0.55;
             s.f0 = 0.04;
-            s.sss = 0.7;
-            s.height = shape * 0.015 * d_dm;
+            s.sss = 0.75;
+            s.height = (shape * 0.03 + fine_leaf * 0.008) * d_dm;
             wettable = false;
         }
         case 10u: { // planks
@@ -681,11 +707,12 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.f0 = 0.25;
             wettable = false;
         }
-        case 15u: { // lupin spike: packed purple florets, paler towards the tip
-            let florets = vnoise(q * 60.0);
-            let up = fract(p.y * 1.3);
-            var c = mix(vec3(0.30, 0.16, 0.56), vec3(0.55, 0.40, 0.82), florets * 0.7 + up * 0.3);
-            s.albedo = c * (0.85 + 0.3 * step(0.55, vnoise(q * 140.0)) * d_cm);
+        case 15u, 40u, 41u: { // lupin florets: violet, pink or white, each flower its own shade
+            var lo = vec3(0.28, 0.16, 0.62);
+            var hi = vec3(0.50, 0.36, 0.84);
+            if (mat == 40u) { lo = vec3(0.70, 0.30, 0.50); hi = vec3(0.92, 0.58, 0.74); }
+            if (mat == 41u) { lo = vec3(0.80, 0.78, 0.80); hi = vec3(0.96, 0.95, 0.92); }
+            s.albedo = mix(lo, hi, vnoise(q * 40.0));
             s.rough = 0.7;
             s.sss = 0.5;
             wettable = false;
@@ -801,7 +828,138 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.sss = 0.2;
             wettable = false;
         }
-        case 50u: { // banner: deep blue-violet wool hanging in soft vertical folds
+        case 53u: { // banner: deep blue-violet wool with a soft weave (trim in shade_terrain)
+            let weave = 0.5 + 0.25 * (sin(p.x * 160.0) + sin(p.y * 160.0 + p.z * 160.0));
+            s.albedo = vec3(0.10, 0.10, 0.34) * (0.85 + 0.2 * weave * d_cm) * (0.9 + 0.15 * fine);
+            s.rough = 1.0;
+            s.sss = 0.35;
+            wettable = false;
+        }
+        case 54u: { // bridge stone: rough blocks, mottled, mossy on top, damp near the water
+            let mottle = vnoise(q * 1.9) * 0.7 + broad * 0.3;
+            var c = mix(vec3(0.44, 0.42, 0.39), vec3(0.62, 0.58, 0.52), mottle) * (0.84 + 0.28 * fine);
+            // Pitted faces and a little lichen.
+            let pit = smoothstep(0.62, 0.8, vnoise(q * 7.0)) * d_dm;
+            c *= 1.0 - 0.08 * pit;
+            let lichen = smoothstep(0.72, 0.85, vnoise(q * 3.3 + 11.0)) * d_dm;
+            c = mix(c, vec3(0.62, 0.62, 0.50), lichen * 0.2);
+            // Moss on the tops of stones and creeping into the lower courses.
+            let level = water_level_at(p.xz);
+            let low = 1.0 - smoothstep(level + 0.8, level + 3.5, p.y);
+            let moss_m = smoothstep(0.55, 0.95, n.y + (fbm(q * 1.3) - 0.5) * 0.9) * 0.8
+                + smoothstep(0.55, 0.75, fbm(q * 0.9)) * low * 0.7;
+            let moss = mix(vec3(0.17, 0.26, 0.09), vec3(0.33, 0.40, 0.14), vnoise(q * 9.0)) * (0.8 + 0.4 * fine);
+            c = mix(c, moss, clamp(moss_m, 0.0, 1.0) * 0.85);
+            // A dark, damp band above the waterline with a ragged top edge.
+            let edge = level + 0.9 + 0.5 * vnoise(vec3(q.x * 1.1, 0.0, q.z * 1.1));
+            let damp = 1.0 - smoothstep(edge - 0.4, edge + 0.3, p.y);
+            c = mix(c, c * vec3(0.42, 0.46, 0.40), damp);
+            // Rain streaks down the faces.
+            let streak = smoothstep(0.55, 0.9, vnoise(vec3(q.x * 5.0 + q.z * 5.0, q.y * 0.35, 0.5))) * (1.0 - abs(n.y));
+            c *= 1.0 - 0.14 * streak;
+            s.albedo = c;
+            s.sss = clamp(moss_m, 0.0, 1.0) * 0.12;
+            s.rough = mix(0.82, 0.45, damp);
+            s.f0 = 0.04;
+            s.height = fine * 0.03 - pit * 0.012 + vnoise(q * 17.0) * 0.006 * d_cm;
+        }
+        case 30u: { // dry grass blades: straw gold
+            s.albedo = mix(vec3(0.52, 0.42, 0.18), vec3(0.72, 0.60, 0.30), vnoise(p * 0.3));
+            s.rough = 0.65;
+            s.f0 = 0.04;
+            s.sss = 0.6;
+            wettable = false;
+        }
+        case 31u: { // fresh grass blades of the verges: bright yellow-green
+            s.albedo = mix(vec3(0.34, 0.54, 0.11), vec3(0.52, 0.64, 0.17), vnoise(p * 0.2));
+            s.rough = 0.55;
+            s.f0 = 0.04;
+            s.sss = 0.8;
+            wettable = false;
+        }
+        case 32u: { // wildflower stems and leaves: deep blue-green
+            s.albedo = mix(vec3(0.14, 0.27, 0.09), vec3(0.22, 0.36, 0.13), vnoise(q * 7.0));
+            s.rough = 0.6;
+            s.sss = 0.5;
+            wettable = false;
+        }
+        case 33u: { // deep purple lupin florets
+            s.albedo = mix(vec3(0.16, 0.06, 0.36), vec3(0.30, 0.13, 0.54), vnoise(q * 40.0));
+            s.rough = 0.7;
+            s.sss = 0.45;
+            wettable = false;
+        }
+        case 35u: { // boulder: speckled grey granite with hairline cracks under a thick cap of moss
+            let tone = vnoise(q * 0.35);
+            var c = mix(vec3(0.42, 0.42, 0.43), vec3(0.57, 0.55, 0.51), tone) * (0.85 + 0.25 * fine);
+            // Dark mica and pale feldspar grains.
+            let grain = hash3(floor(q * 38.0));
+            c *= 1.0 + (0.28 * step(0.9, grain) - 0.3 * step(grain, 0.08)) * d_cm;
+            // Hairline cracks and pale lichen rosettes.
+            let cr = 1.0 - abs(2.0 * vnoise(q * vec3(2.2, 3.1, 2.2)) - 1.0);
+            let crack = smoothstep(0.955, 0.99, cr) * smoothstep(0.45, 0.6, vnoise(q * 0.8 + 3.0)) * d_dm;
+            c *= 1.0 - 0.5 * crack;
+            let lichen = smoothstep(0.72, 0.8, vnoise(q * 4.0 + 7.0)) * d_dm;
+            c = mix(c, vec3(0.70, 0.70, 0.60), lichen * 0.35);
+            // Moss grows on whatever faces the sky, with a fuzzy, ragged edge,
+            // but not below the waterline.
+            let ragged = fbm(q * 1.7) - 0.5 + (vnoise(q * 11.0) - 0.5) * 0.35;
+            let dry = smoothstep(water_level_at(p.xz), water_level_at(p.xz) + 0.3, p.y);
+            let moss_m = smoothstep(0.42, 0.7, n.y + ragged * 0.8) * dry;
+            let tuft = vnoise(q * 23.0);
+            let moss = mix(vec3(0.20, 0.33, 0.08), vec3(0.42, 0.52, 0.16), vnoise(q * 5.0)) * (0.85 + 0.3 * tuft);
+            c = mix(c, moss, moss_m);
+            s.albedo = c;
+            s.sss = moss_m * 0.3;
+            s.rough = mix(0.7, 0.95, moss_m);
+            s.f0 = 0.04;
+            s.height = (1.0 - moss_m) * (fine * 0.03 - crack * 0.02) + moss_m * (0.03 + tuft * 0.012 * d_cm);
+        }
+        case 27u: { // bark: deep vertical fissures between plated ridges, moss on top
+            let ridge = vnoise(vec3(q.x * 16.0, q.y * 0.9, q.z * 16.0)) * 0.6 + vnoise(vec3(q.x * 38.0, q.y * 2.5, q.z * 38.0)) * 0.4;
+            // Long narrow fissures between plates of grey-brown bark.
+            let plate = smoothstep(0.28, 0.55, ridge);
+            let crack = smoothstep(0.55, 0.62, vnoise(vec3(q.x * 9.0, q.y * 7.0, q.z * 9.0))) * plate;
+            var c = mix(vec3(0.10, 0.08, 0.065), mix(vec3(0.25, 0.21, 0.17), vec3(0.33, 0.28, 0.22), vnoise(q * 1.7)), plate);
+            c = mix(c, c * 0.65, crack * d_dm);
+            c *= 0.85 + 0.3 * fine;
+            // Moss settles on the upper sides of roots and boughs.
+            let moss_m = smoothstep(0.35, 0.85, n.y + (vnoise(q * 2.3) - 0.5) * 0.8);
+            c = mix(c, mix(vec3(0.17, 0.27, 0.08), vec3(0.30, 0.38, 0.12), vnoise(q * 7.0)), moss_m * 0.85);
+            s.albedo = c;
+            s.rough = 0.9;
+            s.sss = moss_m * 0.15;
+            s.height = (plate * 0.03 - crack * 0.01) * d_dm + fine * 0.01;
+            wettable = false;
+        }
+        case 28u: { // broadleaf foliage: masses of small leaves, sunlit tips, dark gaps
+            let leaves = vnoise(q * 5.0) * 0.55 + vnoise(q * 13.0 + 0.5) * 0.45;
+            let shape = smoothstep(0.3, 0.7, leaves);
+            let hue = vnoise(p * 0.11 + 3.0) * 0.7 + vnoise(q * 1.3) * 0.3;
+            var c = mix(vec3(0.09, 0.22, 0.06), vec3(0.24, 0.40, 0.10), hue);
+            c = mix(c, vec3(0.38, 0.46, 0.14), smoothstep(0.62, 0.85, broad) * 0.45);
+            c *= mix(0.9, mix(0.62, 1.08, shape), d_dm);
+            s.albedo = c;
+            s.rough = 0.55;
+            s.f0 = 0.04;
+            s.sss = 0.8;
+            s.height = shape * 0.05 * d_dm + leaves * 0.02;
+            wettable = false;
+        }
+        case 29u: { // conifer needles: dark blue-green sprays
+            let spray = vnoise(vec3(q.x * 9.0, q.y * 3.0, q.z * 9.0)) * 0.6 + vnoise(q * 23.0) * 0.4;
+            let shape = smoothstep(0.3, 0.7, spray);
+            let hue = vnoise(p * 0.09 + 7.0);
+            var c = mix(vec3(0.05, 0.14, 0.09), vec3(0.13, 0.25, 0.12), hue);
+            c *= mix(0.9, mix(0.65, 1.08, shape), d_dm);
+            s.albedo = c;
+            s.rough = 0.6;
+            s.f0 = 0.04;
+            s.sss = 0.45;
+            s.height = shape * 0.04 * d_dm;
+            wettable = false;
+        }
+        case 50u: { // castle banner: deep blue-violet wool hanging still in soft folds
             let fold = 0.5 + 0.5 * sin(dot(p.xz, vec2(7.0, 7.0)) + 0.8 * sin(p.y * 1.3));
             let weave = 0.5 + 0.25 * (sin(p.x * 160.0 + p.y * 160.0) + sin(p.z * 160.0 - p.y * 160.0));
             s.albedo = vec3(0.13, 0.11, 0.38) * (0.75 + 0.35 * fold) * (0.9 + 0.12 * weave * d_cm) * (0.92 + 0.12 * broad);
@@ -841,6 +999,18 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             wettable = false;
         }
         default: {}
+    }
+
+    // High up, snow settles on whatever faces the sky and slides off steep
+    // rock, with a soft, ragged snowline (the voxels carry the coarse cover).
+    if (mat == 1u || mat == 2u || mat == 3u || mat == 5u || mat == 6u) {
+        let ragged = vnoise(p * 0.08) * 16.0 + vnoise(p * 0.6) * 3.0;
+        let line = 100.0 + ragged - 10.0 * smoothstep(0.75, 0.95, n.y);
+        let cover = smoothstep(line - 3.0, line + 3.0, p.y) * smoothstep(0.5, 0.8, n.y);
+        let snow = vec3(0.86, 0.89, 0.94) * (0.92 + 0.1 * vnoise(q * 3.0));
+        s.albedo = mix(s.albedo, snow, cover);
+        s.rough = mix(s.rough, 0.7, cover);
+        s.sss = mix(s.sss, 0.4, cover);
     }
 
     // Ground just above the waterline is darker and glossier.
@@ -914,7 +1084,7 @@ const PLANT_RANGE: f32 = 70.0;
 
 // Grass blades and wildflowers: thin, wind-bent, left out of the shadow map.
 fn is_plant(mat: u32) -> bool {
-    return mat == 13u || (mat >= 15u && mat <= 17u);
+    return mat == 13u || (mat >= 15u && mat <= 17u) || (mat >= 30u && mat <= 33u) || mat == 40u || mat == 41u;
 }
 
 // Leaves sway a few centimetres in the wind. The offset depends only on the
@@ -933,7 +1103,19 @@ fn sway(pos: vec3<f32>, data: u32) -> vec3<f32> {
         let bend = (0.12 + 0.35 * gust * wave + flutter * 0.1) * tip;
         return pos + vec3(wind.x * bend, -abs(bend) * 0.25, wind.y * bend);
     }
-    if (mat != 8u) {
+    if (mat == 53u) {
+        // Banners flap about their rod: the AO bits hold how far down the cloth
+        // a vertex is. Both sides move the same way so the cloth stays whole.
+        let tip = f32((data >> 11u) & 3u) / 3.0;
+        var nn = vertex_normal(data);
+        if (nn.x + nn.z < 0.0) {
+            nn = -nn;
+        }
+        let ph = pos.x * 0.9 + pos.z * 0.7;
+        let flap = 0.6 * sin(t * 1.4 + ph) + 0.4 * sin(t * 3.3 + ph * 1.7 + tip * 2.5);
+        return pos + (nn * flap * 0.1 + vec3(0.06, 0.0, 0.03) * (0.5 + 0.5 * sin(t * 0.7 + ph))) * tip;
+    }
+    if (mat != 8u && mat != 28u && mat != 29u) {
         return pos;
     }
     let ph = dot(pos, vec3(0.7, 0.3, 0.5));
@@ -1021,10 +1203,21 @@ fn shade_terrain(i: VOut) -> vec4<f32> {
     let mat = (i.info >> 3u) & 255u;
     let pix = length(fwidth(i.world)) * 0.7;
     var surf = material(mat, i.world, n, pix);
-    if (mat == 13u) {
+    if (mat == 13u || mat == 30u || mat == 31u) {
         // Blades darken towards the ground and dry out a little at the tips.
         surf.albedo *= mix(0.45, 1.1, i.ao);
         surf.albedo = mix(surf.albedo, surf.albedo * vec3(1.25, 1.1, 0.7), i.ao * i.ao * 0.5);
+    }
+    var ao_in = i.ao;
+    if (mat == 53u) {
+        // Gold trim down the sides and across the top, and a ring on the cloth.
+        let fu = fract(i.world.x / BANNER_W);
+        let side = 1.0 - smoothstep(0.05, 0.075, min(fu, 1.0 - fu));
+        let top_band = 1.0 - smoothstep(0.04, 0.06, i.ao);
+        let low_band = smoothstep(0.83, 0.85, i.ao) * (1.0 - smoothstep(0.87, 0.89, i.ao));
+        let ring = 1.0 - smoothstep(0.02, 0.03, abs(length(vec2((fu - 0.5) * BANNER_W, (i.ao - 0.42) * 1.7)) - 0.15));
+        surf.albedo = mix(surf.albedo, lin(vec3(0.85, 0.62, 0.20)), max(max(side, top_band), max(low_band, ring)));
+        ao_in = 1.0;
     }
     let nb = bump_normal(n, i.world, surf.height);
 
@@ -1033,7 +1226,7 @@ fn shade_terrain(i: VOut) -> vec4<f32> {
     let v = normalize(to_cam);
     // Translucent materials (leaves most of all) get softer occlusion and a
     // light that wraps past the terminator instead of cutting off hard.
-    let ao = mix(mix(0.35, 0.6, surf.sss), 1.0, i.ao);
+    let ao = mix(mix(0.35, 0.6, surf.sss), 1.0, ao_in);
     let facing = step(0.0, dot(n, sun));
     let sh = sun_shadow(i.world, n) * facing;
     let wrap = surf.sss * 0.6;
@@ -1229,7 +1422,9 @@ fn shade_water(i: VOut) -> vec4<f32> {
     let foam = (1.0 - smoothstep(0.0, 0.45, depth_below)) * smoothstep(0.35, 0.65, foam_n * 0.7 + streak * 0.3);
     // The pool at the foot of a fall churns white, calming downstream.
     let fall_d = below_fall(p.xz);
-    let churn = (1.0 - smoothstep(0.0, 9.0, fall_d)) * smoothstep(-2.0, 0.0, fall_d);
+    var churn = (1.0 - smoothstep(0.0, 9.0, fall_d)) * smoothstep(-2.0, 0.0, fall_d);
+    // So does the plunge pool where a fall off the castle bluff lands.
+    churn = max(churn, 1.0 - smoothstep(1.0, 7.0, from_cliff_fall(p.xz)));
     let churn_n = vnoise2(vec2(p.x * 3.0, p.z * 2.0 - t * 2.2)) * 0.5 + vnoise2(p.xz * 7.0 + t * 0.7) * 0.5;
     var white = max(foam, churn * smoothstep(0.2, 0.55, churn_n * (0.6 + 0.5 * churn)));
     if (face_n.y < 0.5) {

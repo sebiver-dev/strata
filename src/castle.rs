@@ -22,12 +22,9 @@ use crate::block::*;
 use crate::mesh::{smooth_data, MeshData, Vertex};
 use crate::model::{beam, panel, soft_box};
 use crate::terrain::Terrain;
+use crate::vista;
 use glam::{Vec2, Vec3};
 use std::f32::consts::{PI, TAU};
-
-/// Where the castle stands: the top of the cliff above the falls on the east
-/// bank (world metres, X and Z). One place to swap for the terrain's anchor.
-const CASTLE_TOP: Vec2 = Vec2::new(1045.0, 650.0);
 
 /// Height of the wall walk above the courtyard.
 const WALK: f32 = 9.0;
@@ -244,6 +241,8 @@ pub struct Castle {
     pub fwd: Vec2,
     /// Height of the courtyard floor.
     pub floor: f32,
+    /// Lowest ground inside the walls.
+    pub ground_lo: f32,
     towers: Vec<Tower>,
     /// Bottom of each ring edge's footing (absolute metres).
     wall_base: Vec<f32>,
@@ -310,6 +309,7 @@ impl Castle {
             c,
             fwd,
             floor: 0.0,
+            ground_lo: 0.0,
             towers: Vec::new(),
             wall_base: Vec::new(),
             gate_base: 0.0,
@@ -338,6 +338,7 @@ impl Castle {
             z += 2.0;
         }
         hs.sort_by(f32::total_cmp);
+        castle.ground_lo = hs.first().copied().unwrap_or(40.0);
         let median = hs.get(hs.len() / 2).copied().unwrap_or(40.0);
         let top = hs.last().copied().unwrap_or(median);
         let floor = ((median + top) * 0.5 + 0.5).min(median + 3.0);
@@ -1020,7 +1021,11 @@ impl Castle {
                 + Vec3::Y * (up * half)
         };
         for i in 0..n {
-            panel(out, &[at(i, -1.0), at(i + 1, -1.0), at(i + 1, 1.0), at(i, 1.0)], BANNER);
+            panel(
+                out,
+                &[at(i, -1.0), at(i + 1, -1.0), at(i + 1, 1.0), at(i, 1.0)],
+                CASTLE_BANNER,
+            );
         }
     }
 
@@ -1389,7 +1394,7 @@ impl Castle {
 /// front turned towards the player's arrival point, squared to the world axes
 /// so its walls, steps and stair line up with the voxels that carry collision.
 fn site(spawn: Vec3) -> (Vec2, Vec2) {
-    let c = CASTLE_TOP;
+    let c = Vec2::new(vista::CASTLE_TOP.0, vista::CASTLE_TOP.2);
     let d = Vec2::new(spawn.x, spawn.z) - c;
     let fwd = if d.x.abs() > d.y.abs() {
         Vec2::new(d.x.signum(), 0.0)
@@ -1564,7 +1569,7 @@ fn banner(out: &mut MeshData, top: Vec3, t: Vec3, n: Vec3, w: f32, len: f32, nea
         top + down * (len + w * 1.1),
         top - t * w + down * len,
     ];
-    panel(out, &pts, BANNER);
+    panel(out, &pts, CASTLE_BANNER);
     beam(
         out,
         top - t * (w + 0.18) + Vec3::Y * 0.05,

@@ -52,8 +52,34 @@ pub const CLOTH: Block = 24;
 pub const BUILT: Block = 25;
 /// Wrought iron: lantern frames, arms and chains (mesh only).
 pub const IRON: Block = 26;
-/// Deep blue-violet banner cloth (mesh only).
-pub const BANNER: Block = 50;
+/// Deep blue-violet woollen banner with a gold trim; sways in the wind (mesh only).
+pub const BANNER: Block = 53;
+/// Rough bridge stone: mottled, mossy on top, dark and damp near the water (mesh only).
+pub const BRIDGE_STONE: Block = 54;
+/// Mossy granite boulders (mesh only; their voxels are `BUILT`).
+pub const BOULDER: Block = 35;
+/// Pink and white lupin florets (mesh only); LUPIN is the purple kind.
+pub const LUPIN_PINK: Block = 40;
+pub const LUPIN_WHITE: Block = 41;
+
+// Plant materials (mesh only; see plants.rs).
+/// Dry, golden grass blades.
+pub const DRY_GRASS: Block = 30;
+/// Fresh yellow-green grass blades of the verges and banks.
+pub const FRESH_GRASS: Block = 31;
+/// Stems and leaves of wildflowers.
+pub const STEM: Block = 32;
+/// Deep purple lupin florets.
+pub const LUPIN_DEEP: Block = 33;
+// Tree models (mesh only; trunks collide through hidden BUILT voxels).
+/// Bark on trunks and boughs.
+pub const BARK: Block = 27;
+/// Broadleaf foliage clumps.
+pub const FOLIAGE: Block = 28;
+/// Conifer needles.
+pub const NEEDLES: Block = 29;
+/// The castle's deep blue-violet banner cloth, hung still (mesh only).
+pub const CASTLE_BANNER: Block = 50;
 /// Pale dressed limestone of the castle (mesh only).
 pub const ASHLAR: Block = 51;
 /// Gilding: finials, banner rods and trim (mesh only).
@@ -89,6 +115,12 @@ pub fn name(b: Block) -> &'static str {
         POST => "post",
         IRON => "iron",
         BANNER => "banner",
+        BRIDGE_STONE => "bridge stone",
+        BOULDER => "boulder",
+        BARK => "bark",
+        FOLIAGE => "foliage",
+        NEEDLES => "needles",
+        CASTLE_BANNER => "castle banner",
         ASHLAR => "ashlar",
         GILT => "gilt",
         _ => "unknown",

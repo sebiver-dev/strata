@@ -4,6 +4,7 @@
 pub mod app;
 pub mod avatar;
 pub mod block;
+pub mod bridge;
 pub mod budget;
 pub mod castle;
 pub mod chunk;
@@ -13,10 +14,14 @@ pub mod game;
 pub mod mesh;
 pub mod model;
 pub mod noise;
+pub mod plants;
 pub mod player;
 pub mod renderer;
+pub mod rocks;
 pub mod structures;
 pub mod terrain;
+pub mod trees;
+pub mod vista;
 #[cfg(target_arch = "wasm32")]
 pub mod web;
 pub mod world;

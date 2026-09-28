@@ -140,6 +140,8 @@ pub fn build(world: &World, cpos: IVec3) -> MeshData {
     let mut out = build_voxels(world, cpos);
     // Buildings and fences are authored models; their voxels only give collision.
     world.terrain.structures.append_models(cpos, &mut out);
+    crate::rocks::append(&world.terrain, cpos, &mut out);
+    crate::trees::append(&world.terrain, cpos, &mut out);
     out
 }
 
@@ -179,7 +181,13 @@ fn build_voxels(world: &World, cpos: IVec3) -> MeshData {
                     continue;
                 }
                 if b == TALL_GRASS {
-                    grass_blades(&mut out, origin, p, world.terrain.seed);
+                    let w = origin + p;
+                    crate::plants::tuft(
+                        &mut out,
+                        world.terrain.seed,
+                        w,
+                        &crate::plants::Spot::at(&world.terrain, w),
+                    );
                     continue;
                 }
                 if b == POST {
@@ -396,140 +404,6 @@ const CELL_EDGES: [(usize, usize); 12] = [
     (2, 6),
     (3, 7),
 ];
-
-/// Blades per tall grass voxel.
-const BLADES: u32 = 5;
-
-/// A tuft of thin tapered blades rising from the floor of voxel `p`. Heights
-/// vary in soft patches, from ankle-high to hip-high, and tall-grass fields
-/// stand chest- to head-high. Each blade leans a little its own way; tall ones
-/// get a joint halfway so they bend in a curve. Both windings are emitted so
-/// blades show from either side.
-fn grass_blades(out: &mut MeshData, origin: IVec3, p: IVec3, seed: u32) {
-    let w = origin + p;
-    // Rooted a little below the voxel floor, since the smooth ground can dip there.
-    let floor = w.as_vec3() * VOXEL_SIZE - Vec3::Y * 0.12;
-    let patch = crate::noise::fbm2(97, w.x as f32 / 9.0, w.z as f32 / 9.0, 2);
-    let field = crate::terrain::tall_meadow(seed, w.x as f32 * VOXEL_SIZE, w.z as f32 * VOXEL_SIZE);
-    let tall = (0.22 + 0.95 * patch * patch) * (1.0 - field) + (1.25 + 0.6 * patch) * field;
-    let blades = BLADES + (field * 3.0).round() as u32;
-    let data = |ao: u32| 2 | ((TALL_GRASS as u32) << 3) | (ao << 11);
-    for k in 0..blades {
-        let h = crate::noise::hash3(0x5eed + k, w.x, w.y, w.z);
-        let r = |shift: u32| crate::noise::unit(h.rotate_left(shift));
-        let base = floor + Vec3::new(0.05 + 0.4 * r(0), 0.0, 0.05 + 0.4 * r(8));
-        let height = tall * (0.55 + 0.6 * r(16));
-        let angle = r(24) * std::f32::consts::TAU;
-        let side = Vec3::new(angle.cos(), 0.0, angle.sin()) * (0.035 + 0.012 * field);
-        let lean = Vec3::new(r(4) - 0.5, 0.0, r(12) - 0.5) * height * 0.5;
-        let tip = base + lean + Vec3::Y * height;
-        let start = out.vertices.len() as u32;
-        let mut push = |pos: Vec3, ao: u32| {
-            out.vertices.push(Vertex {
-                pos: pos.to_array(),
-                data: data(ao),
-            })
-        };
-        push(base - side, 0);
-        push(base + side, 0);
-        if height > 0.7 {
-            // Joint halfway up, leaning less than the tip so the blade curves.
-            let mid = base + lean * 0.3 + Vec3::Y * height * 0.55;
-            push(mid - side * 0.7, 1);
-            push(mid + side * 0.7, 1);
-            push(tip, 3);
-            let (a, b, c, d, t) = (start, start + 1, start + 2, start + 3, start + 4);
-            out.indices
-                .extend_from_slice(&[a, b, d, a, d, b, a, d, c, a, c, d, c, d, t, c, t, d]);
-        } else {
-            push(tip, 3);
-            out.indices
-                .extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 1]);
-        }
-    }
-    flowers(out, floor + Vec3::Y * 0.1, w, seed);
-}
-
-/// Adds a double-sided triangle for flowers and stems; `ao` is the height
-/// along the plant that the wind bends (3 at the top).
-fn plant_tri(out: &mut MeshData, pts: [(Vec3, u32); 3], mat: Block) {
-    let start = out.vertices.len() as u32;
-    for (pos, ao) in pts {
-        out.vertices.push(Vertex {
-            pos: pos.to_array(),
-            data: 2 | ((mat as u32) << 3) | (ao << 11),
-        });
-    }
-    out.indices
-        .extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 1]);
-}
-
-/// Wildflowers among the grass of voxel `w`: purple lupin spikes in patches,
-/// and daisies scattered through the meadows.
-fn flowers(out: &mut MeshData, floor: Vec3, w: IVec3, seed: u32) {
-    let h = crate::noise::hash3(0xf10e, w.x, w.y, w.z);
-    let r = |shift: u32| crate::noise::unit(h.rotate_left(shift));
-    let (xm, zm) = (w.x as f32 * VOXEL_SIZE, w.z as f32 * VOXEL_SIZE);
-    let lupins = crate::noise::fbm2(seed.wrapping_add(50), xm / 16.0, zm / 16.0, 2);
-    let meadow = crate::terrain::meadow(seed, xm, zm);
-    let at = floor + Vec3::new(0.1 + 0.3 * r(3), -0.1, 0.1 + 0.3 * r(7));
-    let angle = r(11) * std::f32::consts::TAU;
-    let across = Vec3::new(angle.cos(), 0.0, angle.sin());
-    let across2 = Vec3::new(-across.z, 0.0, across.x);
-    if lupins > 0.55 && r(0) < 0.6 {
-        // A stem, then a tapering spike of florets on its top half, as two crossed planes.
-        let height = 0.7 + 0.55 * r(15);
-        let lean = Vec3::new(r(19) - 0.5, 0.0, r(23) - 0.5) * 0.12;
-        let spike = at + lean * 0.5 + Vec3::Y * height * 0.45;
-        let top = at + lean + Vec3::Y * height;
-        plant_tri(
-            out,
-            [(at - across * 0.012, 0), (at + across * 0.012, 0), (spike, 1)],
-            TALL_GRASS,
-        );
-        let wide = 0.07 + 0.03 * r(27);
-        for side in [across, across2] {
-            plant_tri(
-                out,
-                [(spike - side * wide, 1), (spike + side * wide, 1), (top, 3)],
-                LUPIN,
-            );
-        }
-    } else if r(0) < 0.03 + 0.1 * meadow {
-        // A daisy: a thin stem with a white flower head facing the sky.
-        let height = 0.22 + 0.25 * r(15);
-        let top = at + Vec3::new(r(19) - 0.5, 0.0, r(23) - 0.5) * 0.08 + Vec3::Y * height;
-        plant_tri(
-            out,
-            [(at - across * 0.008, 0), (at + across * 0.008, 0), (top, 3)],
-            TALL_GRASS,
-        );
-        let ring = |k: u32, rad: f32, y: f32| {
-            let a = angle + k as f32 * std::f32::consts::TAU / 6.0;
-            top + Vec3::new(a.cos() * rad, y, a.sin() * rad)
-        };
-        let petals = 0.045 + 0.02 * r(29);
-        for k in 0..6 {
-            plant_tri(
-                out,
-                [(top, 3), (ring(k, petals, 0.0), 3), (ring(k + 1, petals, 0.0), 3)],
-                DAISY,
-            );
-        }
-        for k in 0..6 {
-            let y = 0.006;
-            plant_tri(
-                out,
-                [
-                    (top + Vec3::Y * y, 3),
-                    (ring(k, 0.016, y), 3),
-                    (ring(k + 1, 0.016, y), 3),
-                ],
-                DAISY_HEART,
-            );
-        }
-    }
-}
 
 /// Adds a flat convex polygon (a triangle or quad) facing away from `centre`.
 fn flat(out: &mut MeshData, pts: &[Vec3], centre: Vec3, mat: Block) {
@@ -907,12 +781,9 @@ mod tests {
         let blades = m
             .vertices
             .iter()
-            .filter(|v| (v.data >> 3) & 255 == TALL_GRASS as u32)
+            .filter(|v| [TALL_GRASS, DRY_GRASS, FRESH_GRASS].contains(&(((v.data >> 3) & 255) as Block)))
             .count();
-        assert!(
-            (3 * BLADES as usize..=5 * (BLADES as usize + 3)).contains(&blades),
-            "{blades}"
-        );
+        assert!((6..=80).contains(&blades), "{blades}");
     }
 
     #[test]

@@ -107,7 +107,7 @@ fn in_voxel(p: Vec3, target: Vec3) -> bool {
 /// Where the bridge crosses the river (Z, metres): 72 m ahead of the spawn
 /// point, where the road meets the river, with the falls upstream seen
 /// through its arches. Swap for the vista's own constant when it lands.
-pub const BRIDGE_Z: f32 = crate::terrain::WORLD_SIZE_M * 0.5 - 72.0;
+pub const BRIDGE_Z: f32 = crate::vista::BRIDGE_Z;
 
 /// The narrowest reach of water within a few metres of `BRIDGE_Z`,
 /// preferring the middle and never near a fall.

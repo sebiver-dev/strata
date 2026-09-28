@@ -76,10 +76,19 @@ const CLIFF_FALL_COUNT: u32 = 3u;
 // (CliffFall::foot, x and z in metres).
 fn cliff_fall(k: u32) -> vec2<f32> {
     var feet = array<vec2<f32>, 3>(
-        vec2(1062.6, 679.9), vec2(1045.8, 681.6), vec2(1019.7, 649.4),
+        vec2(1063.3, 685.8), vec2(1044.0, 687.3), vec2(1015.8, 650.2),
     );
     return feet[k];
 }
+
+// Matches vista::CLIFF_FALLS: half the width of each fall's sheet (metres).
+fn cliff_fall_half_w(k: u32) -> f32 {
+    var w = array<f32, 3>(1.25, 1.0, 1.25);
+    return w[k];
+}
+
+// Matches vista::CASTLE_TOP.y - 1.2: the height the cliff falls pour from.
+const CLIFF_LIP_Y: f32 = 103.8;
 
 // Metres from the nearest spot where a cliff fall lands.
 fn from_cliff_fall(xz: vec2<f32>) -> f32 {
@@ -88,6 +97,25 @@ fn from_cliff_fall(xz: vec2<f32>) -> f32 {
         best = min(best, distance(xz, cliff_fall(k)));
     }
     return best;
+}
+
+// Where a point lies on a cliff fall's sheet: x metres across it from its
+// middle, y how far down it (0 at the lip, 1 at the pool), z its half width
+// and w the pool's height. z is 0 off every sheet.
+fn on_cliff_fall(p: vec3<f32>) -> vec4<f32> {
+    for (var k = 0u; k < CLIFF_FALL_COUNT; k++) {
+        let foot = cliff_fall(k);
+        let out = normalize(foot - SNOW_FREE.xy);
+        let rel = p.xz - foot;
+        let along = dot(rel, out);
+        let across = rel.x * out.y - rel.y * out.x;
+        let hw = cliff_fall_half_w(k);
+        let pool = water_level_at(foot);
+        if (abs(across) < hw + 1.5 && along > -45.0 && along < 3.0 && p.y > pool + 0.15) {
+            return vec4(across, clamp((CLIFF_LIP_Y - p.y) / (CLIFF_LIP_Y - pool), 0.0, 1.0), hw, pool);
+        }
+    }
+    return vec4(0.0);
 }
 
 // Matches terrain::fall_z: the lip bows a little across the river.
@@ -110,13 +138,15 @@ fn water_level_at(xz: vec2<f32>) -> f32 {
     return level;
 }
 
-// Metres downstream of the nearest fall's lip (large when none is near).
-fn below_fall(xz: vec2<f32>) -> f32 {
-    var best = 1e4;
+// Metres downstream of the nearest fall's lip (large when none is near), and
+// that fall's drop in metres.
+fn below_fall(xz: vec2<f32>) -> vec2<f32> {
+    var best = vec2(1e4, 0.0);
     for (var k = 0u; k < FALL_COUNT; k++) {
-        let d = xz.y - fall_z(fall(k).x, xz.x);
-        if (d >= -2.0) {
-            best = min(best, d);
+        let f = fall(k);
+        let d = xz.y - fall_z(f.x, xz.x);
+        if (d >= -2.0 && d < best.x) {
+            best = vec2(d, f.y);
         }
     }
     return best;
@@ -459,7 +489,42 @@ fn apply_fog(c: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
     let mist_col = mix(air, air * vec3(0.9, 0.85, 1.05), golden_hour()) + glow * 0.4;
     let mt = exp(-mist);
     out = out * mt + mist_col * (1.0 - mt);
+    out = plunge_mist(out, dir, dist, mist_col + glow * 0.6);
     return out + lamp_glow(dir, dist);
+}
+
+// Spray hanging over the pools where the castle crag's falls land, and a
+// little over the foot of the cascade below the bridge: soft puffs, taller than
+// wide, billowing slowly, summed along the view ray up to the point shaded.
+fn plunge_mist(c: vec3<f32>, dir: vec3<f32>, dist: f32, col: vec3<f32>) -> vec3<f32> {
+    let cam = g.camera_pos.xyz;
+    let t = g.sun_dir.w;
+    var acc = 0.0;
+    for (var k = 0u; k <= CLIFF_FALL_COUNT; k++) {
+        // centre, then radius and strength
+        var at = vec3(891.0, WATER_LEVEL + 1.2, 941.0);
+        var r = 3.5;
+        var amount = 0.35;
+        if (k < CLIFF_FALL_COUNT) {
+            let f = cliff_fall(k);
+            at = vec3(f.x, water_level_at(f) + 4.0, f.y);
+            r = 7.0;
+            amount = 0.8;
+        }
+        let oc = at - cam;
+        let tc = dot(oc, dir);
+        let near = cam + dir * clamp(tc, 0.0, dist);
+        let d = (near - at) * vec3(1.0, 0.55, 1.0);
+        let dd = dot(d, d) / (r * r);
+        if (dd < 4.0) {
+            // Only the part of the puff in front of the surface counts.
+            let front = clamp((dist - tc) / r * 0.5 + 0.5, 0.0, 1.0);
+            let billow = 0.55 + 0.9 * vnoise((near - at) * 0.3 + vec3(0.0, -t * 0.6, t * 0.2));
+            acc += amount * exp(-dd * 1.6) * front * billow;
+        }
+    }
+    let lit = mix(col, vec3(dot(col, vec3(0.3, 0.5, 0.2))) * 1.15, 0.4);
+    return mix(c, lit, 1.0 - exp(-acc));
 }
 
 fn finish(c: vec3<f32>) -> vec3<f32> {
@@ -571,12 +636,50 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             // Moss creeps over the tops of rocks and boulders in soft patches.
             let moss_m = smoothstep(0.35, 0.8, n.y + (fbm(q * 1.3) - 0.5) * 0.9);
             let moss = mix(vec3(0.18, 0.30, 0.09), vec3(0.34, 0.42, 0.14), vnoise(q * 9.0)) * (0.8 + 0.4 * fine);
+            var relief = 0.0;
+            var rough = 0.75;
+            // Steep rock: strata a few metres thick, each ending in a jutting
+            // brow with a shadowed recess under it, and vertical flutes. They
+            // are metres across, so they hold up on the coarse far ground too.
+            let steep = 1.0 - smoothstep(0.45, 0.75, n.y);
+            if (steep > 0.0) {
+                let layer = fract((p.y + 3.0 * vnoise(p * 0.06)) / 4.2);
+                let brow = smoothstep(0.86, 0.94, layer);
+                let recess = smoothstep(0.5, 0.86, layer) * (1.0 - brow);
+                let tang = normalize(vec2(-n.z, n.x) + vec2(1e-4, 0.0));
+                let along = dot(p.xz, tang);
+                let flute = vnoise2(vec2(along * 0.45, p.y * 0.04)) * 0.65 + vnoise2(vec2(along * 1.3, p.y * 0.1)) * 0.35;
+                relief = steep * (0.35 * brow - 0.18 * recess + 0.55 * flute);
+                c *= 1.0 - steep * (0.32 * recess * recess + 0.12 * (1.0 - flute));
+                // The castle crag: warm grey, streaked dark where water runs
+                // down it and darkest and glossiest under the falls, with
+                // lichen in pale patches.
+                let crag = 1.0 - smoothstep(SNOW_FREE.z - 30.0, SNOW_FREE.z, distance(p.xz, SNOW_FREE.xy));
+                if (crag > 0.0) {
+                    c = mix(c, c * vec3(1.12, 1.06, 0.98) + vec3(0.03), crag);
+                    let runs = smoothstep(0.55, 0.85, vnoise2(vec2(along * 0.3, p.y * 0.012)));
+                    var wet = runs * 0.45;
+                    for (var k = 0u; k < CLIFF_FALL_COUNT; k++) {
+                        let foot = cliff_fall(k);
+                        let out = normalize(foot - SNOW_FREE.xy);
+                        let rel = p.xz - foot;
+                        let across = abs(rel.x * out.y - rel.y * out.x) / (cliff_fall_half_w(k) + 2.5);
+                        let under = step(dot(rel, out), 3.0) * step(p.y, CLIFF_LIP_Y + 1.0);
+                        wet = max(wet, exp(-across * across) * under);
+                    }
+                    wet *= crag * steep;
+                    c = mix(c, c * vec3(0.42, 0.48, 0.46), wet);
+                    rough = mix(rough, 0.3, wet);
+                    let lichen = smoothstep(0.55, 0.8, vnoise(p * 0.21 + vec3(3.1)) * 0.7 + fine * 0.3) * (1.0 - wet);
+                    c = mix(c, vec3(0.60, 0.62, 0.44) * (0.85 + 0.3 * fine), lichen * 0.4 * crag);
+                }
+            }
             c = mix(c, moss, moss_m * 0.9);
             s.albedo = c;
             s.sss = moss_m * 0.15;
-            s.rough = 0.75;
+            s.rough = rough;
             s.f0 = 0.04;
-            s.height = fine * 0.04 - crack_m * 0.02 + vnoise(q * 17.0) * 0.006 * d_cm;
+            s.height = relief + fine * 0.04 - crack_m * 0.02 + vnoise(q * 17.0) * 0.006 * d_cm;
         }
         case 2u: { // dirt with pebbles
             var c = vec3(0.40, 0.28, 0.19) * (0.78 + 0.4 * fine);
@@ -1445,7 +1548,7 @@ fn fs_far_water(i: VOut) -> @location(0) vec4<f32> {
 fn shade_water(i: VOut) -> vec4<f32> {
     let t = g.sun_dir.w;
     let p = i.world;
-    let face_n = NORMALS[i.info & 7u];
+    let face_n = normalize(i.normal);
     let to_cam = g.camera_pos.xyz - p;
     let dist = length(to_cam);
     let v = to_cam / dist;
@@ -1477,11 +1580,26 @@ fn shade_water(i: VOut) -> vec4<f32> {
     let path = water_path(ruv, rd, p);
     let behind = textureSampleLevel(scene_color, lin_sampler, ruv, 0.0).rgb;
 
-    let sh = sun_shadow(p, vec3(0.0, 1.0, 0.0));
+    let sh = sun_shadow(p, face_n);
     // Light absorbed per metre (red goes first), and light scattered back by the water body.
     let absorb = exp(-path * vec3(0.42, 0.11, 0.08));
     let scatter = lin(vec3(0.06, 0.24, 0.26)) * (0.45 + 0.9 * sh * max(sun.y, 0.0));
     var body = behind * absorb + scatter * (1.0 - absorb);
+    // White water is lit like the ground around it: by the sun where it
+    // reaches, and otherwise by the sky, so a fall in shade is not a glowing bar.
+    let foam_col = lin(vec3(0.86, 0.9, 0.92)) * foam_light(face_n, sh);
+
+    // Reflection: screen-space first, the sky where the screen has no answer.
+    let r = reflect(-v, n);
+    let sky_refl = sky_color(normalize(vec3(r.x, max(r.y, 0.0), r.z)));
+    let ssr = trace_reflection(p + n * 0.02, r, dist);
+    let refl = mix(sky_refl, ssr.rgb, ssr.w);
+    let fresnel = 0.02 + 0.98 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
+
+    let sheet = on_cliff_fall(p);
+    if (sheet.z > 0.0) {
+        return vec4(apply_fog(cliff_sheet(sheet, p, face_n, v, t, behind, foam_col, refl, fresnel, sh), p), 1.0);
+    }
 
     // Shore foam where the water is shallow.
     let depth_below = select(10.0, p.y - world_from_depth(uv, d0).y, d0 > 0.0);
@@ -1489,34 +1607,74 @@ fn shade_water(i: VOut) -> vec4<f32> {
     // Around rocks in the current the white water is broken into streaks.
     let streak = vnoise2(vec2(p.x * 7.0, p.z * 1.5 - t * 1.4));
     let foam = (1.0 - smoothstep(0.0, 0.45, depth_below)) * smoothstep(0.35, 0.65, foam_n * 0.7 + streak * 0.3);
-    // The pool at the foot of a fall churns white, calming downstream.
-    let fall_d = below_fall(p.xz);
-    var churn = (1.0 - smoothstep(0.0, 9.0, fall_d)) * smoothstep(-2.0, 0.0, fall_d);
-    // So does the plunge pool where a fall off the castle bluff lands.
-    churn = max(churn, 1.0 - smoothstep(1.0, 7.0, from_cliff_fall(p.xz)));
+    // A fall in the river whitens only over its lip and where it plunges, for a
+    // few metres more the higher it drops, so the pools between the steps of a
+    // cascade stay clear.
+    let fall = below_fall(p.xz);
+    let plunge = 1.0 + 1.3 * fall.y;
+    var churn = smoothstep(-1.2, -0.2, fall.x) * (1.0 - smoothstep(0.4 * plunge, plunge + 1.0, fall.x));
+    // The pool where a fall off the castle crag lands churns too.
+    churn = max(churn, 1.0 - smoothstep(1.5, 7.0, from_cliff_fall(p.xz)));
     let churn_n = vnoise2(vec2(p.x * 3.0, p.z * 2.0 - t * 2.2)) * 0.5 + vnoise2(p.xz * 7.0 + t * 0.7) * 0.5;
     var white = max(foam, churn * smoothstep(0.2, 0.55, churn_n * (0.6 + 0.5 * churn)));
     if (face_n.y < 0.5) {
-        // A falling sheet: white streaks pouring down over a thin green body.
+        // The face of a step: white streaks pouring down over a thin green body.
         let along = dot(p.xz, vec2(face_n.z, -face_n.x));
         let pour = vnoise2(vec2(along * 5.0, p.y * 0.8 + t * 2.6)) * 0.6
             + vnoise2(vec2(along * 13.0, p.y * 1.7 + t * 4.1)) * 0.4;
-        white = 0.2 + 0.7 * smoothstep(0.35, 0.75, pour);
+        white = 0.45 + 0.5 * smoothstep(0.3, 0.7, pour);
     }
-    body = mix(body, lin(vec3(0.92, 0.95, 0.95)) * (0.5 + 0.8 * sh), white * 0.8);
+    body = mix(body, foam_col, white * 0.85);
 
-    // Reflection: screen-space first, the sky where the screen has no answer.
-    let r = reflect(-v, n);
-    let sky_refl = sky_color(normalize(vec3(r.x, max(r.y, 0.0), r.z)));
-    let ssr = trace_reflection(p + n * 0.02, r, dist);
-    let refl = mix(sky_refl, ssr.rgb, ssr.w);
-
-    let fresnel = 0.02 + 0.98 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
     var c = mix(body, refl, fresnel * (1.0 - white * 0.8));
     // A tight highlight on each wave facet, so the sun's path sparkles instead of
     // burning a white band across the water.
     c += sun_light() * 0.7 * sh * min(ggx_spec(n, v, sun, 0.045, 0.02), 6.0) * (1.0 - white);
     return vec4(apply_fog(c, p), 1.0);
+}
+
+// Light falling on white water facing `n`: foam scatters broadly, so it takes
+// some sunlight even turned a little away, and the sky's light from above.
+fn foam_light(n: vec3<f32>, sh: f32) -> vec3<f32> {
+    let sun = normalize(g.sun_dir.xyz);
+    let sky = sky_dome(vec3(0.0, 1.0, 0.0)) * 0.8 + sky_dome(normalize(vec3(-sun.z, 0.02, sun.x))) * 0.3;
+    let diffuse = max(dot(n, sun) * 0.7 + 0.3, 0.0);
+    return sun_light() * sh * diffuse + sky * (0.75 + 0.25 * n.y);
+}
+
+// A cliff fall's sheet (`at` from on_cliff_fall): glassy blue-green where it
+// slides over the lip, tearing into white streaks as it falls and churning
+// white at the foot. It is partly see-through, thinnest at its edges, and
+// fades out seen edge-on, so a sheet never shows as a hard white line.
+fn cliff_sheet(
+    at: vec4<f32>, p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, t: f32,
+    behind: vec3<f32>, foam_col: vec3<f32>, refl: vec3<f32>, fresnel: f32, sh: f32,
+) -> vec3<f32> {
+    let across = at.x;
+    let fallen = at.y;
+    // Streaks stretched down the sheet, racing downwards.
+    let s1 = vnoise2(vec2(across * 2.6, p.y * 0.22 + t * 2.4));
+    let s2 = vnoise2(vec2(across * 7.5, p.y * 0.6 + t * 4.8));
+    let s3 = vnoise2(vec2(across * 19.0, p.y * 1.5 + t * 7.5));
+    let streak = s1 * 0.5 + s2 * 0.32 + s3 * 0.18;
+    // The water tears up the further it has fallen.
+    let torn = smoothstep(0.0, 0.6, fallen);
+    var white = smoothstep(0.62 - 0.42 * torn, 0.8 - 0.25 * torn, streak);
+    // Where it hits the ledges and the pool it churns white.
+    let foot = 1.0 - smoothstep(0.0, 3.5, p.y - at.w);
+    white = max(white, foot * smoothstep(0.2, 0.5, s2 * 0.6 + s3 * 0.4 + foot * 0.4));
+    if (n.y > 0.5) {
+        white = max(white, 0.6 * smoothstep(0.35, 0.7, s2));
+    }
+    let glass = lin(vec3(0.07, 0.22, 0.22)) * foam_light(n, sh) * 0.6 + refl * fresnel;
+    let col = mix(glass, foam_col, white);
+    // How much of the rock behind it hides: little at the lip, most lower down.
+    var cover = mix(0.4, 0.94, max(white, 0.5 * fallen));
+    cover *= 1.0 - smoothstep(at.z - 0.5, at.z + 0.6, abs(across));
+    if (n.y < 0.5) {
+        cover *= smoothstep(0.05, 0.3, abs(dot(n, v)));
+    }
+    return mix(behind, col, cover);
 }
 
 // ---------------------------------------------------------------- full screen

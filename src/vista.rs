@@ -13,7 +13,7 @@
 //! distance test away from it.
 
 use crate::block::{VOXEL_SIZE, WATER};
-use crate::mesh::{MeshData, Vertex};
+use crate::mesh::{smooth_data, MeshData, Vertex};
 use crate::noise::{fbm2, value2};
 use crate::terrain::{smooth_water_level, smoothstep, water_level};
 use glam::{Vec2, Vec3};
@@ -174,7 +174,7 @@ fn buttress(angle: f32) -> f32 {
 
 /// Horizontal depth (metres) of the near-vertical face below the rim at an angle.
 fn face_depth(angle: f32) -> f32 {
-    18.0 - 10.0 * river_side(angle) - 5.0 * front_side(angle)
+    26.0 - 14.0 * river_side(angle) - 7.0 * front_side(angle)
 }
 
 /// How strongly a point is away from every cliff fall (0 on one, 1 clear of
@@ -272,9 +272,15 @@ pub fn before_channel(seed: u32, x: f32, z: f32, rx: f32, mut h: f32) -> f32 {
     h
 }
 
-/// The castle bluff's height at a point, if the point lies on it: a flat top
-/// with a rounded rim, near-vertical faces broken by ledge bands and
-/// buttresses, and below them a rocky talus flaring into the valley.
+/// The castle crag's height at a point, if the point lies on it.
+///
+/// The castle's terrace is a flat bench; around it the top rises into broken
+/// rocky crowns and rounds over a ragged rim, notched here and there. Below the
+/// rim the faces fall in four sheer drops with narrow grassy ledges between
+/// them, the rock fluted and ribbed with buttresses, and at the foot a talus
+/// of scree and boulders flares into the valley. Only shapes a few metres
+/// across live here, so they hold up in the far field; the shader adds the
+/// banding and the fine relief.
 fn bluff(seed: u32, x: f32, z: f32) -> Option<f32> {
     let (_, top, _) = CASTLE_TOP;
     let rel = Vec2::new(x, z) - centre();
@@ -282,13 +288,20 @@ fn bluff(seed: u32, x: f32, z: f32) -> Option<f32> {
         return None;
     }
     let calm = clear_of_falls(rel);
+    let len = rel.length();
+    let dir = rel / len.max(1e-3);
+    // Noise running round the crag is sampled on a circle, so it has no seam.
+    let ring = centre() + dir * 40.0;
     // The outline wanders outwards (never into the castle's terrace) in noisy
     // bulges, except where water pours over.
     let angle = rel.y.atan2(rel.x);
     let bulge = 12.0 * fbm2(seed.wrapping_add(66), x / 34.0, z / 34.0, 2) * calm;
-    let mut s = rel.length() - rim(angle) - bulge;
-    // Buttresses: ribs that lean out of the face as it falls.
-    let rib = buttress(angle) * calm;
+    let mut s = len - rim(angle) - bulge;
+    // Vertical flutes a couple of metres apart, and buttresses: ribs that lean
+    // out of the face as it falls, two placed for the view and more from noise.
+    s += 1.6 * (value2(seed.wrapping_add(74), ring.x / 2.6, ring.y / 2.6) - 0.5) * calm;
+    let noisy = 7.0 * smoothstep(0.55, 0.85, value2(seed.wrapping_add(73), ring.x / 9.0, ring.y / 9.0));
+    let rib = (buttress(angle) + noisy) * calm;
     if s > 0.0 && rib > 0.0 {
         s -= rib * smoothstep(0.0, 2.0 * rib, s);
     }
@@ -302,25 +315,46 @@ fn bluff(seed: u32, x: f32, z: f32) -> Option<f32> {
         return None;
     }
     let base = smooth_water_level(z) - 3.0;
-    let lip = top - 1.2;
     let foot = smooth_water_level(z) + talus_h;
-    let top_h = top + 0.5 * (value2(seed.wrapping_add(71), x / 9.0, z / 9.0) - 0.5);
-    Some(if s < 0.0 {
-        // The top, rounding over at the rim.
-        top_h - (top_h - lip) * smoothstep(-3.5, 0.0, s)
-    } else if s < depth {
-        // Three sheer drops with two narrow ledges between them; the ledges
-        // wander up and down so they read as rock bands rather than stairs.
-        let u = s / depth;
-        let j = 0.07 * (value2(seed.wrapping_add(70), (x + z) / 13.0, (x - z) / 23.0) - 0.5);
-        let fall = 0.36 * smoothstep(0.0, 0.15, u)
-            + 0.30 * smoothstep(0.36 + j, 0.5 + j, u)
-            + 0.34 * smoothstep(0.72 - j, 0.88, u);
-        lip - (lip - foot) * fall
+    // Metres outside the terrace (and a margin round it), where the castle stands.
+    let out = (rel.abs() - Vec2::new(TERRACE_HALF.0 + 1.5, TERRACE_HALF.1 + 1.5))
+        .max(Vec2::ZERO)
+        .length();
+    // Rocky crowns rise beyond it, leaving a saddle for the approach behind the gate.
+    let saddle = if rel.y < 0.0 {
+        smoothstep(4.0, 9.0, (rel.x - 8.0).abs())
     } else {
-        // Scree flaring out from the foot of the face.
+        1.0
+    };
+    let crown =
+        smoothstep(3.0, 12.0, out) * saddle * (1.5 + 8.0 * fbm2(seed.wrapping_add(75), x / 16.0, z / 16.0, 2)) * calm;
+    let top_h = top + crown + 0.5 * (value2(seed.wrapping_add(71), x / 9.0, z / 9.0) - 0.5);
+    // The rim rounds over in a band of varying width and is notched in places.
+    let rough = value2(seed.wrapping_add(76), ring.x / 7.0, ring.y / 7.0);
+    let notch = 3.5 * smoothstep(0.6, 0.85, rough) * calm;
+    let lip = top_h - (1.2 + notch) * smoothstep(0.5, 2.0, out);
+    Some(if s < 0.0 {
+        top_h - (top_h - lip) * smoothstep(-2.0 - 3.0 * rough, 0.0, s)
+    } else if s < depth {
+        // Four sheer drops, each from a sharp brow, with narrow ledges between
+        // them that tilt outwards and wander up and down, so they read as rock
+        // bands rather than stairs.
+        let u = s / depth;
+        let j = 0.06 * (value2(seed.wrapping_add(70), (x + z) / 13.0, (x - z) / 23.0) - 0.5);
+        let drop = |a: f32, b: f32| {
+            let t = ((u - a) / (b - a)).clamp(0.0, 1.0);
+            1.0 - (1.0 - t).powf(2.5)
+        };
+        let steps = 0.30 * drop(0.0, 0.1)
+            + 0.26 * drop(0.28 + j, 0.36 + j)
+            + 0.24 * drop(0.55 - j, 0.63 - j)
+            + 0.20 * drop(0.8 + 0.5 * j, 0.9);
+        lip - (lip - foot) * (0.94 * steps + 0.06 * u)
+    } else {
+        // Scree flaring out from the foot of the face, strewn with boulders.
         let v = 1.0 - (s - depth) / talus_w;
-        base + (foot - base) * v * v
+        let boulders = 2.4 * smoothstep(0.6, 0.9, value2(seed.wrapping_add(77), x / 3.2, z / 3.2)) * calm;
+        base + (foot - base) * v * v + boulders * v.sqrt()
     })
 }
 
@@ -416,43 +450,69 @@ pub fn curtain_touches(lo: Vec3, hi: Vec3) -> bool {
     })
 }
 
-/// Far away the cliff falls are single sheets standing in front of their faces,
-/// from the pool to the lip. Adds those whose lip lies in [lo, hi).
-pub fn far_curtains(out: &mut MeshData, lo: Vec2, hi: Vec2) {
+/// Far away each cliff fall is one ribbon of water from the top, over the lip
+/// and down its face into the pool. It follows the face's outer hull, leaping
+/// from each ledge's brow to the next, so the coarse far ground (which never
+/// stands above that hull) cannot swallow it. Adds those whose lip lies in
+/// [lo, hi); `height` is the terrain's height function.
+pub fn far_curtains(out: &mut MeshData, lo: Vec2, hi: Vec2, height: impl Fn(f32, f32) -> f32) {
     for f in &CLIFF_FALLS {
         let lip = f.lip();
         if lip.x < lo.x || lip.y < lo.y || lip.x >= hi.x || lip.y >= hi.y {
             continue;
         }
         let d = f.out();
-        let at = centre() + d * (f.reach().1 + 0.6);
-        let bottom = water_level(at.x, at.y) - 0.06;
-        let top = CASTLE_TOP.1 - 1.2;
-        // Across the face, so that across × up points out of it.
-        let across = Vec3::new(d.y, 0.0, -d.x) * f.half_w;
-        let c = Vec3::new(at.x, bottom, at.y);
-        let up = Vec3::Y * (top - bottom);
-        // The shader shades the sheet by the nearest axis direction's normal.
-        let fi = if d.x.abs() > d.y.abs() {
-            if d.x > 0.0 {
-                0
-            } else {
-                1
+        let (r0, r1) = f.reach();
+        let at = |r: f32| centre() + d * r;
+        let pool = water_level(f.foot().x, f.foot().y) - 0.06;
+        // The profile down the fall's line, then its upper hull.
+        let mut hull: Vec<Vec2> = Vec::new();
+        let mut r = r0 - 1.5;
+        while r <= r1 + 0.6 {
+            let q = at(r);
+            let p = Vec2::new(r, height(q.x, q.y).max(pool));
+            while hull.len() >= 2 {
+                let (a, b) = (hull[hull.len() - 2], hull[hull.len() - 1]);
+                if (b - a).perp_dot(p - a) >= 0.0 {
+                    hull.pop();
+                } else {
+                    break;
+                }
             }
-        } else if d.y > 0.0 {
-            4
-        } else {
-            5
+            hull.push(p);
+            r += 1.0;
+        }
+        // The water ends in the pool.
+        if let Some(last) = hull.last_mut() {
+            last.y = pool;
+        }
+        // Across the fall, so that across x down-the-ribbon points out of the face.
+        let across = Vec3::new(d.y, 0.0, -d.x) * f.half_w;
+        let seg_n = |k: usize| {
+            let (a, b) = (hull[k], hull[k + 1]);
+            Vec2::new(a.y - b.y, b.x - a.x).normalize_or(Vec2::Y)
         };
         let start = out.water_vertices.len() as u32;
-        for p in [c - across, c + across, c + across + up, c - across + up] {
-            out.water_vertices.push(Vertex {
-                pos: p.to_array(),
-                data: fi as u32 | ((WATER as u32) << 3) | (3 << 11),
-            });
+        for k in 0..hull.len() {
+            let nr = match k {
+                0 => seg_n(0),
+                k if k == hull.len() - 1 => seg_n(k - 1),
+                k => (seg_n(k - 1) + seg_n(k)).normalize_or(Vec2::Y),
+            };
+            let normal = Vec3::new(d.x * nr.x, nr.y, d.y * nr.x);
+            let q = at(hull[k].x);
+            let c = Vec3::new(q.x, hull[k].y + 0.35, q.y) + normal * 0.25;
+            for p in [c - across, c + across] {
+                out.water_vertices.push(Vertex {
+                    pos: p.to_array(),
+                    data: smooth_data(WATER, 3, normal),
+                });
+            }
         }
-        out.water_indices
-            .extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 3]);
+        for k in 0..hull.len() as u32 - 1 {
+            let (tm, tp, bm, bp) = (start + 2 * k, start + 2 * k + 1, start + 2 * k + 2, start + 2 * k + 3);
+            out.water_indices.extend_from_slice(&[bm, bp, tp, bm, tp, tm]);
+        }
     }
 }
 
@@ -723,14 +783,43 @@ mod tests {
 
     #[test]
     fn far_field_draws_the_cliff_falls() {
+        let t = world();
+        let height = |x: f32, z: f32| t.height_at(x, z).0;
         let mut out = MeshData::default();
-        far_curtains(&mut out, Vec2::ZERO, Vec2::splat(crate::terrain::WORLD_SIZE_M));
-        assert_eq!(out.water_indices.len(), 6 * CLIFF_FALLS.len());
-        // Each sheet faces out of its face.
-        for (k, f) in CLIFF_FALLS.iter().enumerate() {
-            let v = |i: usize| Vec3::from(out.water_vertices[4 * k + i].pos);
-            let n = (v(1) - v(0)).cross(v(2) - v(0));
-            assert!(Vec2::new(n.x, n.z).normalize().dot(f.out()) > 0.99);
+        far_curtains(&mut out, Vec2::ZERO, Vec2::splat(crate::terrain::WORLD_SIZE_M), height);
+        let (v, idx) = (&out.water_vertices, &out.water_indices);
+        let tris: Vec<[Vec3; 3]> = idx
+            .chunks(3)
+            .map(|c| [0, 1, 2].map(|i| Vec3::from(v[c[i] as usize].pos)))
+            .collect();
+        for f in &CLIFF_FALLS {
+            // This fall's triangles: those near its line.
+            let mine: Vec<&[Vec3; 3]> = tris
+                .iter()
+                .filter(|tr| {
+                    let q = Vec2::new(tr[0].x, tr[0].z) - f.foot();
+                    f.out().perp_dot(q).abs() < f.half_w + 0.5 && q.length() < 60.0
+                })
+                .collect();
+            assert!(!mine.is_empty(), "fall at {}", f.angle);
+            let (lo, hi) = mine
+                .iter()
+                .flat_map(|tr| tr.iter())
+                .fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.y), b.max(p.y)));
+            assert!(hi - lo > 50.0, "fall at {}: spans {lo}..{hi}", f.angle);
+            // The sheet faces out of its face (or up, over the top), and it
+            // stands clear of the ground everywhere.
+            for tr in &mine {
+                let n = (tr[1] - tr[0]).cross(tr[2] - tr[0]).normalize();
+                assert!(
+                    Vec2::new(n.x, n.z).dot(f.out()) > -0.05 && n.y > -0.05,
+                    "fall at {}: {n}",
+                    f.angle
+                );
+                for p in tr.iter() {
+                    assert!(p.y > height(p.x, p.z) - 0.1, "fall at {} buried at {p}", f.angle);
+                }
+            }
         }
     }
 

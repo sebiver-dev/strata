@@ -426,6 +426,9 @@ pub struct Structures {
     list: Vec<(Vec3, Vec3, Structure)>,
     /// Authored models, cut up by the chunk each triangle's centre falls in.
     models: HashMap<IVec3, MeshData>,
+    /// The outside of each cottage, by its index in `list`, drawn in the far field
+    /// so a house keeps its timbers, windows and roof at any distance.
+    far_models: HashMap<usize, MeshData>,
 }
 
 impl Structures {
@@ -525,7 +528,12 @@ impl Structures {
     /// going to the chunk its centre lies in.
     fn build_models(&mut self, t: &Terrain) {
         let mut all = MeshData::default();
-        for (_, _, st) in &self.list {
+        for (k, (_, _, st)) in self.list.iter().enumerate() {
+            if let Structure::Cottage(c) = st {
+                let mut far = MeshData::default();
+                c.exterior(t, &mut far);
+                self.far_models.insert(k, far);
+            }
             match st {
                 Structure::Cottage(c) => c.model(t, &mut all),
                 Structure::Fence(f) => f.model(t, &mut all),
@@ -674,14 +682,17 @@ impl Structures {
     /// Adds the far-away shapes of every structure whose centre lies in the
     /// rectangle of metres [lo, hi).
     pub fn far(&self, out: &mut MeshData, lo: Vec2, hi: Vec2) {
-        for (a, b, st) in &self.list {
+        for (k, (a, b, st)) in self.list.iter().enumerate() {
             let c = Vec2::new(a.x + b.x, a.z + b.z) * 0.5;
             if matches!(st, Structure::Fence(_)) || c.x < lo.x || c.y < lo.y || c.x >= hi.x || c.y >= hi.y {
                 continue;
             }
             match st {
                 Structure::Bridge(b) => b.far(out),
-                Structure::Cottage(c) => c.far(out),
+                Structure::Cottage(c) => match self.far_models.get(&k) {
+                    Some(m) => model::append(out, m),
+                    None => c.far(out),
+                },
                 Structure::Tower(t) => t.far(out),
                 Structure::Castle(c) => c.far(out),
                 Structure::Fence(_) => {}
@@ -750,6 +761,25 @@ mod tests {
         assert!(count(|x| matches!(x, Structure::Fence(_))) >= 2);
         assert_eq!(count(|x| matches!(x, Structure::Tower(_))), 1);
         assert_eq!(count(|x| matches!(x, Structure::Castle(_))), 1);
+    }
+
+    #[test]
+    fn far_cottages_keep_their_timbers_and_windows() {
+        let t = world();
+        let (k, c) = t
+            .structures
+            .list
+            .iter()
+            .enumerate()
+            .find_map(|(k, (_, _, s))| match s {
+                Structure::Cottage(c) => Some((k, c)),
+                _ => None,
+            })
+            .unwrap();
+        let m = &t.structures.far_models[&k];
+        let mats = |mat: Block| m.vertices.iter().filter(|v| (v.data >> 3) & 0xff == mat as u32).count();
+        assert!(mats(OAK) > 100 && mats(WINDOW) > 8 && mats(ROOF) > 100, "{c:?}");
+        assert!(m.indices.len() / 3 < 20_000, "{} triangles", m.indices.len() / 3);
     }
 
     #[test]

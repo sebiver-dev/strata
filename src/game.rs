@@ -132,13 +132,25 @@ pub struct Settings {
     pub fog_m: f32,
 }
 
+/// `?budget=ms` raises the background work budget, so a slow headless browser
+/// taking screenshots loads the close-up world before the shot.
+#[cfg(target_arch = "wasm32")]
+fn web_budget() -> Option<f64> {
+    crate::web::url_param("budget")?.parse().ok()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn web_budget() -> Option<f64> {
+    None
+}
+
 impl Default for Settings {
     fn default() -> Self {
         if cfg!(target_arch = "wasm32") {
             Settings {
                 seed: 20260927,
                 view_radius: 7,
-                work_budget_ms: 6.0,
+                work_budget_ms: web_budget().unwrap_or(6.0),
                 fog_m: 1000.0,
             }
         } else {

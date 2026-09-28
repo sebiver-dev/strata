@@ -498,6 +498,31 @@ struct Surface {
 
 // `pix` is the size of one pixel in metres at this point; detail smaller than
 // a few pixels is faded out instead of shimmering.
+// Leaf clusters: distance to the nearest of one jittered point per cell, and
+// a random value for that point's cluster.
+fn leaf_cells(p: vec3<f32>) -> vec2<f32> {
+    let c = floor(p);
+    let f = p - c;
+    var best = 8.0;
+    var id = 0.0;
+    for (var x = -1; x <= 1; x++) {
+        for (var y = -1; y <= 1; y++) {
+            for (var z = -1; z <= 1; z++) {
+                let o = vec3(f32(x), f32(y), f32(z));
+                let k = c + o;
+                let j = vec3(hash3(k), hash3(k + 17.3), hash3(k + 41.7)) * 0.8 + 0.1;
+                let d = o + j - f;
+                let dd = dot(d, d);
+                if (dd < best) {
+                    best = dd;
+                    id = hash3(k + 5.1);
+                }
+            }
+        }
+    }
+    return vec2(sqrt(best), id);
+}
+
 fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
     // Fine patterns use coordinates wrapped every 64 m so f32 noise stays precise;
     // their frequencies are whole numbers per metre, so the wrap has no seam.
@@ -945,18 +970,27 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.height = (plate * 0.03 - crack * 0.01) * d_dm + fine * 0.01;
             wettable = false;
         }
-        case 28u: { // broadleaf foliage: masses of small leaves, sunlit tips, dark gaps
+        case 28u: { // broadleaf foliage: rounded leaf clusters with sunlit tops, dark gaps
             let leaves = vnoise(q * 5.0) * 0.55 + vnoise(q * 13.0 + 0.5) * 0.45;
             let shape = smoothstep(0.3, 0.7, leaves);
-            let hue = vnoise(p * 0.11 + 3.0) * 0.7 + vnoise(q * 1.3) * 0.3;
-            var c = mix(vec3(0.09, 0.22, 0.06), vec3(0.24, 0.40, 0.10), hue);
+            // Clusters about 0.7 m across, each a little dome that catches the
+            // sun on its own, as in painted foliage. They fade out once a
+            // cluster spans only a few pixels.
+            let d_cl = 1.0 - smoothstep(0.06, 0.2, pix);
+            let cl = leaf_cells(q * 1.5);
+            let dome = max(1.0 - cl.x * cl.x * 1.3, 0.0);
+            let hue = vnoise(p * 0.11 + 3.0) * 0.6 + cl.y * 0.4 * d_cl;
+            var c = mix(vec3(0.10, 0.24, 0.06), vec3(0.26, 0.42, 0.10), hue);
             c = mix(c, vec3(0.38, 0.46, 0.14), smoothstep(0.62, 0.85, broad) * 0.45);
-            c *= mix(0.9, mix(0.62, 1.08, shape), d_dm);
+            // The gaps between clusters are deep green shade, not brown.
+            let gap = mix(vec3(0.5, 0.62, 0.55), vec3(1.12), sqrt(dome));
+            c *= mix(vec3(1.0), gap, d_cl);
+            c *= mix(0.94, mix(0.8, 1.05, shape), d_dm);
             s.albedo = c;
             s.rough = 0.55;
             s.f0 = 0.04;
             s.sss = 0.8;
-            s.height = shape * 0.05 * d_dm + leaves * 0.02;
+            s.height = dome * 0.22 * d_cl + shape * 0.02 * d_dm + leaves * 0.01;
             wettable = false;
         }
         case 29u: { // conifer needles: dark blue-green sprays

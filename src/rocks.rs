@@ -99,9 +99,9 @@ fn site_where(t: &Terrain, gx: i32, gz: i32, keep: impl Fn(Vec3) -> bool) -> Opt
     } else if (2.2..5.5).contains(&road) && above_water > 0.5 && info.height_m < 80.0 {
         // Now and then a rock sits at the edge of the cobbled road.
         (0.14, 1.2)
-    } else if info.height_m > 36.0 && info.height_m < 120.0 && (0.4..0.8).contains(&slope(t, x, z)) {
+    } else if info.height_m > 36.0 && info.height_m < 120.0 && (0.22..0.8).contains(&slope(t, x, z)) {
         // Outcrops break through the grass where the valley walls steepen.
-        (0.35, 1.9)
+        (0.55, MAX_R_M)
     } else if info.surface == GRASS && info.height_m < 60.0 {
         (0.05, MAX_R_M)
     } else {

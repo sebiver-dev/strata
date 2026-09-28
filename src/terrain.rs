@@ -418,33 +418,24 @@ impl Terrain {
         out
     }
 
-    /// A great oak just left of the start, reaching a bough out over the
-    /// player's head so it frames the first view down the valley.
+    /// The great oak on top of the spawn rise, reaching one long bough out
+    /// over the arrival spot so it frames the first view up the valley.
     fn plan_hero_tree(&self) -> Option<Tree> {
-        let spawn = self.spawn_point();
-        let yaw = crate::structures::SPAWN_YAW;
+        let (ax, az) = crate::vista::ARRIVAL;
+        let yaw = crate::vista::SPAWN_YAW;
         let fwd = Vec2::new(yaw.cos(), yaw.sin());
-        let right = Vec2::new(-fwd.y, fwd.x);
-        for (ahead, left) in [(4.0, 4.5), (3.0, 5.5), (5.0, 6.0), (2.0, 6.5), (4.0, 8.0), (6.0, 9.0)] {
-            let p = Vec2::new(spawn.x, spawn.z) + fwd * ahead - right * left;
-            let info = self.column_info(p.x, p.y);
-            if info.surface != GRASS
-                || info.height_m < water_level(p.x, p.y) + 1.0
-                || self.road_distance(p.x, p.y) < 3.0
-                || self.structures.blocks_tree(p.x, p.y)
-            {
-                continue;
-            }
-            return Some(Tree {
-                base: Vec3::new(p.x, info.height_m, p.y),
-                height: 15.0,
-                kind: TreeKind::Broadleaf,
-                seed: self.seed ^ 0x0a4_7ee,
-                // The long bough reaches across the top of the first view.
-                hero: Some((right + fwd * 0.6).normalize()),
-            });
-        }
-        None
+        // Ahead and to the right of the arrival spot, still on the rise's top,
+        // so the trunk stands in view and the crown frames the sky above it.
+        let foot = Vec2::new(ax, az) + fwd * 7.0 + fwd.perp() * 6.0;
+        let (x, z) = (foot.x, foot.y);
+        let to_arrival = (Vec2::new(ax, az) - foot).normalize_or_zero();
+        Some(Tree {
+            base: Vec3::new(x, self.height_at(x, z).0, z),
+            height: 15.0,
+            kind: TreeKind::Broadleaf,
+            seed: self.seed ^ 0x0a4_7ee,
+            hero: Some((to_arrival + fwd * 0.6).normalize()),
+        })
     }
 
     /// Generates the voxels of one chunk.

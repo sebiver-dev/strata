@@ -483,7 +483,7 @@ impl Renderer {
             })
         };
 
-        use wgpu::CompareFunction::{Always, Greater, GreaterEqual, LessEqual};
+        use wgpu::CompareFunction::{Greater, GreaterEqual, LessEqual};
         let world_buffers = [Some(vertex_layout)];
         let shadow = pipeline(Desc {
             label: "shadow",
@@ -509,7 +509,9 @@ impl Renderer {
             buffers: &[],
             target: Some(HDR_FORMAT),
             blend: None,
-            depth: Some((false, Always)),
+            // Drawn after the terrain at depth 0 (infinitely far, reverse Z):
+            // it only shades the pixels nothing else covered.
+            depth: Some((false, GreaterEqual)),
             bias: Default::default(),
             cull: None,
         });
@@ -1064,7 +1066,7 @@ impl Renderer {
             }
         }
 
-        // 2. Sky, characters and terrain. Reverse Z: depth 0 is infinitely far away.
+        // 2. Characters, terrain, then the sky. Reverse Z: depth 0 is infinitely far away.
         {
             let color = color_attachment(&t.hdr_view, wgpu::LoadOp::Clear(wgpu::Color::BLACK));
             let mut pass = encoder.begin_render_pass(&pass_desc(
@@ -1075,8 +1077,6 @@ impl Renderer {
             ));
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.set_bind_group(1, &t.scene_bind, &[]);
-            pass.set_pipeline(&self.sky);
-            pass.draw(0..3, 0..1);
             // Characters first: they are near the camera and hide terrain behind them.
             if let (Some((vb, ib)), false) = (&self.actors.buffers, self.actors.scene.is_empty()) {
                 pass.set_pipeline(&self.actor);
@@ -1102,6 +1102,10 @@ impl Renderer {
                     far_triangles += n / 3;
                 }
             }
+            // The sky last, so its clouds and peaks are only worked out where
+            // they show.
+            pass.set_pipeline(&self.sky);
+            pass.draw(0..3, 0..1);
         }
 
         // 3. Water, reading a snapshot of what is behind it. The pass always

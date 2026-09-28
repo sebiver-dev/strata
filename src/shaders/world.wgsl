@@ -767,10 +767,10 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
         }
         case 13u: { // tall grass blades
             let hue = vnoise(p * 0.15);
-            s.albedo = mix(vec3(0.26, 0.44, 0.13), vec3(0.50, 0.56, 0.22), hue);
+            s.albedo = mix(vec3(0.30, 0.40, 0.14), vec3(0.52, 0.54, 0.24), hue);
             s.rough = 0.6;
             s.f0 = 0.04;
-            s.sss = 0.75;
+            s.sss = 0.55;
             wettable = false;
         }
         case 18u: { // masonry: dressed stone blocks in courses with sunken mortar
@@ -925,11 +925,11 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.sss = 0.6;
             wettable = false;
         }
-        case 31u: { // fresh grass blades of the verges: bright yellow-green
-            s.albedo = mix(vec3(0.34, 0.54, 0.11), vec3(0.52, 0.64, 0.17), vnoise(p * 0.2));
+        case 31u: { // fresh grass blades of the verges: warm yellow-green
+            s.albedo = mix(vec3(0.36, 0.46, 0.15), vec3(0.54, 0.56, 0.22), vnoise(p * 0.2));
             s.rough = 0.55;
             s.f0 = 0.04;
-            s.sss = 0.8;
+            s.sss = 0.6;
             wettable = false;
         }
         case 32u: { // wildflower stems and leaves: deep blue-green
@@ -960,12 +960,12 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             // but not below the waterline.
             let ragged = fbm(q * 1.7) - 0.5 + (vnoise(q * 11.0) - 0.5) * 0.35;
             let dry = smoothstep(water_level_at(p.xz), water_level_at(p.xz) + 0.3, p.y);
-            let moss_m = smoothstep(0.42, 0.7, n.y + ragged * 0.8) * dry;
+            let moss_m = smoothstep(0.3, 0.62, n.y + ragged * 0.8) * dry;
             let tuft = vnoise(q * 23.0);
-            let moss = mix(vec3(0.20, 0.33, 0.08), vec3(0.42, 0.52, 0.16), vnoise(q * 5.0)) * (0.85 + 0.3 * tuft);
+            let moss = mix(vec3(0.26, 0.40, 0.10), vec3(0.50, 0.60, 0.20), vnoise(q * 5.0)) * (0.85 + 0.3 * tuft);
             c = mix(c, moss, moss_m);
             s.albedo = c;
-            s.sss = moss_m * 0.3;
+            s.sss = moss_m * 0.6;
             s.rough = mix(0.7, 0.95, moss_m);
             s.f0 = 0.04;
             s.height = (1.0 - moss_m) * (fine * 0.03 - crack * 0.02) + moss_m * (0.03 + tuft * 0.012 * d_cm);
@@ -996,8 +996,14 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             let d_cl = 1.0 - smoothstep(0.06, 0.2, pix);
             let cl = leaf_cells(q * 1.5);
             let dome = max(1.0 - cl.x * cl.x * 1.3, 0.0);
-            let hue = vnoise(p * 0.11 + 3.0) * 0.6 + cl.y * 0.4 * d_cl;
+            // Big clumps about 2 m across, each a rounded mass of clusters
+            // with deep shade between, read from much further away.
+            let d_bg = 1.0 - smoothstep(0.4, 1.2, pix);
+            let big = leaf_cells(q * 0.5);
+            let mass = max(1.0 - big.x * big.x * 1.2, 0.0);
+            let hue = vnoise(p * 0.11 + 3.0) * 0.5 + cl.y * 0.3 * d_cl + big.y * 0.2 * d_bg;
             var c = mix(vec3(0.12, 0.28, 0.07), vec3(0.30, 0.48, 0.12), hue);
+            c *= mix(1.0, mix(0.5, 1.08, sqrt(mass)), d_bg);
             c = mix(c, vec3(0.38, 0.46, 0.14), smoothstep(0.62, 0.85, broad) * 0.45);
             // The gaps between clusters are deep green shade, not brown.
             let gap = mix(vec3(0.46, 0.68, 0.52), vec3(1.1), sqrt(dome));
@@ -1006,16 +1012,18 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.albedo = c;
             s.rough = 0.55;
             s.f0 = 0.04;
-            s.sss = 1.0;
-            s.height = dome * 0.16 * d_cl + shape * 0.02 * d_dm + leaves * 0.01;
+            s.sss = 0.75;
+            s.height = mass * 0.5 * d_bg + dome * 0.16 * d_cl + shape * 0.02 * d_dm + leaves * 0.01;
             wettable = false;
         }
         case 29u: { // conifer needles: dark blue-green sprays
             let spray = vnoise(vec3(q.x * 9.0, q.y * 3.0, q.z * 9.0)) * 0.6 + vnoise(q * 23.0) * 0.4;
             let shape = smoothstep(0.3, 0.7, spray);
             let hue = vnoise(p * 0.09 + 7.0);
-            var c = mix(vec3(0.05, 0.14, 0.09), vec3(0.13, 0.25, 0.12), hue);
+            var c = mix(vec3(0.09, 0.22, 0.10), vec3(0.19, 0.34, 0.14), hue);
             c *= mix(0.9, mix(0.65, 1.08, shape), d_dm);
+            // Sunlit tops of each tier's sprays catch a warmer green.
+            c = mix(c, vec3(0.30, 0.42, 0.16), smoothstep(0.2, 0.9, n.y) * 0.5);
             s.albedo = c;
             s.rough = 0.6;
             s.f0 = 0.04;

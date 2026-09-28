@@ -182,12 +182,11 @@ fn build_voxels(world: &World, cpos: IVec3) -> MeshData {
                 }
                 if b == TALL_GRASS {
                     let w = origin + p;
-                    crate::plants::tuft(
-                        &mut out,
-                        world.terrain.seed,
-                        w,
-                        &crate::plants::Spot::at(&world.terrain, w),
-                    );
+                    let mut spot = crate::plants::Spot::at(&world.terrain, w);
+                    spot.sheltered = [IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z, IVec3::Y]
+                        .iter()
+                        .any(|&d| pad.get(p + d) == BUILT || pad.get(p + d + IVec3::Y) == BUILT);
+                    crate::plants::tuft(&mut out, world.terrain.seed, w, &spot);
                     continue;
                 }
                 if b == POST {

@@ -215,7 +215,7 @@ fn grass(out: &mut MeshData, rng: &mut Rng, w: IVec3, floor: Vec3, spot: &Spot, 
         // Long blades arc over further, so tall grass droops at the tips.
         let arc = rng.range(0.2, 0.8) + 0.6 * smoothstep(0.4, 1.4, len);
         // Broad, painterly blades rather than hair-thin ones.
-        let half = (0.026 + 0.02 * len.min(1.4)) * rng.range(0.8, 1.25);
+        let half = (0.034 + 0.024 * len.min(1.4)) * rng.range(0.8, 1.25);
         let pick = rng.f();
         let mat = if pick < dry {
             DRY_GRASS
@@ -445,16 +445,16 @@ pub fn tuft(out: &mut MeshData, seed: u32, w: IVec3, spot: &Spot) {
 
     // Lupins grow in patches, most of all along verges; daisies in drifts
     // through meadows and along the paths.
-    let lupins = fbm2(seed.wrapping_add(50), xm / 14.0, zm / 14.0, 2) + 0.2 * spot.verge;
+    let lupins = fbm2(seed.wrapping_add(50), xm / 14.0, zm / 14.0, 2) + 0.05 * spot.verge;
     let drifts = fbm2(seed.wrapping_add(51), xm / 6.0, zm / 6.0, 2);
-    let daisies = (0.03 + 0.12 * spot.meadow + 0.35 * spot.verge) * smoothstep(0.42, 0.62, drifts) * (1.0 - spot.field);
+    let daisies = (0.01 + 0.05 * spot.meadow + 0.12 * spot.verge) * smoothstep(0.42, 0.62, drifts) * (1.0 - spot.field);
     let roll = rng.f();
     let spot_at = |rng: &mut Rng| floor + Vec3::new(rng.range(0.08, 0.42), 0.02, rng.range(0.08, 0.42));
     let mut crowded = false;
     // Drifts: sparse at their edges, crowded in the middle.
     if spot.sheltered {
         crowded = true;
-    } else if lupins > 0.6 && roll < 0.06 + 1.4 * (lupins - 0.6) {
+    } else if lupins > 0.66 && roll < 0.04 + 1.6 * (lupins - 0.66) {
         let at = spot_at(&mut rng);
         // Mostly violet, with pink and white spires mixed in; some drifts
         // run pinker or paler than others.
@@ -473,7 +473,7 @@ pub fn tuft(out: &mut MeshData, seed: u32, w: IVec3, spot: &Spot) {
         lupin(out, &mut rng, at, height, mat);
         crowded = true;
     } else if roll < daisies * 2.0 {
-        let heads = 1 + (rng.f() * 2.6) as u32;
+        let heads = 1 + (rng.f() * 1.6) as u32;
         let base = spot_at(&mut rng);
         for _ in 0..heads {
             let at = base + dir(rng.f() * TAU) * rng.range(0.0, 0.12);

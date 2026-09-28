@@ -172,6 +172,7 @@ fn build_voxels(world: &World, cpos: IVec3) -> MeshData {
     let mut out = MeshData::default();
     let origin = cpos * CHUNK;
 
+    let rocks = crate::rocks::footprints(&world.terrain, cpos, 1.0);
     for y in 0..CHUNK {
         for z in 0..CHUNK {
             for x in 0..CHUNK {
@@ -183,9 +184,14 @@ fn build_voxels(world: &World, cpos: IVec3) -> MeshData {
                 if b == TALL_GRASS {
                     let w = origin + p;
                     let mut spot = crate::plants::Spot::at(&world.terrain, w);
-                    spot.sheltered = [IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z, IVec3::Y]
+                    // Within a metre of a rock, trunk or wall: no flowers.
+                    let at = (w.as_vec3() + 0.5) * VOXEL_SIZE;
+                    spot.sheltered = rocks
                         .iter()
-                        .any(|&d| pad.get(p + d) == BUILT || pad.get(p + d + IVec3::Y) == BUILT);
+                        .any(|&(c, r, top)| at.y < top + 1.0 && c.distance(glam::Vec2::new(at.x, at.z)) < r + 1.0)
+                        || (-2..=2).any(|dz| {
+                            (-2..=2).any(|dx| (-1..=1).any(|dy| pad.get(p + IVec3::new(dx, dy, dz)) == BUILT))
+                        });
                     crate::plants::tuft(&mut out, world.terrain.seed, w, &spot);
                     continue;
                 }

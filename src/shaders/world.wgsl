@@ -767,7 +767,7 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
         }
         case 13u: { // tall grass blades
             let hue = vnoise(p * 0.15);
-            s.albedo = mix(vec3(0.30, 0.40, 0.14), vec3(0.52, 0.54, 0.24), hue);
+            s.albedo = mix(vec3(0.30, 0.36, 0.12), vec3(0.48, 0.47, 0.19), hue);
             s.rough = 0.6;
             s.f0 = 0.04;
             s.sss = 0.55;
@@ -925,8 +925,8 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.sss = 0.6;
             wettable = false;
         }
-        case 31u: { // fresh grass blades of the verges: warm yellow-green
-            s.albedo = mix(vec3(0.36, 0.46, 0.15), vec3(0.54, 0.56, 0.22), vnoise(p * 0.2));
+        case 31u: { // fresh grass blades of the verges: warm golden olive
+            s.albedo = mix(vec3(0.34, 0.40, 0.13), vec3(0.50, 0.49, 0.19), vnoise(p * 0.2));
             s.rough = 0.55;
             s.f0 = 0.04;
             s.sss = 0.6;
@@ -944,7 +944,7 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.sss = 0.45;
             wettable = false;
         }
-        case 35u: { // boulder: speckled grey granite with hairline cracks under a thick cap of moss
+        case 35u: { // boulder: speckled grey granite with hairline cracks and patches of moss on top
             let tone = vnoise(q * 0.35);
             var c = mix(vec3(0.42, 0.42, 0.43), vec3(0.57, 0.55, 0.51), tone) * (0.85 + 0.25 * fine);
             // Dark mica and pale feldspar grains.
@@ -960,7 +960,9 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             // but not below the waterline.
             let ragged = fbm(q * 1.7) - 0.5 + (vnoise(q * 11.0) - 0.5) * 0.35;
             let dry = smoothstep(water_level_at(p.xz), water_level_at(p.xz) + 0.3, p.y);
-            let moss_m = smoothstep(0.3, 0.62, n.y + ragged * 0.8) * dry;
+            // Moss only in patches on the upper faces, so grey stone shows around it.
+            let mossy = smoothstep(0.38, 0.62, vnoise(q * 0.9 + 11.0));
+            let moss_m = smoothstep(0.55, 0.85, n.y + ragged * 0.9) * dry * mossy;
             let tuft = vnoise(q * 23.0);
             let moss = mix(vec3(0.26, 0.40, 0.10), vec3(0.50, 0.60, 0.20), vnoise(q * 5.0)) * (0.85 + 0.3 * tuft);
             c = mix(c, moss, moss_m);
@@ -1003,7 +1005,7 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             let mass = max(1.0 - big.x * big.x * 1.2, 0.0);
             let hue = vnoise(p * 0.11 + 3.0) * 0.5 + cl.y * 0.3 * d_cl + big.y * 0.2 * d_bg;
             var c = mix(vec3(0.12, 0.28, 0.07), vec3(0.30, 0.48, 0.12), hue);
-            c *= mix(1.0, mix(0.5, 1.08, sqrt(mass)), d_bg);
+            c *= mix(1.0, mix(0.74, 1.06, sqrt(mass)), d_bg);
             c = mix(c, vec3(0.38, 0.46, 0.14), smoothstep(0.62, 0.85, broad) * 0.45);
             // The gaps between clusters are deep green shade, not brown.
             let gap = mix(vec3(0.46, 0.68, 0.52), vec3(1.1), sqrt(dome));
@@ -1013,7 +1015,7 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.rough = 0.55;
             s.f0 = 0.04;
             s.sss = 0.75;
-            s.height = mass * 0.5 * d_bg + dome * 0.16 * d_cl + shape * 0.02 * d_dm + leaves * 0.01;
+            s.height = mass * 0.3 * d_bg + dome * 0.16 * d_cl + shape * 0.02 * d_dm + leaves * 0.01;
             wettable = false;
         }
         case 29u: { // conifer needles: dark blue-green sprays

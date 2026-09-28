@@ -117,13 +117,22 @@ impl Tree {
         };
         // The trunk: a gentle curve up to the fork, with a slight kink.
         let side = Vec3::new(-lean.z, 0.0, lean.x).normalize_or_zero();
-        let wig = (self.rand(4) - 0.5) * 0.3 * r0;
+        // Old broadleaf trunks bend one way and back again on their way up.
+        let wig = (self.rand(4) - 0.5) * if self.hero.is_some() { 0.3 } else { 1.1 } * r0;
+        let bend = (self.rand(7) - 0.5) * if self.hero.is_some() { 0.0 } else { 0.9 } * r0;
+        let fwd = lean.normalize_or_zero();
         let n = 6;
         let mut spine = Vec::new();
         let mut radii = Vec::new();
         for i in 0..=n {
             let t = i as f32 / n as f32;
-            spine.push(self.base + Vec3::Y * (fork * t) + lean * t.powf(1.5) + side * (wig * (t * PI).sin()));
+            spine.push(
+                self.base
+                    + Vec3::Y * (fork * t)
+                    + lean * t.powf(1.5)
+                    + side * (wig * (t * PI).sin())
+                    + fwd * (bend * (t * TAU).sin()),
+            );
             radii.push(r0 * (1.0 - 0.38 * t));
         }
         let top = *spine.last().unwrap();
@@ -319,6 +328,17 @@ impl Tree {
             5,
             2,
         );
+        if level == 0 {
+            // Boughs show through the gaps between clumps, so the crown
+            // does not read as a ball on a stick.
+            for l in &s.limbs {
+                let spine: Vec<Vec3> = l.spine.iter().step_by(2).copied().collect();
+                let radii: Vec<f32> = l.radii.iter().step_by(2).copied().collect();
+                if spine.len() > 1 {
+                    tube(out, &Limb { spine, radii }, 4, 2);
+                }
+            }
+        }
         for (i, c) in s.clumps.iter().enumerate() {
             let puff = c.radii.x < self.height * 0.2;
             if level > 0 && puff {
@@ -385,6 +405,11 @@ fn bezier(a: Vec3, c: Vec3, b: Vec3, r0: f32, r1: f32, n: usize) -> (Vec<Vec3>, 
         r.push(r0 + (r1 - r0) * t.powf(0.8));
     }
     (s, r)
+}
+
+fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// Two unit vectors across a direction.
@@ -497,11 +522,17 @@ fn trunk(out: &mut MeshData, l: &Limb, flare: f32, sides: u32, seed: u32) {
             let u = (Vec3::X - d * d.x).normalize();
             (u, d.cross(u))
         };
+        // Above the foot the buttresses carry on up as ridges that twist
+        // around the trunk, like the fluted bole of an old oak.
+        let up = p.y - base.y;
+        let ridge = 0.07 * (1.0 - f) * (1.0 - smoothstep(4.0, 9.0, up));
         for k in 0..sides {
             let a = k as f32 / sides as f32 * TAU;
             let lobe = ((a * lobes + phase).cos().max(0.0)).powi(2);
-            let swell = 1.0 + flare * f * (0.25 + 0.8 * lobe);
+            let twist = a * lobes + phase + up * 0.45;
+            let swell = (1.0 + flare * f * (0.25 + 0.8 * lobe)) * (1.0 + ridge * twist.cos());
             let radial = u * a.cos() + v * a.sin();
+            let tangent = v * a.cos() - u * a.sin();
             // Roots dip into the ground as they spread.
             let dip = if p.y <= base.y + 0.01 {
                 0.0
@@ -510,7 +541,9 @@ fn trunk(out: &mut MeshData, l: &Limb, flare: f32, sides: u32, seed: u32) {
             };
             let pos = p + radial * r * swell + Vec3::Y * dip;
             // Normals tilt up where the foot spreads out.
-            let normal = (radial + Vec3::Y * (f * flare * (0.5 + lobe) * 0.8)).normalize();
+            let normal =
+                (radial + tangent * (ridge * lobes * twist.sin()) + Vec3::Y * (f * flare * (0.5 + lobe) * 0.8))
+                    .normalize();
             out.vertices.push(Vertex {
                 pos: pos.to_array(),
                 data: smooth_data(BARK, bark_ao(p.y), normal),

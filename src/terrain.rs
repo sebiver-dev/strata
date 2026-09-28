@@ -94,6 +94,22 @@ pub fn smooth_water_level(z_m: f32) -> f32 {
 }
 
 /// Height of still water (river and lakes) at a point, in metres.
+/// Where the big tree on the spawn rise stands: ahead and to the right of the
+/// arrival spot, just below the rise's top, so the trunk stands in view and
+/// the crown frames the sky above it.
+pub fn hero_tree_foot() -> Vec2 {
+    let (ax, az) = crate::vista::ARRIVAL;
+    let yaw = crate::vista::SPAWN_YAW;
+    let fwd = Vec2::new(yaw.cos(), yaw.sin());
+    // Ahead and to the left of the arrival spot, just outside the left
+    // edge of the view so only the trunk's near side frames it, like the
+    // reference's tree, and the valley, the castle crag and the peaks to
+    // the right stay open.
+    let left = -fwd.perp();
+    let (ahead, aside) = (HERO_REACH_M * HERO_BEARING.cos(), HERO_REACH_M * HERO_BEARING.sin());
+    Vec2::new(ax, az) + fwd * ahead + left * aside
+}
+
 pub fn water_level(x_m: f32, z_m: f32) -> f32 {
     WATER_LEVEL_M - drop_below_home()
         + FALLS
@@ -459,16 +475,9 @@ impl Terrain {
     /// The great oak just ahead and left of the arrival spot, framing the
     /// first view up the valley from the left edge.
     fn plan_hero_tree(&self) -> Option<Tree> {
-        let (ax, az) = crate::vista::ARRIVAL;
         let yaw = crate::vista::SPAWN_YAW;
         let fwd = Vec2::new(yaw.cos(), yaw.sin());
-        // Ahead and to the left of the arrival spot, just outside the left
-        // edge of the view so only the trunk's near side frames it, like the
-        // reference's tree, and the valley, the castle crag and the peaks to
-        // the right stay open.
-        let left = -fwd.perp();
-        let (ahead, aside) = (HERO_REACH_M * HERO_BEARING.cos(), HERO_REACH_M * HERO_BEARING.sin());
-        let foot = Vec2::new(ax, az) + fwd * ahead + left * aside;
+        let foot = hero_tree_foot();
         let (x, z) = (foot.x, foot.y);
         Some(Tree {
             base: Vec3::new(x, self.height_at(x, z).0, z),

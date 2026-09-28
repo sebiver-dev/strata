@@ -1187,6 +1187,26 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.f0 = 0.6;
             wettable = false;
         }
+        case 56u: { // fence wood: weathered split timber, silvering brown with cracks and lichen
+            // Grain runs along the longest way a face can: up a post, along a rail.
+            let an = abs(n);
+            let along = select(p.y, p.x + p.z, an.y > 0.5);
+            let across = select(p.x + p.z, p.x - p.z, an.y > 0.5);
+            let streak = vnoise(vec3(across * 17.0, along * 1.3, 0.5));
+            let crack = 1.0 - smoothstep(0.03, 0.09, abs(vnoise(vec3(across * 9.0, along * 0.6, 3.1)) - 0.5));
+            let weather = smoothstep(0.3, 0.8, vnoise(q * 0.9) * 0.6 + broad * 0.4);
+            var c = mix(vec3(0.43, 0.31, 0.19), vec3(0.55, 0.50, 0.42), weather * 0.75);
+            c *= 0.82 + 0.3 * streak * d_cm + 0.08 * fine;
+            c *= 1.0 - 0.45 * crack * d_dm;
+            // Pale lichen and a little moss on what faces the sky.
+            let lichen = smoothstep(0.7, 0.85, vnoise(q * 4.1 + 7.0)) * d_dm;
+            c = mix(c, vec3(0.58, 0.60, 0.48), lichen * 0.35);
+            c = mix(c, vec3(0.26, 0.32, 0.12), smoothstep(0.6, 0.95, n.y) * smoothstep(0.55, 0.8, vnoise(q * 2.3)) * 0.4);
+            s.albedo = c;
+            s.rough = 0.9;
+            s.height = streak * 0.006 * d_cm - crack * 0.004 * d_dm;
+            wettable = false;
+        }
         default: {}
     }
 

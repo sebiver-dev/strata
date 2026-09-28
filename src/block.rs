@@ -58,9 +58,11 @@ pub const GLOW: Block = 55;
 pub const BANNER: Block = 53;
 /// Warm red-brown clay roof tiles; with the AO bits at 2, weathered brown
 /// shingle instead (mesh only).
-pub const ROOF_TILE: Block = 56;
+pub const ROOF_TILE: Block = 57;
 /// Rough bridge stone: mottled, mossy on top, dark and damp near the water (mesh only).
 pub const BRIDGE_STONE: Block = 54;
+/// Weathered, silvering timber of the rustic path fence (mesh only).
+pub const FENCE_WOOD: Block = 56;
 /// Mossy granite boulders (mesh only; their voxels are `BUILT`).
 pub const BOULDER: Block = 35;
 /// Pink and white lupin florets (mesh only); LUPIN is the purple kind.
@@ -123,6 +125,7 @@ pub fn name(b: Block) -> &'static str {
         BANNER => "banner",
         BRIDGE_STONE => "bridge stone",
         ROOF_TILE => "roof tile",
+        FENCE_WOOD => "fence wood",
         BOULDER => "boulder",
         BARK => "bark",
         FOLIAGE => "foliage",

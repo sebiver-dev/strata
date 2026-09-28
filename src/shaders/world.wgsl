@@ -1063,7 +1063,7 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
         }
         case 35u: { // boulder: speckled grey granite with hairline cracks and patches of moss on top
             let tone = vnoise(q * 0.35);
-            var c = mix(vec3(0.42, 0.42, 0.43), vec3(0.57, 0.55, 0.51), tone) * (0.85 + 0.25 * fine);
+            var c = mix(vec3(0.46, 0.43, 0.39), vec3(0.61, 0.57, 0.50), tone) * (0.85 + 0.25 * fine);
             // Dark mica and pale feldspar grains.
             let grain = hash3(floor(q * 38.0));
             c *= 1.0 + (0.28 * step(0.9, grain) - 0.3 * step(grain, 0.08)) * d_cm;
@@ -1078,10 +1078,10 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             let ragged = fbm(q * 1.7) - 0.5 + (vnoise(q * 11.0) - 0.5) * 0.35;
             let dry = smoothstep(water_level_at(p.xz), water_level_at(p.xz) + 0.3, p.y);
             // Moss only in patches on the upper faces, so grey stone shows around it.
-            let mossy = smoothstep(0.38, 0.62, vnoise(q * 0.9 + 11.0));
-            let moss_m = smoothstep(0.55, 0.85, n.y + ragged * 0.9) * dry * mossy;
+            let mossy = smoothstep(0.3, 0.7, vnoise(q * 0.9 + 11.0) + ragged * 0.5);
+            let moss_m = smoothstep(0.45, 0.95, n.y + ragged * 0.9) * dry * mossy;
             let tuft = vnoise(q * 23.0);
-            let moss = mix(vec3(0.26, 0.40, 0.10), vec3(0.50, 0.60, 0.20), vnoise(q * 5.0)) * (0.85 + 0.3 * tuft);
+            let moss = mix(vec3(0.28, 0.35, 0.12), vec3(0.46, 0.50, 0.21), vnoise(q * 5.0)) * (0.85 + 0.3 * tuft);
             c = mix(c, moss, moss_m);
             s.albedo = c;
             s.sss = moss_m * 0.6;
@@ -1189,7 +1189,26 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.f0 = 0.6;
             wettable = false;
         }
-        case 56u: { // roof tile: warm red-brown clay in lapped rows (weathered shingle in shade_terrain)
+        case 56u: { // fence wood: weathered split timber, silvering brown with cracks and lichen
+            // Grain runs along the longest way a face can: up a post, along a rail.
+            let an = abs(n);
+            let along = select(p.y, p.x + p.z, an.y > 0.5);
+            let across = select(p.x + p.z, p.x - p.z, an.y > 0.5);
+            let streak = vnoise(vec3(across * 17.0, along * 1.3, 0.5));
+            let crack = 1.0 - smoothstep(0.03, 0.09, abs(vnoise(vec3(across * 9.0, along * 0.6, 3.1)) - 0.5));
+            let weather = smoothstep(0.3, 0.8, vnoise(q * 0.9) * 0.6 + broad * 0.4);
+            var c = mix(vec3(0.43, 0.31, 0.19), vec3(0.55, 0.50, 0.42), weather * 0.75);
+            c *= 0.82 + 0.3 * streak * d_cm + 0.08 * fine;
+            c *= 1.0 - 0.45 * crack * d_dm;
+            // Pale lichen and a little moss on what faces the sky.
+            let lichen = smoothstep(0.7, 0.85, vnoise(q * 4.1 + 7.0)) * d_dm;
+            c = mix(c, vec3(0.58, 0.60, 0.48), lichen * 0.35);
+            c = mix(c, vec3(0.26, 0.32, 0.12), smoothstep(0.6, 0.95, n.y) * smoothstep(0.55, 0.8, vnoise(q * 2.3)) * 0.4);
+            s.albedo = c;
+            s.rough = 0.9;
+            s.height = streak * 0.006 * d_cm - crack * 0.004 * d_dm;
+        }
+        case 57u: { // roof tile: warm red-brown clay in lapped rows (weathered shingle in shade_terrain)
             let row = floor(p.y / 0.26);
             let along = p.x + p.z;
             let tile = floor(along / 0.3 + row * 0.5);
@@ -1515,7 +1534,7 @@ fn shade_terrain(i: VOut) -> vec4<f32> {
         }
         ao_in = 1.0;
     }
-    if (mat == 56u) {
+    if (mat == 57u) {
         // AO bits 2: weathered brown shingle instead of clay tile.
         if (i.ao < 0.9) {
             let l = dot(surf.albedo, vec3(0.3, 0.59, 0.11));

@@ -1006,6 +1006,45 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.height = shape * 0.04 * d_dm;
             wettable = false;
         }
+        case 50u: { // castle banner: deep blue-violet wool hanging still in soft folds
+            let fold = 0.5 + 0.5 * sin(dot(p.xz, vec2(7.0, 7.0)) + 0.8 * sin(p.y * 1.3));
+            let weave = 0.5 + 0.25 * (sin(p.x * 160.0 + p.y * 160.0) + sin(p.z * 160.0 - p.y * 160.0));
+            s.albedo = vec3(0.13, 0.11, 0.38) * (0.75 + 0.35 * fold) * (0.9 + 0.12 * weave * d_cm) * (0.92 + 0.12 * broad);
+            s.rough = 0.95;
+            s.sss = 0.3;
+            wettable = false;
+        }
+        case 51u: { // ashlar: the castle's pale dressed limestone, in courses, streaked by rain
+            let an = abs(n);
+            var u = select(p.x, p.z, an.x > an.z);
+            var v = p.y;
+            if (an.y > 0.7) { u = p.x; v = p.z; }
+            let row = floor(v / 0.5);
+            let col = floor(u / 0.9 + row * 0.5);
+            let fu = fract(u / 0.9 + row * 0.5);
+            let fv = fract(v / 0.5);
+            let joint = min(min(fu, 1.0 - fu) * 0.9, min(fv, 1.0 - fv) * 0.5);
+            let mortar = (1.0 - smoothstep(0.01, 0.025, joint)) * d_dm;
+            let tint = hash2(vec2(col, row));
+            var c = mix(vec3(0.72, 0.68, 0.60), vec3(0.83, 0.79, 0.70), tint * (1.0 - calm * 0.7)) * (0.9 + 0.14 * fine);
+            // Rain streaks run down from ledges; a little moss on the tops.
+            let streak = smoothstep(0.5, 0.9, vnoise(q * vec3(2.5, 0.2, 2.5)));
+            c *= 1.0 - 0.16 * streak - 0.06 * broad;
+            let moss = smoothstep(0.62, 0.8, fbm(q * 0.9)) * select(0.15, 0.7, top);
+            c = mix(c, vec3(0.38, 0.42, 0.24), moss * 0.5);
+            c = mix(c, vec3(0.47, 0.44, 0.39), mortar * 0.7);
+            s.albedo = c;
+            s.rough = 0.8;
+            s.f0 = 0.04;
+            s.height = (1.0 - mortar) * 0.015 + fine * 0.008 + vnoise(q * 19.0) * 0.003 * d_cm;
+        }
+        case 52u: { // gilt: burnished gold leaf, a little worn
+            let wear = smoothstep(0.55, 0.85, vnoise(q * 11.0));
+            s.albedo = mix(vec3(0.85, 0.63, 0.24), vec3(0.55, 0.40, 0.18), wear * 0.5);
+            s.rough = mix(0.3, 0.55, wear);
+            s.f0 = 0.6;
+            wettable = false;
+        }
         default: {}
     }
 

@@ -80,6 +80,12 @@ pub const BARK: Block = 27;
 pub const FOLIAGE: Block = 28;
 /// Conifer needles.
 pub const NEEDLES: Block = 29;
+/// The castle's deep blue-violet banner cloth, hung still (mesh only).
+pub const CASTLE_BANNER: Block = 50;
+/// Pale dressed limestone of the castle (mesh only).
+pub const ASHLAR: Block = 51;
+/// Gilding: finials, banner rods and trim (mesh only).
+pub const GILT: Block = 52;
 
 /// Materials the player can place, in hotbar order (keys 1..).
 pub const PLACEABLE: [Block; 8] = [STONE, DIRT, GRASS, SAND, GRAVEL, WOOD, PLANKS, SNOW];
@@ -117,6 +123,9 @@ pub fn name(b: Block) -> &'static str {
         BARK => "bark",
         FOLIAGE => "foliage",
         NEEDLES => "needles",
+        CASTLE_BANNER => "castle banner",
+        ASHLAR => "ashlar",
+        GILT => "gilt",
         _ => "unknown",
     }
 }

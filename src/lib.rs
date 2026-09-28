@@ -6,6 +6,7 @@ pub mod avatar;
 pub mod block;
 pub mod bridge;
 pub mod budget;
+pub mod castle;
 pub mod chunk;
 pub mod cottage;
 pub mod far;

@@ -121,63 +121,6 @@ pub(crate) fn face(verts: &mut Vec<Vertex>, idx: &mut Vec<u32>, lo: Vec3, hi: Ve
     idx.extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 3]);
 }
 
-/// A closed surface of revolution around a vertical axis through `centre`
-/// (x and z), following `profile` as (height, radius) pairs from bottom to top.
-/// `wobble` gives each ring a slightly irregular outline so crowns do not look
-/// turned on a lathe.
-pub(crate) fn revolve(
-    out: &mut MeshData,
-    centre: Vec2,
-    profile: &[(f32, f32)],
-    segments: u32,
-    mat: Block,
-    wobble: u32,
-) {
-    let rings = profile.len();
-    let start = out.vertices.len() as u32;
-    for (r, &(y, radius)) in profile.iter().enumerate() {
-        // Slope of the outline, for normals that lean up or down with it.
-        let (ya, ra) = profile[r.saturating_sub(1)];
-        let (yb, rb) = profile[(r + 1).min(rings - 1)];
-        let slope = if (yb - ya).abs() > 1e-4 {
-            (rb - ra) / (yb - ya)
-        } else {
-            0.0
-        };
-        for k in 0..segments {
-            let a = k as f32 / segments as f32 * std::f32::consts::TAU;
-            let bump = if wobble != 0 {
-                let h = crate::noise::hash3(wobble, k as i32, r as i32, 0);
-                0.82 + 0.3 * crate::noise::unit(h)
-            } else {
-                1.0
-            };
-            let (c, s) = (a.cos(), a.sin());
-            let pos = Vec3::new(centre.x + c * radius * bump, y, centre.y + s * radius * bump);
-            // Top and bottom caps close to a point; their normals point along the axis.
-            let n = if radius < 1e-3 {
-                Vec3::new(0.0, if r == 0 { -1.0 } else { 1.0 }, 0.0)
-            } else {
-                Vec3::new(c, -slope, s).normalize()
-            };
-            out.vertices.push(Vertex {
-                pos: pos.to_array(),
-                data: smooth_data(mat, 3, n),
-            });
-        }
-    }
-    for r in 0..rings as u32 - 1 {
-        for k in 0..segments {
-            let k1 = (k + 1) % segments;
-            let a = start + r * segments + k;
-            let b = start + r * segments + k1;
-            let c = start + (r + 1) * segments + k1;
-            let d = start + (r + 1) * segments + k;
-            out.indices.extend_from_slice(&[a, c, b, a, d, c]);
-        }
-    }
-}
-
 /// Meshes one far tile at a level of detail.
 pub fn build_tile(terrain: &Terrain, tile: IVec2, level: u8) -> MeshData {
     let cell = LEVEL_CELL_M[level as usize];

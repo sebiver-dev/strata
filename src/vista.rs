@@ -648,10 +648,8 @@ mod tests {
         for st in t.structures.iter() {
             if let crate::structures::Structure::Castle(c) = st {
                 assert!((c.c.x - x).abs() < 0.5 && (c.c.y - z).abs() < 0.5);
-                assert!(c.floor - c.base < 3.0, "terrace {} over {}", c.floor, c.base);
-                for tw in &c.towers {
-                    assert!(tw.top + tw.room + tw.cone_h < world_top - 4.0);
-                }
+                assert!(c.floor - c.ground_lo < 3.0, "terrace {} over {}", c.floor, c.ground_lo);
+                assert!(c.tip() < world_top - 4.0);
                 castles += 1;
             }
         }

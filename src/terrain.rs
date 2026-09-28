@@ -424,14 +424,14 @@ impl Terrain {
         let (ax, az) = crate::vista::ARRIVAL;
         let yaw = crate::vista::SPAWN_YAW;
         let fwd = Vec2::new(yaw.cos(), yaw.sin());
-        // Ahead and to the right of the arrival spot, still on the rise's top,
+        // Ahead and to the right of the arrival spot, just below the rise's top,
         // so the trunk stands in view and the crown frames the sky above it.
-        let foot = Vec2::new(ax, az) + fwd * 7.0 + fwd.perp() * 6.0;
+        let foot = Vec2::new(ax, az) + fwd * 11.0 + fwd.perp() * 5.0;
         let (x, z) = (foot.x, foot.y);
         let to_arrival = (Vec2::new(ax, az) - foot).normalize_or_zero();
         Some(Tree {
             base: Vec3::new(x, self.height_at(x, z).0, z),
-            height: 15.0,
+            height: 18.0,
             kind: TreeKind::Broadleaf,
             seed: self.seed ^ 0x0a4_7ee,
             hero: Some((to_arrival + fwd * 0.6).normalize()),

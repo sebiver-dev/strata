@@ -66,6 +66,10 @@ fn fall(k: u32) -> vec2<f32> {
     return falls[k];
 }
 
+// Matches vista::CASTLE_TOP and vista::SNOW_FREE_R: x, z and radius (metres)
+// of the castle bluff, where no snow lies.
+const SNOW_FREE: vec3<f32> = vec3(1058.0, 642.0, 130.0);
+
 const CLIFF_FALL_COUNT: u32 = 3u;
 
 // Matches vista::CLIFF_FALLS: where each waterfall off the castle bluff lands
@@ -1061,7 +1065,9 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
     if (mat == 1u || mat == 2u || mat == 3u || mat == 5u || mat == 6u) {
         let ragged = vnoise(p * 0.08) * 16.0 + vnoise(p * 0.6) * 3.0;
         let line = 100.0 + ragged - 10.0 * smoothstep(0.75, 0.95, n.y);
-        let cover = smoothstep(line - 3.0, line + 3.0, p.y) * smoothstep(0.5, 0.8, n.y);
+        // None on the castle bluff: grass on top, bare rock on its faces.
+        let bluff = 1.0 - smoothstep(SNOW_FREE.z - 20.0, SNOW_FREE.z, distance(p.xz, SNOW_FREE.xy));
+        let cover = smoothstep(line - 3.0, line + 3.0, p.y) * smoothstep(0.5, 0.8, n.y) * (1.0 - bluff);
         let snow = vec3(0.86, 0.89, 0.94) * (0.92 + 0.1 * vnoise(q * 3.0));
         s.albedo = mix(s.albedo, snow, cover);
         s.rough = mix(s.rough, 0.7, cover);

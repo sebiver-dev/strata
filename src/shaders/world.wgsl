@@ -643,14 +643,14 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             // are metres across, so they hold up on the coarse far ground too.
             let steep = 1.0 - smoothstep(0.45, 0.75, n.y);
             if (steep > 0.0) {
-                let layer = fract((p.y + 3.0 * vnoise(p * 0.06)) / 4.2);
+                let layer = fract((p.y + 4.0 * vnoise(p * 0.04) + 1.5 * vnoise(p * 0.13)) / 4.2);
                 let brow = smoothstep(0.86, 0.94, layer);
                 let recess = smoothstep(0.5, 0.86, layer) * (1.0 - brow);
                 let tang = normalize(vec2(-n.z, n.x) + vec2(1e-4, 0.0));
                 let along = dot(p.xz, tang);
                 let flute = vnoise2(vec2(along * 0.45, p.y * 0.04)) * 0.65 + vnoise2(vec2(along * 1.3, p.y * 0.1)) * 0.35;
                 relief = steep * (0.35 * brow - 0.18 * recess + 0.55 * flute);
-                c *= 1.0 - steep * (0.32 * recess * recess + 0.12 * (1.0 - flute));
+                c *= 1.0 - steep * (0.2 * recess * recess + 0.07 * (1.0 - flute));
                 // The castle crag: warm grey, streaked dark where water runs
                 // down it and darkest and glossiest under the falls, with
                 // lichen in pale patches.
@@ -1645,7 +1645,9 @@ fn shade_water(i: VOut) -> vec4<f32> {
 // some sunlight even turned a little away, and the sky's light from above.
 fn foam_light(n: vec3<f32>, sh: f32) -> vec3<f32> {
     let sun = normalize(g.sun_dir.xyz);
-    let sky = sky_dome(vec3(0.0, 1.0, 0.0)) * 0.8 + sky_dome(normalize(vec3(-sun.z, 0.02, sun.x))) * 0.3;
+    var sky = sky_dome(vec3(0.0, 1.0, 0.0)) * 0.8 + sky_dome(normalize(vec3(-sun.z, 0.02, sun.x))) * 0.3;
+    // As on the ground, the painted golden-hour sky sheds a paler light than it shows.
+    sky = mix(sky, vec3(dot(sky, vec3(0.3, 0.5, 0.2))), golden_hour() * 0.6);
     let diffuse = max(dot(n, sun) * 0.7 + 0.3, 0.0);
     return sun_light() * sh * diffuse + sky * (0.75 + 0.25 * n.y);
 }
@@ -1667,7 +1669,7 @@ fn cliff_sheet(
     let streak = s1 * 0.5 + s2 * 0.32 + s3 * 0.18;
     // The water tears up the further it has fallen.
     let torn = smoothstep(0.0, 0.6, fallen);
-    var white = smoothstep(0.62 - 0.42 * torn, 0.8 - 0.25 * torn, streak);
+    var white = smoothstep(0.55 - 0.5 * torn, 0.75 - 0.3 * torn, streak);
     // Where it hits the ledges and the pool it churns white.
     let foot = 1.0 - smoothstep(0.0, 3.5, p.y - at.w);
     white = max(white, foot * smoothstep(0.2, 0.5, s2 * 0.6 + s3 * 0.4 + foot * 0.4));
@@ -1677,7 +1679,7 @@ fn cliff_sheet(
     let glass = lin(vec3(0.07, 0.22, 0.22)) * foam_light(n, sh) * 0.6 + refl * fresnel;
     let col = mix(glass, foam_col, white);
     // How much of the rock behind it hides: little at the lip, most lower down.
-    var cover = mix(0.4, 0.94, max(white, 0.5 * fallen));
+    var cover = mix(0.5, 0.96, max(white, 0.6 * fallen));
     cover *= 1.0 - smoothstep(at.z - 0.5, at.z + 0.6, abs(across));
     if (n.y < 0.5) {
         cover *= smoothstep(0.05, 0.3, abs(dot(n, v)));

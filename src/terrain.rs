@@ -303,7 +303,14 @@ impl Terrain {
     /// stair-stepped shelf. The sand rim just above the waterline is such a
     /// band wherever the shore is steeper than a beach one cell wide.
     pub fn far_surface(&self, x_m: f32, z_m: f32, h: f32, channel: f32, cell_slope: f32, cell: f32) -> Block {
-        self.cover(x_m, z_m, h, channel, cell_slope * cell < 1.0).surface
+        let surface = self.cover(x_m, z_m, h, channel, cell_slope * cell < 1.0).surface;
+        // A grassy ledge narrower than a cell would paint the drops either side
+        // of it as turf (soil, that steep): across a steep cell it is rock.
+        if surface == GRASS && cell_slope > 1.2 {
+            STONE
+        } else {
+            surface
+        }
     }
 
     /// Surface and subsurface for a column of height `h`. Without `beach`,

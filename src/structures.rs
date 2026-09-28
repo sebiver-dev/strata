@@ -398,9 +398,11 @@ fn cottage_door_near(s: &Structures, x: f32, z: f32) -> bool {
 /// on stilts over the water below the spawn rise, a row facing the path on its
 /// right, houses on the east bank upstream of the bridge facing the river, and
 /// a cluster on the west bank around the bridge's far end. Sites are measured
-/// from the river, the path and the bridge so they follow the terrain.
+/// from the river, the path and the bridge so they follow the terrain. Sizes
+/// run from a small cottage to a big jettied house, pitches from shallow to
+/// steep, and roofs are blue-grey slate, warm clay tile or brown shingle.
 fn hamlet(t: &Terrain, zb: f32, bx0: f32, seed: u32) -> Vec<Cottage> {
-    use crate::cottage::Style;
+    use crate::cottage::{Roof, Style};
     let river = |z: f32| t.river_x(z);
     let path = |z: f32| vista::path_x(z).unwrap_or(river(z) + 22.0);
     let cottage = Style::cottage();
@@ -423,7 +425,14 @@ fn hamlet(t: &Terrain, zb: f32, bx0: f32, seed: u32) -> Vec<Cottage> {
             let x = (path(z) - 7.0 + dx).max(river(z) + 13.0);
             let deck = ((x - 3.0 - (river(z) + 8.0)) / VOXEL_SIZE).round() * VOXEL_SIZE;
             if deck >= 2.0 {
-                at(x, z, false, 1.0, deck, house.size(4.5, 3.0).pitch(1.4));
+                at(
+                    x,
+                    z,
+                    false,
+                    1.0,
+                    deck,
+                    house.size(4.5, 3.0).pitch(1.4).roofed(Roof::Shingle),
+                );
             }
         }
     }
@@ -435,7 +444,7 @@ fn hamlet(t: &Terrain, zb: f32, bx0: f32, seed: u32) -> Vec<Cottage> {
         false,
         -1.0,
         0.0,
-        house.jettied().size(4.5, 3.25).pitch(1.3),
+        house.jettied().size(4.5, 3.25).pitch(1.1).roofed(Roof::Tile),
     );
     let z = zb - 27.0;
     at(
@@ -444,17 +453,38 @@ fn hamlet(t: &Terrain, zb: f32, bx0: f32, seed: u32) -> Vec<Cottage> {
         false,
         -1.0,
         0.0,
-        cottage.size(4.5, 3.0).pitch(1.45).with_dormers(),
+        cottage.size(4.5, 3.0).pitch(1.55).with_dormers(),
     );
     let z = zb - 44.0;
-    at(river(z) + 18.5, z, false, -1.0, 0.0, house.size(5.0, 3.5).pitch(1.15));
+    at(river(z) + 18.5, z, false, -1.0, 0.0, house.size(5.0, 3.5).pitch(1.0));
     let z = zb - 30.0;
-    at(river(z) + 29.0, z, true, -1.0, 0.0, cottage.pitch(1.25));
+    at(
+        river(z) + 29.0,
+        z,
+        true,
+        -1.0,
+        0.0,
+        cottage.size(3.5, 2.75).pitch(1.5).roofed(Roof::Shingle),
+    );
     let z = zb - 8.0;
-    at(t.road_x(z) + 11.0, z, false, -1.0, 0.0, house.pitch(1.3));
+    at(
+        t.road_x(z) + 11.0,
+        z,
+        false,
+        -1.0,
+        0.0,
+        house.pitch(1.2).roofed(Roof::Tile),
+    );
     // West bank: flanking the bridge's far end, then along the river.
     let z = zb - 11.0;
-    at(bx0 - 7.0, z, true, 1.0, 0.0, house.jettied().size(4.5, 3.25).pitch(1.3));
+    at(
+        bx0 - 7.0,
+        z,
+        true,
+        1.0,
+        0.0,
+        house.jettied().size(5.0, 3.25).pitch(1.05).roofed(Roof::Tile),
+    );
     let z = zb + 13.0;
     at(
         bx0 - 8.0,
@@ -462,12 +492,26 @@ fn hamlet(t: &Terrain, zb: f32, bx0: f32, seed: u32) -> Vec<Cottage> {
         true,
         -1.0,
         0.0,
-        cottage.size(4.5, 3.0).pitch(1.4).with_dormers(),
+        cottage.size(4.5, 3.0).pitch(1.6).with_dormers(),
     );
     let z = zb + 1.0;
-    at(bx0 - 21.0, z, false, 1.0, 0.0, house.size(4.0, 3.5).pitch(1.5));
+    at(
+        bx0 - 21.0,
+        z,
+        false,
+        1.0,
+        0.0,
+        house.size(4.0, 3.5).pitch(1.25).roofed(Roof::Tile),
+    );
     let z = zb + 24.0;
-    at(river(z) - 18.0, z, false, 1.0, 0.0, cottage.size(4.0, 3.0).pitch(1.3));
+    at(
+        river(z) - 18.0,
+        z,
+        false,
+        1.0,
+        0.0,
+        cottage.size(3.5, 2.75).pitch(1.45).roofed(Roof::Shingle),
+    );
     let z = zb + 36.0;
     at(
         river(z) - 19.0,
@@ -475,12 +519,26 @@ fn hamlet(t: &Terrain, zb: f32, bx0: f32, seed: u32) -> Vec<Cottage> {
         false,
         1.0,
         0.0,
-        house.jettied().pitch(1.35).with_dormers(),
+        house.jettied().size(5.0, 3.25).pitch(1.2).with_dormers(),
     );
     let z = zb - 30.0;
-    at(river(z) - 20.0, z, false, 1.0, 0.0, house.size(4.5, 3.25).pitch(1.2));
+    at(
+        river(z) - 20.0,
+        z,
+        false,
+        1.0,
+        0.0,
+        house.size(4.5, 3.25).pitch(0.95).roofed(Roof::Tile),
+    );
     let z = zb - 50.0;
-    at(river(z) - 19.0, z, false, 1.0, 0.0, cottage.pitch(1.2).with_dormers());
+    at(
+        river(z) - 19.0,
+        z,
+        false,
+        1.0,
+        0.0,
+        cottage.size(3.5, 2.75).pitch(1.35).with_dormers().roofed(Roof::Shingle),
+    );
     sites
         .into_iter()
         .enumerate()
@@ -698,6 +756,28 @@ mod tests {
     }
 
     #[test]
+    fn the_houses_vary_in_size_pitch_and_roof() {
+        use crate::cottage::Roof;
+        let t = world();
+        let houses = cottages(&t);
+        // Big and small houses, steep and shallow roofs, and all three coverings.
+        let area = |c: &&Cottage| c.half_len * c.upper_wid() * c.storeys as f32;
+        let (small, large) = houses
+            .iter()
+            .map(area)
+            .fold((f32::MAX, 0.0f32), |(a, b), x| (a.min(x), b.max(x)));
+        assert!(large > 3.0 * small, "sizes {small}..{large}");
+        let (flat, steep) = houses
+            .iter()
+            .fold((f32::MAX, 0.0f32), |(a, b), c| (a.min(c.pitch), b.max(c.pitch)));
+        assert!(steep - flat > 0.5, "pitches {flat}..{steep}");
+        for roof in [Roof::Slate, Roof::Tile, Roof::Shingle] {
+            let n = houses.iter().filter(|c| c.roof == roof).count();
+            assert!(n >= 3, "{n} {roof:?} roofs");
+        }
+    }
+
+    #[test]
     fn far_cottages_keep_their_timbers_and_windows() {
         let t = world();
         let (k, c) = t
@@ -712,7 +792,8 @@ mod tests {
             .unwrap();
         let m = &t.structures.far_models[&k];
         let mats = |mat: Block| m.vertices.iter().filter(|v| (v.data >> 3) & 0xff == mat as u32).count();
-        assert!(mats(OAK) > 100 && mats(WINDOW) > 8 && mats(ROOF) > 100, "{c:?}");
+        let roof = mats(ROOF) + mats(ROOF_TILE);
+        assert!(mats(OAK) > 100 && mats(WINDOW) > 8 && roof > 100, "{c:?}");
         assert!(m.indices.len() / 3 < 20_000, "{} triangles", m.indices.len() / 3);
     }
 

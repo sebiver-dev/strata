@@ -40,6 +40,29 @@ const STEPS: i32 = 7;
 /// Most entry steps a front door gets.
 const MAX_ENTRY_STEPS: i32 = 12;
 
+/// What a roof is covered with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Roof {
+    /// Blue-grey slate.
+    Slate,
+    /// Warm red-brown clay tile.
+    Tile,
+    /// Weathered brown shingle.
+    Shingle,
+}
+
+impl Roof {
+    /// The material and the value of the vertex AO bits that pick it (see
+    /// `ROOF_TILE`).
+    fn material(self) -> (Block, u32) {
+        match self {
+            Roof::Slate => (ROOF, 3),
+            Roof::Tile => (ROOF_TILE, 3),
+            Roof::Shingle => (ROOF_TILE, 2),
+        }
+    }
+}
+
 /// The shape of a cottage: storeys, footprint, roof and trimmings.
 #[derive(Clone, Copy, Debug)]
 pub struct Style {
@@ -54,6 +77,7 @@ pub struct Style {
     pub jetty: bool,
     /// Gabled dormer windows on the front slope of the roof.
     pub dormers: bool,
+    pub roof: Roof,
 }
 
 impl Style {
@@ -66,6 +90,7 @@ impl Style {
             pitch: PITCH,
             jetty: false,
             dormers: false,
+            roof: Roof::Slate,
         }
     }
 
@@ -78,6 +103,7 @@ impl Style {
             pitch: PITCH,
             jetty: false,
             dormers: false,
+            roof: Roof::Slate,
         }
     }
 
@@ -100,6 +126,10 @@ impl Style {
     pub const fn with_dormers(self) -> Self {
         Style { dormers: true, ..self }
     }
+
+    pub const fn roofed(self, roof: Roof) -> Self {
+        Style { roof, ..self }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -118,6 +148,7 @@ pub struct Cottage {
     /// How far the upper storey oversails the long walls below; 0 for none.
     pub jetty: f32,
     pub dormers: bool,
+    pub roof: Roof,
     /// Which long side has the front door: +1 or -1 along the across axis.
     pub front: f32,
     /// Metres of plank deck on stilts behind the back wall; 0 for none.
@@ -189,6 +220,7 @@ impl Cottage {
             pitch,
             jetty,
             dormers,
+            roof,
         } = style;
         let (hx, hz) = if along_x {
             (half_len, half_wid)
@@ -231,6 +263,7 @@ impl Cottage {
             pitch,
             jetty: if jetty && storeys > 1 { JETTY } else { 0.0 },
             dormers,
+            roof,
             front,
             deck,
             base: lo.min(deck_lo),
@@ -519,6 +552,7 @@ impl Cottage {
 
     /// The cottage as an authored model, in world space.
     pub fn model(&self, t: &Terrain, out: &mut MeshData) {
+        let from = out.vertices.len();
         self.plinth(t, out);
         self.floors(out);
         for side in [-1.0f32, 1.0] {
@@ -536,12 +570,14 @@ impl Cottage {
         if self.deck > 0.0 {
             self.deck_model(t, out, false);
         }
+        self.finish(out, from);
     }
 
     /// Just the outside, pared down for the far field: footings, walls with
     /// their timbers and lit windows as flat strips, gables, the roof in a few
     /// rows of slate, dormers, chimney and deck.
     pub fn exterior(&self, t: &Terrain, out: &mut MeshData) {
+        let from = out.vertices.len();
         let (l, f) = (self.half_len, self.floor);
         let w = self.half_wid;
         block(
@@ -590,10 +626,12 @@ impl Cottage {
         if self.deck > 0.0 {
             self.deck_model(t, out, true);
         }
+        self.finish(out, from);
     }
 
     /// A light stand-in for far away: body, timber bands, roof and lit windows.
     pub fn far(&self, out: &mut MeshData) {
+        let from = out.vertices.len();
         let (l, w) = (self.half_len, self.half_wid);
         let wu = self.upper_wid();
         let top = self.top();
@@ -657,6 +695,64 @@ impl Cottage {
                     );
                 }
             }
+        }
+        self.finish(out, from);
+    }
+
+    /// Gives the vertices added since `from` their roof covering, and each
+    /// window its own lamp: bright, ordinary, dim or dark. Both ride in the
+    /// vertex AO bits, which authored models otherwise leave at 3; the shader
+    /// reads them back (`shade_terrain`). Every window is a four-cornered
+    /// panel drawn from both sides, so each takes eight vertices in a row.
+    fn finish(&self, out: &mut MeshData, from: usize) {
+        let (roof, tone) = self.roof.material();
+        let set =
+            |data: u32, mat: Block, ao: u32| (data & !(0xff << 3) & !(3 << 11)) | ((mat as u32) << 3) | (ao << 11);
+        let mat_of = |data: u32| ((data >> 3) & 0xff) as Block;
+        let mut i = from;
+        while i < out.vertices.len() {
+            let mat = mat_of(out.vertices[i].data);
+            if mat == ROOF {
+                out.vertices[i].data = set(out.vertices[i].data, roof, tone);
+                i += 1;
+            } else if mat == WINDOW && i + 8 <= out.vertices.len() {
+                let c = out.vertices[i..i + 4].iter().map(|v| Vec3::from(v.pos)).sum::<Vec3>() / 4.0;
+                let lamp = self.window_lamp(c);
+                for v in &mut out.vertices[i..i + 8] {
+                    debug_assert_eq!(mat_of(v.data), WINDOW);
+                    v.data = set(v.data, WINDOW, lamp);
+                }
+                i += 8;
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// How the window centred at `c` is lit, as the AO bits the shader reads:
+    /// 0 dark, 1 bright, 2 dim, 3 ordinary. Keyed on the wall, the storey and
+    /// the place along the wall, so the near model and the far-field exterior
+    /// agree.
+    pub fn window_lamp(&self, c: Vec3) -> u32 {
+        let (a, b) = self.local(c.x, c.z);
+        let storey = ((c.y - self.floor) / STOREY).floor() as i32;
+        let wid = if storey >= 1 { self.upper_wid() } else { self.half_wid };
+        let end = a.abs() - self.half_len > b.abs() - wid;
+        let (wall, along) = if end {
+            (2 + (a > 0.0) as i32, b)
+        } else {
+            ((b > 0.0) as i32, a)
+        };
+        let key = wall * 1000 + storey * 100 + (along * 2.0).round() as i32;
+        let u = unit(hash2(self.seed ^ 0x9e37, key, 17));
+        if u < 0.22 {
+            0
+        } else if u < 0.48 {
+            2
+        } else if u < 0.8 {
+            3
+        } else {
+            1
         }
     }
 
@@ -1805,6 +1901,81 @@ mod tests {
         assert_eq!(c.block(c.p(-2.0, f + 4.5, -(w + 0.25)), f - 1.0), Some(BUILT));
         assert_eq!(c.block(c.p(-2.0, f + 4.5, w - 0.25), f - 1.0), Some(AIR));
         assert!(c.ridge() > c.top() + c.upper_wid() * c.pitch);
+    }
+
+    /// Each window of a model as (centre, lamp level), eight vertices apiece.
+    fn windows(m: &MeshData) -> Vec<(Vec3, u32)> {
+        let v = &m.vertices;
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < v.len() {
+            if (v[i].data >> 3) & 0xff == WINDOW as u32 {
+                let c = v[i..i + 4].iter().map(|v| Vec3::from(v.pos)).sum::<Vec3>() / 4.0;
+                let lamp = (v[i].data >> 11) & 3;
+                assert!(v[i..i + 8].iter().all(|v| (v.data >> 11) & 3 == lamp));
+                out.push((c, lamp));
+                i += 8;
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn windows_burn_unevenly_and_some_are_dark_near_and_far_alike() {
+        let t = Terrain::new(20260927);
+        let (mut dark, mut lit, mut levels) = (0, 0, [0; 4]);
+        for seed in 0..6 {
+            let style = Style::house().jettied().with_dormers();
+            let c = Cottage::plan(&t, 900.0, 1100.0, false, 1.0, 0.0, style, seed);
+            let (mut near, mut far) = (MeshData::default(), MeshData::default());
+            c.model(&t, &mut near);
+            c.exterior(&t, &mut far);
+            let (near, far) = (windows(&near), windows(&far));
+            for &(p, lamp) in &near {
+                levels[lamp as usize] += 1;
+                if lamp == 0 {
+                    dark += 1;
+                } else {
+                    lit += 1;
+                }
+                let _ = p;
+            }
+            // Each window far away is lit as the one nearest it close up.
+            for &(p, lamp) in &far {
+                let (_, near_lamp) = near
+                    .iter()
+                    .min_by(|a, b| a.0.distance(p).total_cmp(&b.0.distance(p)))
+                    .unwrap();
+                assert_eq!(lamp, *near_lamp, "window at {p}");
+            }
+        }
+        assert!(dark * 8 > dark + lit && dark * 2 < dark + lit, "{dark} dark, {lit} lit");
+        assert!(levels.iter().all(|&n| n > 0), "{levels:?}");
+    }
+
+    #[test]
+    fn roofs_carry_their_covering() {
+        let t = Terrain::new(20260927);
+        for (roof, mat, tone) in [
+            (Roof::Slate, ROOF, 3),
+            (Roof::Tile, ROOF_TILE, 3),
+            (Roof::Shingle, ROOF_TILE, 2),
+        ] {
+            let c = Cottage::plan(&t, 900.0, 1100.0, false, 1.0, 0.0, Style::cottage().roofed(roof), 3);
+            let mut m = MeshData::default();
+            c.exterior(&t, &mut m);
+            let roofing: Vec<_> = m
+                .vertices
+                .iter()
+                .filter(|v| matches!(((v.data >> 3) & 0xff) as Block, ROOF | ROOF_TILE))
+                .collect();
+            assert!(roofing.len() > 100);
+            assert!(roofing
+                .iter()
+                .all(|v| (v.data >> 3) & 0xff == mat as u32 && (v.data >> 11) & 3 == tone));
+        }
     }
 
     #[test]

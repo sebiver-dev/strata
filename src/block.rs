@@ -56,6 +56,9 @@ pub const IRON: Block = 26;
 pub const GLOW: Block = 55;
 /// Deep blue-violet woollen banner with a gold trim; sways in the wind (mesh only).
 pub const BANNER: Block = 53;
+/// Warm red-brown clay roof tiles; with the AO bits at 2, weathered brown
+/// shingle instead (mesh only).
+pub const ROOF_TILE: Block = 56;
 /// Rough bridge stone: mottled, mossy on top, dark and damp near the water (mesh only).
 pub const BRIDGE_STONE: Block = 54;
 /// Mossy granite boulders (mesh only; their voxels are `BUILT`).
@@ -119,6 +122,7 @@ pub fn name(b: Block) -> &'static str {
         GLOW => "lit glass",
         BANNER => "banner",
         BRIDGE_STONE => "bridge stone",
+        ROOF_TILE => "roof tile",
         BOULDER => "boulder",
         BARK => "bark",
         FOLIAGE => "foliage",

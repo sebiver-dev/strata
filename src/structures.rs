@@ -546,14 +546,7 @@ fn hamlet(t: &Terrain, zb: f32, bx0: f32, seed: u32) -> Vec<Cottage> {
         cottage.size(3.75, 2.75).pitch(1.25).roofed(Roof::Tile),
     );
     let z = zb - 30.0;
-    at(
-        river(z) - 20.0,
-        z,
-        false,
-        1.0,
-        0.0,
-        cottage.size(3.5, 2.75).pitch(1.0),
-    );
+    at(river(z) - 20.0, z, false, 1.0, 0.0, cottage.size(3.5, 2.75).pitch(1.0));
     let z = zb - 50.0;
     at(
         river(z) - 19.0,

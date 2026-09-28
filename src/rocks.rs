@@ -14,7 +14,7 @@ use crate::chunk::{chunk_of, local_index, CHUNK, CHUNK_VOLUME};
 use crate::mesh::{smooth_data, MeshData, Vertex};
 use crate::noise::{hash2, unit, value3};
 use crate::terrain::{below_fall, water_level, Terrain, ROAD_HALF_WIDTH_M};
-use glam::{IVec3, Vec2, Vec3};
+use glam::{IVec2, IVec3, Vec2, Vec3};
 use std::collections::HashMap;
 use std::f32::consts::TAU;
 use std::sync::OnceLock;
@@ -40,6 +40,7 @@ pub struct Site {
     pub ground: f32,
     max_r: f32,
     hash: u32,
+    composed: bool,
 }
 
 impl Site {
@@ -75,8 +76,15 @@ pub fn site(t: &Terrain, gx: i32, gz: i32) -> Option<Site> {
 /// with `keep`, cheaply, before working out the rest.
 fn site_where(t: &Terrain, gx: i32, gz: i32, keep: impl Fn(Vec3) -> bool) -> Option<Site> {
     let h = hash2(t.seed.wrapping_add(40), gx, gz);
-    let x = (gx as f32 + 0.1 + 0.8 * unit(h)) * CELL_M;
-    let z = (gz as f32 + 0.1 + 0.8 * unit(h.rotate_left(9))) * CELL_M;
+    let mut x = (gx as f32 + 0.1 + 0.8 * unit(h)) * CELL_M;
+    let mut z = (gz as f32 + 0.1 + 0.8 * unit(h.rotate_left(9))) * CELL_M;
+    // A mossy group in the meadow ahead and left of the arrival spot, as in
+    // the foreground of the reference view.
+    let spot = vista_rocks();
+    let composed = (spot / CELL_M).floor().as_ivec2() == IVec2::new(gx, gz);
+    if composed {
+        (x, z) = (spot.x, spot.y);
+    }
     if !keep(Vec3::new(x, t.height_at(x, z).0, z)) {
         return None;
     }
@@ -96,6 +104,7 @@ fn site_where(t: &Terrain, gx: i32, gz: i32, keep: impl Fn(Vec3) -> bool) -> Opt
     } else {
         (0.0, 0.0)
     };
+    let (chance, max_r) = if composed { (1.0, 1.7) } else { (chance, max_r) };
     if unit(h.rotate_left(19)) >= chance {
         return None;
     }
@@ -105,21 +114,32 @@ fn site_where(t: &Terrain, gx: i32, gz: i32, keep: impl Fn(Vec3) -> bool) -> Opt
         ground: info.height_m,
         max_r,
         hash: h,
+        composed,
     })
+}
+
+/// Where the composed boulder group by the arrival spot stands (x, z metres).
+fn vista_rocks() -> Vec2 {
+    let (ax, az) = crate::vista::ARRIVAL;
+    let yaw = crate::vista::SPAWN_YAW;
+    let fwd = Vec2::new(yaw.cos(), yaw.sin());
+    Vec2::new(ax, az) + fwd * 7.0 - fwd.perp() * 3.5
 }
 
 /// The boulders of a cluster: the main one first, then up to four smaller
 /// ones huddled around it.
 pub fn cluster(t: &Terrain, site: &Site) -> Vec<Boulder> {
     let hr = |k: u32| unit(site.hash.rotate_left(k));
-    let size = hr(27);
+    let size = if site.composed { 0.95 } else { hr(27) };
     let r = 0.55 + (site.max_r - 0.55) * size * size;
     let mut out = Vec::new();
     let Some(main) = boulder(t, site.x, site.z, r, site.hash) else {
         return out;
     };
     let reach = main.radii.x.max(main.radii.z);
-    let count = if r > 1.0 {
+    let count = if site.composed {
+        4
+    } else if r > 1.0 {
         1 + (hr(7) * 3.99) as u32
     } else {
         (hr(7) * 2.6) as u32

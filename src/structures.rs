@@ -9,29 +9,19 @@
 //! where there are no voxels, each is drawn as a few simple shapes.
 
 use crate::block::*;
+use crate::bridge::{self, Bridge, BRIDGE_HALF_W};
 use crate::chunk::{chunk_of, local_index, CHUNK, CHUNK_VOLUME};
 use crate::cottage::Cottage;
 use crate::far::{face, revolve};
 use crate::mesh::{smooth_data, MeshData, Vertex};
 use crate::model;
 use crate::noise::{hash2, unit};
-use crate::terrain::{Terrain, WATER_LEVEL_M};
+use crate::terrain::Terrain;
+use crate::vista;
 use crate::watchtower::Watchtower;
 use glam::{IVec3, Vec2, Vec3};
 use std::collections::HashMap;
 
-/// Outer half-width of the bridge, parapets included.
-const BRIDGE_HALF_W: f32 = 2.5;
-/// Radius of each of the bridge's three arches.
-const ARCH_R: f32 = 4.5;
-/// Distance between arch centres.
-const ARCH_SPACING: f32 = 11.0;
-/// Height where the arches spring from their piers.
-const ARCH_SPRING: f32 = WATER_LEVEL_M - 0.5;
-/// Half the length of the bridge's level middle part.
-const BRIDGE_FLAT: f32 = 14.0;
-/// Rise per metre of the bridge's ramps.
-const BRIDGE_RAMP: f32 = 0.3;
 /// Fences stand this far from the road's centre line.
 const FENCE_OFFSET_M: f32 = 3.6;
 /// Distance between fence posts.
@@ -63,126 +53,6 @@ fn ground_range(t: &Terrain, lo: Vec2, hi: Vec2) -> (f32, f32) {
         z += 1.0;
     }
     (a, b)
-}
-
-/// A stone bridge of three round arches, crossing the river along X.
-#[derive(Clone, Debug)]
-pub struct Bridge {
-    pub z: f32,
-    pub centre: f32,
-    pub x0: f32,
-    pub x1: f32,
-    /// Height of the walking surface over the middle.
-    pub deck: f32,
-}
-
-impl Bridge {
-    fn plan(t: &Terrain, z: f32) -> Self {
-        let z = snap(z, BRIDGE_HALF_W);
-        let centre = snap(t.river_x(z), 0.25);
-        let deck = ARCH_SPRING + ARCH_R + 1.5;
-        let mut b = Bridge {
-            z,
-            centre,
-            x0: centre,
-            x1: centre,
-            deck,
-        };
-        // Ramps run down until they meet the bank.
-        for dir in [-1.0f32, 1.0] {
-            let mut d = BRIDGE_FLAT;
-            while d < 45.0 {
-                let x = centre + dir * d;
-                if b.top(x) <= t.height_at(x, z).0 + 0.3 {
-                    break;
-                }
-                d += 0.5;
-            }
-            if dir < 0.0 {
-                b.x0 = centre - d;
-            } else {
-                b.x1 = centre + d;
-            }
-        }
-        b
-    }
-
-    fn top(&self, x: f32) -> f32 {
-        self.deck - ((x - self.centre).abs() - BRIDGE_FLAT).max(0.0) * BRIDGE_RAMP
-    }
-
-    fn bounds(&self) -> (Vec3, Vec3) {
-        (
-            Vec3::new(self.x0, WATER_LEVEL_M - 6.0, self.z - BRIDGE_HALF_W),
-            Vec3::new(self.x1, self.deck + 4.0, self.z + BRIDGE_HALF_W),
-        )
-    }
-
-    fn block(&self, p: Vec3, ground: f32) -> Option<Block> {
-        let dz = (p.z - self.z).abs();
-        let top = self.top(p.x);
-        let edge = dz > BRIDGE_HALF_W - VOXEL_SIZE;
-        if p.y < top {
-            if p.y < ground - 1.0 {
-                return None;
-            }
-            for k in -1..=1 {
-                let dx = p.x - (self.centre + k as f32 * ARCH_SPACING);
-                let dy = (p.y - ARCH_SPRING).max(0.0);
-                if dx * dx + dy * dy < ARCH_R * ARCH_R {
-                    return None;
-                }
-            }
-            return Some(MASONRY);
-        }
-        let h = p.y - top;
-        if edge {
-            // Parapets, with taller piers carrying lanterns at the middle and the ends of the level part.
-            let pier = [-BRIDGE_FLAT, 0.0, BRIDGE_FLAT]
-                .iter()
-                .any(|o| (p.x - (self.centre + o)).abs() < 0.5);
-            if h < 1.0 || (pier && h < 1.5) {
-                return Some(MASONRY);
-            }
-            if pier && h < 2.0 && (p.x - self.centre).abs() % BRIDGE_FLAT < 0.25 {
-                return Some(LANTERN);
-            }
-        }
-        (h < 3.0).then_some(AIR)
-    }
-
-    fn far(&self, out: &mut MeshData) {
-        let w = BRIDGE_HALF_W;
-        for (a, b) in [
-            (self.x0, self.centre - BRIDGE_FLAT),
-            (self.centre + BRIDGE_FLAT, self.x1),
-        ] {
-            let (lo, hi) = (a, b);
-            let mid = (lo + hi) * 0.5;
-            boxed(
-                out,
-                Vec3::new(lo, self.top(mid) - 3.0, self.z - w),
-                Vec3::new(hi, self.top(mid) + 1.0, self.z + w),
-                MASONRY,
-            );
-        }
-        let (lo, hi) = (self.centre - BRIDGE_FLAT, self.centre + BRIDGE_FLAT);
-        boxed(
-            out,
-            Vec3::new(lo, self.deck - 1.2, self.z - w),
-            Vec3::new(hi, self.deck + 1.0, self.z + w),
-            MASONRY,
-        );
-        for k in [-1.5f32, -0.5, 0.5, 1.5] {
-            let x = self.centre + k * ARCH_SPACING;
-            boxed(
-                out,
-                Vec3::new(x - 1.0, WATER_LEVEL_M - 3.0, self.z - w),
-                Vec3::new(x + 1.0, self.deck, self.z + w),
-                MASONRY,
-            );
-        }
-    }
 }
 
 /// A round stone tower with a timber lookout room and a pointed roof, or with
@@ -566,8 +436,9 @@ impl Structures {
         let spawn = t.spawn_point();
         let seed = t.seed;
         // The player starts facing down the valley (towards -Z), so the hamlet lies ahead.
-        let zb = spawn.z - 72.0;
-        let bridge = Bridge::plan(t, zb);
+        let zb = bridge::site(t, spawn);
+        let bridge = Bridge::plan(t, zb, seed ^ 60);
+        let zb = bridge.z;
         let (bx0, bx1) = (bridge.x0, bridge.x1);
         s.add(Structure::Bridge(bridge));
 
@@ -628,25 +499,17 @@ impl Structures {
         }
         let _ = bx1;
 
-        // The watchtower stands on the knoll across the river, left of the view on arrival.
+        // The watchtower and the castle stand on the knoll and the bluff composed
+        // for the view on arrival (see `vista`).
+        let (tx, _, tz) = vista::TOWER_KNOLL;
         s.add(Structure::Watchtower(Watchtower::plan(
             t,
-            tower_site(t),
+            Vec2::new(tx, tz),
             Vec2::new(spawn.x, spawn.z),
             seed ^ 20,
         )));
-        if let Some(c) = best_site(
-            t,
-            spawn,
-            (SPAWN_YAW - 0.65, SPAWN_YAW + 0.35),
-            (380.0, 700.0),
-            20.0,
-            82.0,
-            16.0,
-            0.03,
-        ) {
-            s.add(Structure::Castle(Castle::plan(t, c.x, c.y, seed ^ 40)));
-        }
+        let (cx, _, cz) = vista::CASTLE_TOP;
+        s.add(Structure::Castle(Castle::plan(t, cx, cz, seed ^ 40)));
         s.build_models(t);
         s
     }
@@ -660,6 +523,7 @@ impl Structures {
                 Structure::Cottage(c) => c.model(t, &mut all),
                 Structure::Fence(f) => f.model(t, &mut all),
                 Structure::Watchtower(w) => w.model(t, &mut all),
+                Structure::Bridge(b) => b.model(t, &mut all),
                 _ => {}
             }
         }
@@ -795,7 +659,7 @@ impl Structures {
             // The approach from the valley road onto the bridge.
             Structure::Bridge(b) => {
                 let road = t.road_x(b.z);
-                (z - b.z).abs() < 1.6 && ((x > b.x1 - 1.0 && x < road) || (x < b.x0 + 1.0 && x > b.x0 - 12.0))
+                (z - b.z).abs() < 2.1 && ((x > b.x1 - 1.0 && x < road) || (x < b.x0 + 1.0 && x > b.x0 - 12.0))
             }
             _ => false,
         })
@@ -820,52 +684,8 @@ impl Structures {
     }
 }
 
-/// The knoll the watchtower stands on, west of the river across from the
-/// hamlet. The spawn vista is composed around it; ground height comes from the
-/// terrain at build time and the tower's footings reach down to it.
-const TOWER_KNOLL: (f32, f32) = (860.0, 810.0);
-
-fn tower_site(_t: &Terrain) -> Vec2 {
-    Vec2::new(TOWER_KNOLL.0, TOWER_KNOLL.1)
-}
-
 /// Which way the player faces on arrival (`Player::new`), as a yaw in radians.
-const SPAWN_YAW: f32 = -1.2;
-
-/// The highest, most level site (centre in metres) within a wedge seen from
-/// `from`: yaws and distances as ranges, a square of half-size `half` whose
-/// ground varies by less than `rough` metres, below `max_h`, away from the
-/// river and road. `far_penalty` trades height for nearness.
-#[allow(clippy::too_many_arguments)]
-fn best_site(
-    t: &Terrain,
-    from: Vec3,
-    yaws: (f32, f32),
-    dists: (f32, f32),
-    half: f32,
-    max_h: f32,
-    rough: f32,
-    far_penalty: f32,
-) -> Option<Vec2> {
-    let mut best: Option<(f32, Vec2)> = None;
-    for j in 0..24 {
-        for i in 0..24 {
-            let d = dists.0 + (dists.1 - dists.0) * j as f32 / 23.0;
-            let yaw = yaws.0 + (yaws.1 - yaws.0) * i as f32 / 23.0;
-            let p = Vec2::new(from.x + d * yaw.cos(), from.z + d * yaw.sin());
-            if (p.x - t.river_x(p.y)).abs() < half + 30.0 || t.road_distance(p.x, p.y) < half + 8.0 {
-                continue;
-            }
-            let (lo, hi) = ground_range(t, p - half, p + half);
-            let h = t.height_at(p.x, p.y).0;
-            let score = h - (hi - lo) * 1.5 - d * far_penalty;
-            if h < max_h && hi - lo < rough && best.is_none_or(|b| score > b.0) {
-                best = Some((score, p));
-            }
-        }
-    }
-    best.map(|b| b.1)
-}
+pub const SPAWN_YAW: f32 = crate::vista::SPAWN_YAW;
 
 fn cottage_door_near(s: &Structures, x: f32, z: f32) -> bool {
     s.list.iter().any(|(_, _, st)| match st {
@@ -924,20 +744,6 @@ mod tests {
         assert!(count(|x| matches!(x, Structure::Fence(_))) >= 2);
         assert_eq!(count(|x| matches!(x, Structure::Watchtower(_))), 1);
         assert_eq!(count(|x| matches!(x, Structure::Castle(_))), 1);
-    }
-
-    #[test]
-    fn the_bridge_spans_the_river_above_the_water() {
-        let t = world();
-        let Some(Structure::Bridge(b)) = t.structures.iter().find(|s| matches!(s, Structure::Bridge(_))) else {
-            panic!("no bridge");
-        };
-        assert!(b.x0 < b.centre - 15.0 && b.x1 > b.centre + 15.0, "{b:?}");
-        // The middle of the deck is stone and there is open water under the central arch.
-        let deck = Vec3::new(b.centre + 0.25, b.deck - 0.25, b.z + 0.25);
-        assert_eq!(t.structures.block_at(deck, 21.0), Some(MASONRY));
-        let under = Vec3::new(b.centre + 0.25, WATER_LEVEL_M + 0.25, b.z + 0.25);
-        assert_eq!(t.structures.block_at(under, 21.0), None);
     }
 
     #[test]

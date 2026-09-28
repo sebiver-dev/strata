@@ -8,7 +8,7 @@
 use crate::block::*;
 use crate::budget::{Cost, Deadline};
 use crate::mesh::{smooth_data, MeshData, Vertex, FACES};
-use crate::terrain::{water_level, Terrain, TREE_CELL_M, WORLD_SIZE_M};
+use crate::terrain::{water_level, Terrain, WORLD_SIZE_M};
 use glam::{IVec2, Vec2, Vec3};
 use std::collections::HashMap;
 
@@ -178,65 +178,6 @@ pub(crate) fn revolve(
     }
 }
 
-/// A rounded crown for a tree, from its bounding box: a lumpy ellipsoid for
-/// broadleaf trees and a tiered spire for tall, narrow conifers.
-fn crown(out: &mut MeshData, lo: Vec3, hi: Vec3, seed: u32, level: u8) {
-    let c = Vec2::new((lo.x + hi.x) * 0.5, (lo.z + hi.z) * 0.5);
-    let r = (hi.x - lo.x) * 0.5;
-    let (y0, y1) = (lo.y, hi.y);
-    let segs = if level == 0 { 9 } else { 6 };
-    let mut profile = Vec::new();
-    if y1 - y0 > 1.5 * (hi.x - lo.x) {
-        // Three drooping tiers narrowing to a point.
-        let h = y1 - y0;
-        profile.push((y0, 0.0));
-        for (t, w) in [
-            (0.02, 0.95),
-            (0.22, 0.62),
-            (0.3, 0.8),
-            (0.5, 0.45),
-            (0.58, 0.6),
-            (0.8, 0.25),
-        ] {
-            profile.push((y0 + h * t, r * w));
-        }
-        profile.push((y1, 0.0));
-    } else {
-        // A cloud of rounded clumps: one in the middle, the rest around it.
-        let rings = if level == 0 { 5 } else { 4 };
-        let around = if level == 0 { 5 } else { 3 };
-        let h = y1 - y0;
-        let ball = |out: &mut MeshData, at: Vec3, rad: f32, k: u32| {
-            let mut profile = Vec::new();
-            for i in 0..=rings {
-                let a = i as f32 / rings as f32 * std::f32::consts::PI;
-                profile.push((at.y - rad * 0.85 * a.cos(), rad * a.sin()));
-            }
-            revolve(
-                out,
-                Vec2::new(at.x, at.z),
-                &profile,
-                segs.min(7),
-                LEAVES,
-                (seed | 1).wrapping_add(k),
-            );
-        };
-        ball(out, Vec3::new(c.x, y0 + h * 0.5, c.y), r * 0.64, 0);
-        for k in 0..around {
-            let u = crate::noise::unit(crate::noise::hash3(seed, k as i32, 3, 9));
-            let a = (k as f32 + 0.4 * u) * std::f32::consts::TAU / around as f32;
-            let at = Vec3::new(
-                c.x + a.cos() * r * 0.5,
-                y0 + h * (0.3 + 0.25 * u),
-                c.y + a.sin() * r * 0.5,
-            );
-            ball(out, at, r * (0.42 + 0.1 * u), k + 1);
-        }
-        return;
-    }
-    revolve(out, c, &profile, segs, LEAVES, seed | 1);
-}
-
 /// Meshes one far tile at a level of detail.
 pub fn build_tile(terrain: &Terrain, tile: IVec2, level: u8) -> MeshData {
     let cell = LEVEL_CELL_M[level as usize];
@@ -323,32 +264,13 @@ pub fn build_tile(terrain: &Terrain, tile: IVec2, level: u8) -> MeshData {
     }
 
     if level <= TREE_MAX_LEVEL {
-        let first = (origin / TREE_CELL_M).ceil().as_ivec2();
-        let last = ((origin + TILE_M) / TREE_CELL_M).ceil().as_ivec2();
-        for gz in first.y..last.y {
-            for gx in first.x..last.x {
-                let Some([canopy, trunk]) = terrain.tree_boxes(gx, gz) else {
-                    continue;
-                };
-                let seed = crate::noise::hash3(terrain.seed, gx, gz, 77);
-                crown(&mut out, canopy.0, canopy.1, seed, level);
-                if level == 0 {
-                    let c = Vec2::new((trunk.0.x + trunk.1.x) * 0.5, (trunk.0.z + trunk.1.z) * 0.5);
-                    let top = (trunk.1.y + 0.5).max(canopy.0.y + (canopy.1.y - canopy.0.y) * 0.5);
-                    let profile = [
-                        (trunk.0.y - 0.5, 0.0),
-                        (trunk.0.y - 0.5, 0.55),
-                        (trunk.0.y + 0.6, 0.42),
-                        // Up into the crown, so no gap shows between its clumps.
-                        (top, 0.3),
-                        (top, 0.0),
-                    ];
-                    revolve(&mut out, c, &profile, 6, WOOD, 0);
-                }
-            }
+        // The same tree models as up close, coarser.
+        for t in terrain.trees_in(origin, origin + TILE_M) {
+            t.far(&mut out, level);
         }
     }
     terrain.structures.far(&mut out, origin, origin + TILE_M);
+    crate::vista::far_curtains(&mut out, origin, origin + TILE_M);
     out
 }
 
@@ -388,40 +310,12 @@ mod tests {
                 let normal = (b - a).cross(c - a);
                 let mat = (v[0].data >> 3) & 255;
                 // Ground triangles (not trees or skirts) wind counter-clockwise from above.
-                if mat != LEAVES as u32 && mat != WOOD as u32 && normal.y.abs() > 1e-4 {
+                if ![BARK, FOLIAGE, NEEDLES].contains(&(mat as u8)) && normal.y.abs() > 1e-4 {
                     assert!(normal.y > 0.0, "level {level}: a ground triangle faces down");
                     area += normal.y * 0.5;
                 }
             }
             assert!((area - TILE_M * TILE_M).abs() < 1.0, "level {level} covers {area} m²");
-        }
-    }
-
-    #[test]
-    fn crowns_are_closed_and_face_outward() {
-        let mut out = MeshData::default();
-        // A broadleaf crown of clumps and a conifer spire.
-        crown(&mut out, Vec3::new(0.0, 10.0, 0.0), Vec3::new(8.0, 16.0, 8.0), 5, 0);
-        crown(&mut out, Vec3::new(20.0, 10.0, 0.0), Vec3::new(24.0, 22.0, 4.0), 5, 0);
-        // Every triangle winds the same way as the outward normals its vertices carry.
-        let normal_of = |d: u32| {
-            let q = |s: u32| ((d >> s) & 511) as f32 / 511.0 * 2.0 - 1.0;
-            let (u, v) = (q(13), q(22));
-            let mut m = Vec3::new(u, 1.0 - u.abs() - v.abs(), v);
-            if m.y < 0.0 {
-                let sign = |a: f32| if a >= 0.0 { 1.0 } else { -1.0 };
-                (m.x, m.z) = ((1.0 - v.abs()) * sign(u), (1.0 - u.abs()) * sign(v));
-            }
-            m.normalize()
-        };
-        for tri in out.indices.chunks(3) {
-            let verts = [0, 1, 2].map(|k| out.vertices[tri[k] as usize]);
-            let [a, b, c] = verts.map(|v| Vec3::from(v.pos));
-            let normal = (b - a).cross(c - a);
-            if normal.length() > 1e-5 {
-                let n = verts.iter().map(|v| normal_of(v.data)).sum::<Vec3>();
-                assert!(normal.dot(n) > 0.0);
-            }
         }
     }
 

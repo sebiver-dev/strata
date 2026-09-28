@@ -40,7 +40,7 @@ impl Player {
         Self {
             pos,
             vel: Vec3::ZERO,
-            yaw: -1.2,
+            yaw: crate::vista::SPAWN_YAW,
             pitch: -0.15,
             flying: false,
             on_ground: false,

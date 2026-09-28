@@ -907,7 +907,7 @@ impl Watchtower {
         let bays = [(-pl, -1.0f32), (-1.0, 1.0), (1.0, pl)];
         for k in 0..4 {
             let (nw, _) = self.fdirs(k);
-            self.fbox(out, k, pl, (-e, e), (s, s + 0.18), (-0.04, 0.04), BOARDS);
+            self.fbox(out, k, pl, (-e, e), (s, s + 0.18), (-0.04, 0.04), OAK);
             self.fbox(out, k, pl, (-e, e), (s + RAIL - 0.12, s + RAIL), (-0.08, 0.08), OAK);
             for (bi, &(t0, t1)) in bays.iter().enumerate() {
                 let (t0, t1) = (t0 + 0.11, t1 - 0.11);
@@ -942,7 +942,7 @@ impl Watchtower {
                             Vec3::Y,
                             nw,
                             Vec3::new((hi - lo) * 0.5 - sag * 0.5, 0.02, hw),
-                            BOARDS,
+                            OAK,
                         );
                     }
                 }

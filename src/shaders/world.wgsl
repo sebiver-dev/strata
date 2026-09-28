@@ -774,7 +774,12 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             let joint = min(min(fu, 1.0 - fu) * 0.7, min(fv, 1.0 - fv) * 0.42);
             let mortar = (1.0 - smoothstep(0.015, 0.035, joint)) * d_dm;
             let tint = hash2(vec2(col, row));
-            var c = mix(vec3(0.52, 0.49, 0.45), vec3(0.66, 0.62, 0.55), tint) * (0.85 + 0.25 * fine);
+            // Cool grey field stone with the odd warm or dark block, as in the reference.
+            let warm = hash2(vec2(col + 17.0, row - 5.0));
+            var c = mix(vec3(0.43, 0.43, 0.42), vec3(0.60, 0.58, 0.54), tint);
+            c = mix(c, vec3(0.58, 0.50, 0.40), smoothstep(0.7, 0.95, warm) * 0.6);
+            c *= mix(1.0, 0.8, smoothstep(0.85, 0.97, hash2(vec2(row - 3.0, col + 9.0))));
+            c *= 0.85 + 0.25 * fine;
             // Moss creeps into the lower courses and the tops of walls.
             let moss = smoothstep(0.55, 0.75, fbm(q * 0.9)) * (select(0.35, 0.9, top));
             c = mix(c, vec3(0.34, 0.40, 0.20), moss * 0.6);

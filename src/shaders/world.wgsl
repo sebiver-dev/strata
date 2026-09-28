@@ -960,12 +960,12 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             // but not below the waterline.
             let ragged = fbm(q * 1.7) - 0.5 + (vnoise(q * 11.0) - 0.5) * 0.35;
             let dry = smoothstep(water_level_at(p.xz), water_level_at(p.xz) + 0.3, p.y);
-            let moss_m = smoothstep(0.42, 0.7, n.y + ragged * 0.8) * dry;
+            let moss_m = smoothstep(0.3, 0.62, n.y + ragged * 0.8) * dry;
             let tuft = vnoise(q * 23.0);
-            let moss = mix(vec3(0.20, 0.33, 0.08), vec3(0.42, 0.52, 0.16), vnoise(q * 5.0)) * (0.85 + 0.3 * tuft);
+            let moss = mix(vec3(0.26, 0.40, 0.10), vec3(0.50, 0.60, 0.20), vnoise(q * 5.0)) * (0.85 + 0.3 * tuft);
             c = mix(c, moss, moss_m);
             s.albedo = c;
-            s.sss = moss_m * 0.3;
+            s.sss = moss_m * 0.6;
             s.rough = mix(0.7, 0.95, moss_m);
             s.f0 = 0.04;
             s.height = (1.0 - moss_m) * (fine * 0.03 - crack * 0.02) + moss_m * (0.03 + tuft * 0.012 * d_cm);

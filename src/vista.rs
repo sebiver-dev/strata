@@ -650,10 +650,8 @@ mod tests {
         for st in t.structures.iter() {
             if let crate::structures::Structure::Castle(c) = st {
                 assert!((c.c.x - x).abs() < 0.5 && (c.c.y - z).abs() < 0.5);
-                assert!(c.floor - c.base < 3.0, "terrace {} over {}", c.floor, c.base);
-                for tw in &c.towers {
-                    assert!(tw.top + tw.room + tw.cone_h < world_top - 4.0);
-                }
+                assert!(c.floor - c.ground_lo < 3.0, "terrace {} over {}", c.floor, c.ground_lo);
+                assert!(c.tip() < world_top - 4.0);
                 castles += 1;
             }
         }
@@ -768,8 +766,11 @@ mod tests {
                     }
                     seen += 1;
                 }
-                crate::structures::Structure::Tower(tw) => {
+                crate::structures::Structure::Watchtower(tw) => {
                     assert!(tw.c.distance(Vec2::new(TOWER_KNOLL.0, TOWER_KNOLL.2)) < 0.5);
+                    // It stands on the knoll's flat top, not on stilts or sunk into it.
+                    assert!((tw.floor - TOWER_KNOLL.1).abs() < 1.0, "tower floor {}", tw.floor);
+                    assert!(tw.floor - tw.base < 1.5, "footings {} deep", tw.floor - tw.base);
                     seen += 1;
                 }
                 _ => {}

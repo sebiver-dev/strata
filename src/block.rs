@@ -52,6 +52,8 @@ pub const CLOTH: Block = 24;
 pub const BUILT: Block = 25;
 /// Wrought iron: lantern frames, arms and chains (mesh only).
 pub const IRON: Block = 26;
+/// Leaded glass lit warm from within: slits and small windows (mesh only).
+pub const GLOW: Block = 55;
 /// Deep blue-violet woollen banner with a gold trim; sways in the wind (mesh only).
 pub const BANNER: Block = 53;
 /// Rough bridge stone: mottled, mossy on top, dark and damp near the water (mesh only).
@@ -78,6 +80,12 @@ pub const BARK: Block = 27;
 pub const FOLIAGE: Block = 28;
 /// Conifer needles.
 pub const NEEDLES: Block = 29;
+/// The castle's deep blue-violet banner cloth, hung still (mesh only).
+pub const CASTLE_BANNER: Block = 50;
+/// Pale dressed limestone of the castle (mesh only).
+pub const ASHLAR: Block = 51;
+/// Gilding: finials, banner rods and trim (mesh only).
+pub const GILT: Block = 52;
 
 /// Materials the player can place, in hotbar order (keys 1..).
 pub const PLACEABLE: [Block; 8] = [STONE, DIRT, GRASS, SAND, GRAVEL, WOOD, PLANKS, SNOW];
@@ -108,12 +116,16 @@ pub fn name(b: Block) -> &'static str {
         BUILT => "building",
         POST => "post",
         IRON => "iron",
+        GLOW => "lit glass",
         BANNER => "banner",
         BRIDGE_STONE => "bridge stone",
         BOULDER => "boulder",
         BARK => "bark",
         FOLIAGE => "foliage",
         NEEDLES => "needles",
+        CASTLE_BANNER => "castle banner",
+        ASHLAR => "ashlar",
+        GILT => "gilt",
         _ => "unknown",
     }
 }

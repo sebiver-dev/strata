@@ -2,7 +2,7 @@
 //! with caves, beaches, snow caps and forests. Pure functions of the seed.
 
 use crate::block::*;
-use crate::chunk::{local_index, Chunk, CHUNK, CHUNK_VOLUME};
+use crate::chunk::{local_index, Chunk, CHUNK, CHUNK_BITS, CHUNK_VOLUME};
 use crate::noise::{fbm2, hash2, ridged2, unit, value3};
 use crate::structures::Structures;
 use crate::trees::{Kind as TreeKind, Tree};
@@ -194,7 +194,17 @@ impl Terrain {
     /// step) towards its road, where its lantern hangs.
     fn lanterns_in(&self, x0: f32, x1: f32, z0: f32, z1: f32) -> Vec<(IVec3, IVec3)> {
         let mut out = Vec::new();
-        let mut add = |x: f32, z: f32, towards: IVec3| {
+        let mut add = |mut x: f32, mut z: f32, towards: IVec3| {
+            // The lantern hangs one voxel beside its post. Where that voxel falls
+            // in the next chunk column, the post steps back a voxel so both stay in
+            // one column: columns are meshed and swapped for the far field whole,
+            // so a lantern in another column can show without its post.
+            let foot = IVec2::new((x / VOXEL_SIZE).floor() as i32, (z / VOXEL_SIZE).floor() as i32);
+            let lamp = foot + IVec2::new(towards.x, towards.z);
+            if foot >> CHUNK_BITS != lamp >> CHUNK_BITS {
+                x -= towards.x as f32 * VOXEL_SIZE;
+                z -= towards.z as f32 * VOXEL_SIZE;
+            }
             if x < x0 || x >= x1 || z < z0 || z >= z1 {
                 return;
             }
@@ -281,6 +291,26 @@ impl Terrain {
 
     pub fn column_info(&self, x_m: f32, z_m: f32) -> ColumnInfo {
         let (h, channel) = self.height_at(x_m, z_m);
+        self.cover(x_m, z_m, h, channel, true)
+    }
+
+    /// The ground material a far-field vertex shows, given its height and
+    /// channel and the slope the far tile measured across its own cells
+    /// (`cell` metres).
+    ///
+    /// A far triangle takes one vertex's material whole, so a band narrower
+    /// than a cell must not win a vertex: over one it reads as a flat,
+    /// stair-stepped shelf. The sand rim just above the waterline is such a
+    /// band wherever the shore is steeper than a beach one cell wide.
+    pub fn far_surface(&self, x_m: f32, z_m: f32, h: f32, channel: f32, cell_slope: f32, cell: f32) -> Block {
+        self.cover(x_m, z_m, h, channel, cell_slope * cell < 1.0).surface
+    }
+
+    /// Surface and subsurface for a column of height `h`. Without `beach`,
+    /// the shore from a metre under the water to a metre above it gets what
+    /// lies above the sand instead (a far triangle whose corner sits just under
+    /// the water still shows its material above the waterline).
+    fn cover(&self, x_m: f32, z_m: f32, h: f32, channel: f32, beach: bool) -> ColumnInfo {
         let (hx, _) = self.height_at(x_m + 1.0, z_m);
         let (hz, _) = self.height_at(x_m, z_m + 1.0);
         let slope = (hx - h).abs().max((hz - h).abs());
@@ -292,7 +322,7 @@ impl Terrain {
         let (surface, subsurface) = if slope > 1.3 && h > water - 1.0 {
             // Steep banks, such as the cliffs beside a fall, are bare rock.
             (STONE, STONE)
-        } else if h < water + 1.0 {
+        } else if h < water + 1.0 && (beach || h < water - 1.0) {
             if channel > 0.4 {
                 (GRAVEL, GRAVEL)
             } else {
@@ -377,7 +407,7 @@ impl Terrain {
         // and gather round the watchtower.
         let slope_line = 50.0 + 14.0 * fbm2(self.seed.wrapping_add(25), xm / 90.0, zm / 90.0, 2);
         let by_tower = self.structures.iter().any(|st| match st {
-            crate::structures::Structure::Tower(t) => t.c.distance(Vec2::new(xm, zm)) < 70.0,
+            crate::structures::Structure::Watchtower(t) => t.c.distance(Vec2::new(xm, zm)) < 70.0,
             _ => false,
         });
         let conifer =
@@ -418,8 +448,8 @@ impl Terrain {
         out
     }
 
-    /// The great oak on top of the spawn rise, reaching one long bough out
-    /// over the arrival spot so it frames the first view up the valley.
+    /// The great oak ahead of the arrival spot, reaching one long bough out
+    /// to the right so it frames the first view up the valley from that side.
     fn plan_hero_tree(&self) -> Option<Tree> {
         let (ax, az) = crate::vista::ARRIVAL;
         let yaw = crate::vista::SPAWN_YAW;
@@ -434,7 +464,9 @@ impl Terrain {
             height: 18.0,
             kind: TreeKind::Broadleaf,
             seed: self.seed ^ 0x0a4_7ee,
-            hero: Some((to_arrival + fwd * 0.6).normalize()),
+            // Its long bough reaches out to the right, framing the valley view
+            // from that side without closing off the sky over it.
+            hero: Some((fwd.perp() * 0.8 + to_arrival * 0.2).normalize()),
         })
     }
 
@@ -635,6 +667,35 @@ mod tests {
             field += (tall_meadow(seed, x, z) > 0.9) as i32;
         }
         assert!((10..300).contains(&field), "{field} of 400 samples in tall grass");
+    }
+
+    #[test]
+    fn every_lantern_hangs_from_its_post_in_one_chunk_column() {
+        // Chunk columns are meshed, and swapped in for the far field, as a
+        // whole, so a lantern in another column than its post can show alone.
+        use crate::chunk::{chunk_of, local_of};
+        let mut t = Terrain::new(20260927);
+        let all = t.lanterns_in(0.0, WORLD_SIZE_M, 0.0, WORLD_SIZE_M);
+        assert!(all.len() > 100, "{}", all.len());
+        let mut chunks: HashMap<IVec3, Chunk> = HashMap::new();
+        let mut get = |t: &mut Terrain, v: IVec3| {
+            let c = chunks.entry(chunk_of(v)).or_insert_with(|| t.generate(chunk_of(v)));
+            let l = local_of(v);
+            c.get(l.x, l.y, l.z)
+        };
+        for &(base, towards) in &all {
+            let lamp = base + towards + IVec3::Y * (LANTERN_POST - 1);
+            let (a, b) = (chunk_of(base), chunk_of(lamp));
+            assert_eq!(
+                (a.x, a.z),
+                (b.x, b.z),
+                "lantern at {lamp} hangs outside its post's column"
+            );
+            for dy in 0..=LANTERN_POST {
+                assert_eq!(get(&mut t, base + IVec3::Y * dy), POST, "post at {base}");
+            }
+            assert_eq!(get(&mut t, lamp), LANTERN, "lantern at {lamp}");
+        }
     }
 
     #[test]

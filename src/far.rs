@@ -121,63 +121,6 @@ pub(crate) fn face(verts: &mut Vec<Vertex>, idx: &mut Vec<u32>, lo: Vec3, hi: Ve
     idx.extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 3]);
 }
 
-/// A closed surface of revolution around a vertical axis through `centre`
-/// (x and z), following `profile` as (height, radius) pairs from bottom to top.
-/// `wobble` gives each ring a slightly irregular outline so crowns do not look
-/// turned on a lathe.
-pub(crate) fn revolve(
-    out: &mut MeshData,
-    centre: Vec2,
-    profile: &[(f32, f32)],
-    segments: u32,
-    mat: Block,
-    wobble: u32,
-) {
-    let rings = profile.len();
-    let start = out.vertices.len() as u32;
-    for (r, &(y, radius)) in profile.iter().enumerate() {
-        // Slope of the outline, for normals that lean up or down with it.
-        let (ya, ra) = profile[r.saturating_sub(1)];
-        let (yb, rb) = profile[(r + 1).min(rings - 1)];
-        let slope = if (yb - ya).abs() > 1e-4 {
-            (rb - ra) / (yb - ya)
-        } else {
-            0.0
-        };
-        for k in 0..segments {
-            let a = k as f32 / segments as f32 * std::f32::consts::TAU;
-            let bump = if wobble != 0 {
-                let h = crate::noise::hash3(wobble, k as i32, r as i32, 0);
-                0.82 + 0.3 * crate::noise::unit(h)
-            } else {
-                1.0
-            };
-            let (c, s) = (a.cos(), a.sin());
-            let pos = Vec3::new(centre.x + c * radius * bump, y, centre.y + s * radius * bump);
-            // Top and bottom caps close to a point; their normals point along the axis.
-            let n = if radius < 1e-3 {
-                Vec3::new(0.0, if r == 0 { -1.0 } else { 1.0 }, 0.0)
-            } else {
-                Vec3::new(c, -slope, s).normalize()
-            };
-            out.vertices.push(Vertex {
-                pos: pos.to_array(),
-                data: smooth_data(mat, 3, n),
-            });
-        }
-    }
-    for r in 0..rings as u32 - 1 {
-        for k in 0..segments {
-            let k1 = (k + 1) % segments;
-            let a = start + r * segments + k;
-            let b = start + r * segments + k1;
-            let c = start + (r + 1) * segments + k1;
-            let d = start + (r + 1) * segments + k;
-            out.indices.extend_from_slice(&[a, c, b, a, d, c]);
-        }
-    }
-}
-
 /// Meshes one far tile at a level of detail.
 pub fn build_tile(terrain: &Terrain, tile: IVec2, level: u8) -> MeshData {
     let cell = LEVEL_CELL_M[level as usize];
@@ -187,11 +130,14 @@ pub fn build_tile(terrain: &Terrain, tile: IVec2, level: u8) -> MeshData {
     // Heights on the grid corners plus a one-cell border for normals.
     let w = n + 3;
     let mut heights = Vec::with_capacity((w * w) as usize);
+    let mut channels = Vec::with_capacity((w * w) as usize);
     for j in -1..=n + 1 {
         for i in -1..=n + 1 {
             let x = origin.x + i as f32 * cell;
             let z = origin.y + j as f32 * cell;
-            heights.push(terrain.height_at(x, z).0);
+            let (hh, ch) = terrain.height_at(x, z);
+            heights.push(hh);
+            channels.push(ch);
         }
     }
     let h = |i: i32, j: i32| heights[((j + 1) * w + i + 1) as usize];
@@ -206,7 +152,11 @@ pub fn build_tile(terrain: &Terrain, tile: IVec2, level: u8) -> MeshData {
     for j in 0..=n {
         for i in 0..=n {
             let p = corner(i, j);
-            let mat = terrain.column_info(p.x, p.z).surface;
+            // Material from the slope across the cell, not the metre under the
+            // corner, so bands thinner than a cell do not paint whole cells.
+            let slope = ((h(i + 1, j) - h(i - 1, j)).abs()).max((h(i, j + 1) - h(i, j - 1)).abs()) / (2.0 * cell);
+            let channel = channels[((j + 1) * w + i + 1) as usize];
+            let mat = terrain.far_surface(p.x, p.z, p.y, channel, slope, cell);
             out.vertices.push(Vertex {
                 pos: p.to_array(),
                 data: smooth_data(mat, 3, normal(i, j)),
@@ -317,6 +267,80 @@ mod tests {
             }
             assert!((area - TILE_M * TILE_M).abs() < 1.0, "level {level} covers {area} m²");
         }
+    }
+
+    #[test]
+    fn thin_shore_bands_do_not_paint_whole_cells() {
+        // A far vertex shows sand above the water only where most of the ground
+        // around it really is sand, so a rim narrower than a cell stays grass.
+        let terrain = Terrain::new(20260927);
+        let (mut sand, mut thin) = (0, 0);
+        for k in 0..24 {
+            let z = 80.0 + k as f32 * 80.0;
+            let x = terrain.river_x(z);
+            for dx in [-1, 0, 1] {
+                let tile = IVec2::new((x / TILE_M) as i32 + dx, (z / TILE_M) as i32);
+                for level in 1..3u8 {
+                    let cell = LEVEL_CELL_M[level as usize];
+                    let m = build_tile(&terrain, tile, level);
+                    for v in &m.vertices {
+                        let p = Vec3::from(v.pos);
+                        if ((v.data >> 3) & 255) as u8 != SAND || p.y < water_level(p.x, p.z) {
+                            continue;
+                        }
+                        sand += 1;
+                        let mut real = 0;
+                        for j in -2..=2 {
+                            for i in -2..=2 {
+                                let (sx, sz) = (p.x + i as f32 * cell / 5.0, p.z + j as f32 * cell / 5.0);
+                                real += (terrain.column_info(sx, sz).surface == SAND) as i32;
+                            }
+                        }
+                        if real < 8 {
+                            thin += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            thin * 10 <= sand.max(1),
+            "{thin} of {sand} dry sand vertices sit on a thin rim"
+        );
+    }
+
+    #[test]
+    fn far_rock_mostly_stands_on_real_rock() {
+        // Rock keeps its metre-scale slope test; check that it still marks
+        // broad faces rather than thin risers.
+        let terrain = Terrain::new(20260927);
+        let (mut stone, mut thin) = (0, 0);
+        for tz in (6..26).step_by(3) {
+            for tx in (6..26).step_by(3) {
+                let level = 2;
+                let cell = LEVEL_CELL_M[level as usize];
+                let m = build_tile(&terrain, IVec2::new(tx, tz), level);
+                for v in &m.vertices {
+                    let p = Vec3::from(v.pos);
+                    if ((v.data >> 3) & 255) as u8 != STONE {
+                        continue;
+                    }
+                    stone += 1;
+                    let mut real = 0;
+                    for j in -2..=2 {
+                        for i in -2..=2 {
+                            let (sx, sz) = (p.x + i as f32 * cell / 5.0, p.z + j as f32 * cell / 5.0);
+                            real += (terrain.column_info(sx, sz).surface == STONE) as i32;
+                        }
+                    }
+                    thin += (real < 8) as i32;
+                }
+            }
+        }
+        assert!(
+            thin * 5 <= stone.max(1),
+            "{thin} of {stone} rock vertices sit on a thin riser"
+        );
     }
 
     #[test]

@@ -506,6 +506,31 @@ struct Surface {
 
 // `pix` is the size of one pixel in metres at this point; detail smaller than
 // a few pixels is faded out instead of shimmering.
+// Leaf clusters: distance to the nearest of one jittered point per cell, and
+// a random value for that point's cluster.
+fn leaf_cells(p: vec3<f32>) -> vec2<f32> {
+    let c = floor(p);
+    let f = p - c;
+    var best = 8.0;
+    var id = 0.0;
+    for (var x = -1; x <= 1; x++) {
+        for (var y = -1; y <= 1; y++) {
+            for (var z = -1; z <= 1; z++) {
+                let o = vec3(f32(x), f32(y), f32(z));
+                let k = c + o;
+                let j = vec3(hash3(k), hash3(k + 17.3), hash3(k + 41.7)) * 0.8 + 0.1;
+                let d = o + j - f;
+                let dd = dot(d, d);
+                if (dd < best) {
+                    best = dd;
+                    id = hash3(k + 5.1);
+                }
+            }
+        }
+    }
+    return vec2(sqrt(best), id);
+}
+
 fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
     // Fine patterns use coordinates wrapped every 64 m so f32 noise stays precise;
     // their frequencies are whole numbers per metre, so the wrap has no seam.
@@ -836,6 +861,19 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.sss = 0.2;
             wettable = false;
         }
+        case 55u: { // leaded glass lit from within: diamond panes glowing warm in narrow openings
+            let an = abs(n);
+            let u = select(p.x, p.z, an.x > an.z);
+            let d1 = fract((u + p.y) / 0.15);
+            let d2 = fract((u - p.y) / 0.15);
+            let lead = (1.0 - smoothstep(0.04, 0.09, min(min(d1, 1.0 - d1), min(d2, 1.0 - d2)))) * d_dm;
+            s.albedo = mix(vec3(0.95, 0.70, 0.40), vec3(0.07, 0.06, 0.05), lead);
+            s.rough = mix(0.15, 0.6, lead);
+            s.f0 = 0.04;
+            let flicker = 0.92 + 0.08 * vnoise(vec3(g.sun_dir.w * 3.0, floor(p.x / 2.0), floor(p.z / 2.0)));
+            s.emit = LAMP_COLOR * (1.0 - lead) * (0.5 + 3.4 * lamp_on()) * flicker;
+            wettable = false;
+        }
         case 53u: { // banner: deep blue-violet wool with a soft weave (trim in shade_terrain)
             let weave = 0.5 + 0.25 * (sin(p.x * 160.0) + sin(p.y * 160.0 + p.z * 160.0));
             s.albedo = vec3(0.10, 0.10, 0.34) * (0.85 + 0.2 * weave * d_cm) * (0.9 + 0.15 * fine);
@@ -940,18 +978,27 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.height = (plate * 0.03 - crack * 0.01) * d_dm + fine * 0.01;
             wettable = false;
         }
-        case 28u: { // broadleaf foliage: masses of small leaves, sunlit tips, dark gaps
+        case 28u: { // broadleaf foliage: rounded leaf clusters with sunlit tops, dark gaps
             let leaves = vnoise(q * 5.0) * 0.55 + vnoise(q * 13.0 + 0.5) * 0.45;
             let shape = smoothstep(0.3, 0.7, leaves);
-            let hue = vnoise(p * 0.11 + 3.0) * 0.7 + vnoise(q * 1.3) * 0.3;
-            var c = mix(vec3(0.09, 0.22, 0.06), vec3(0.24, 0.40, 0.10), hue);
+            // Clusters about 0.7 m across, each a little dome that catches the
+            // sun on its own, as in painted foliage. They fade out once a
+            // cluster spans only a few pixels.
+            let d_cl = 1.0 - smoothstep(0.06, 0.2, pix);
+            let cl = leaf_cells(q * 1.5);
+            let dome = max(1.0 - cl.x * cl.x * 1.3, 0.0);
+            let hue = vnoise(p * 0.11 + 3.0) * 0.6 + cl.y * 0.4 * d_cl;
+            var c = mix(vec3(0.10, 0.24, 0.06), vec3(0.26, 0.42, 0.10), hue);
             c = mix(c, vec3(0.38, 0.46, 0.14), smoothstep(0.62, 0.85, broad) * 0.45);
-            c *= mix(0.9, mix(0.62, 1.08, shape), d_dm);
+            // The gaps between clusters are deep green shade, not brown.
+            let gap = mix(vec3(0.46, 0.68, 0.52), vec3(1.1), sqrt(dome));
+            c *= mix(vec3(1.0), gap, d_cl);
+            c *= mix(0.94, mix(0.8, 1.05, shape), d_dm);
             s.albedo = c;
             s.rough = 0.55;
             s.f0 = 0.04;
             s.sss = 0.8;
-            s.height = shape * 0.05 * d_dm + leaves * 0.02;
+            s.height = dome * 0.16 * d_cl + shape * 0.02 * d_dm + leaves * 0.01;
             wettable = false;
         }
         case 29u: { // conifer needles: dark blue-green sprays
@@ -965,6 +1012,45 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.f0 = 0.04;
             s.sss = 0.45;
             s.height = shape * 0.04 * d_dm;
+            wettable = false;
+        }
+        case 50u: { // castle banner: deep blue-violet wool hanging still in soft folds
+            let fold = 0.5 + 0.5 * sin(dot(p.xz, vec2(7.0, 7.0)) + 0.8 * sin(p.y * 1.3));
+            let weave = 0.5 + 0.25 * (sin(p.x * 160.0 + p.y * 160.0) + sin(p.z * 160.0 - p.y * 160.0));
+            s.albedo = vec3(0.13, 0.11, 0.38) * (0.75 + 0.35 * fold) * (0.9 + 0.12 * weave * d_cm) * (0.92 + 0.12 * broad);
+            s.rough = 0.95;
+            s.sss = 0.3;
+            wettable = false;
+        }
+        case 51u: { // ashlar: the castle's pale dressed limestone, in courses, streaked by rain
+            let an = abs(n);
+            var u = select(p.x, p.z, an.x > an.z);
+            var v = p.y;
+            if (an.y > 0.7) { u = p.x; v = p.z; }
+            let row = floor(v / 0.5);
+            let col = floor(u / 0.9 + row * 0.5);
+            let fu = fract(u / 0.9 + row * 0.5);
+            let fv = fract(v / 0.5);
+            let joint = min(min(fu, 1.0 - fu) * 0.9, min(fv, 1.0 - fv) * 0.5);
+            let mortar = (1.0 - smoothstep(0.01, 0.025, joint)) * d_dm;
+            let tint = hash2(vec2(col, row));
+            var c = mix(vec3(0.72, 0.68, 0.60), vec3(0.83, 0.79, 0.70), tint * (1.0 - calm * 0.7)) * (0.9 + 0.14 * fine);
+            // Rain streaks run down from ledges; a little moss on the tops.
+            let streak = smoothstep(0.5, 0.9, vnoise(q * vec3(2.5, 0.2, 2.5)));
+            c *= 1.0 - 0.16 * streak - 0.06 * broad;
+            let moss = smoothstep(0.62, 0.8, fbm(q * 0.9)) * select(0.15, 0.7, top);
+            c = mix(c, vec3(0.38, 0.42, 0.24), moss * 0.5);
+            c = mix(c, vec3(0.47, 0.44, 0.39), mortar * 0.7);
+            s.albedo = c;
+            s.rough = 0.8;
+            s.f0 = 0.04;
+            s.height = (1.0 - mortar) * 0.015 + fine * 0.008 + vnoise(q * 19.0) * 0.003 * d_cm;
+        }
+        case 52u: { // gilt: burnished gold leaf, a little worn
+            let wear = smoothstep(0.55, 0.85, vnoise(q * 11.0));
+            s.albedo = mix(vec3(0.85, 0.63, 0.24), vec3(0.55, 0.40, 0.18), wear * 0.5);
+            s.rough = mix(0.3, 0.55, wear);
+            s.f0 = 0.6;
             wettable = false;
         }
         default: {}
@@ -1447,7 +1533,10 @@ fn range_height(flat: vec2<f32>, scale: f32, seed: f32, base: f32, top: f32) -> 
 }
 
 // Snowy peaks beyond the edge of the world: two ranges of painted
-// silhouettes, hazy blue with sunlit snow on their crests. rgb, coverage.
+// silhouettes seen through the haze. Their snow keeps the terrain's rules
+// (column_info in terrain.rs and the snow cover in material()): it lies
+// above a ragged snowline, which comes lower where the face is gentle, and
+// slides off steep faces, which stay bare rock. rgb, coverage.
 fn far_peaks(dir: vec3<f32>) -> vec4<f32> {
     let flat = normalize(dir.xz + vec2(1e-5, 0.0));
     let e = asin(clamp(dir.y, -1.0, 1.0));
@@ -1455,32 +1544,47 @@ fn far_peaks(dir: vec3<f32>) -> vec4<f32> {
     let sun_flat = normalize(sun.xz + vec2(1e-5, 0.0));
     let light = sun_light();
     let haze = sky_dome(normalize(vec3(dir.x, 0.03, dir.z)));
+    let side = vec2(-flat.y, flat.x);
+    let az = atan2(flat.y, flat.x);
     var col = vec3(0.0);
     var cover = 0.0;
     // Far range first, then the nearer, bolder one over it.
     for (var k = 0; k < 2; k++) {
         let near = f32(k);
         let scale = mix(2.2, 3.4, near);
-        let h = range_height(flat, scale, 11.0 + near * 7.0, mix(0.035, 0.02, near), mix(0.16, 0.12, near));
+        let seed = 11.0 + near * 7.0;
+        let base = mix(0.035, 0.02, near);
+        let top = mix(0.16, 0.12, near);
+        let h = range_height(flat, scale, seed, base, top);
         if (e < h) {
-            // Slope along the ridge tells which side faces the sun.
-            let side = vec2(-flat.y, flat.x);
-            let dh = range_height(normalize(flat + side * 0.01), scale, 11.0 + near * 7.0, mix(0.035, 0.02, near), mix(0.16, 0.12, near)) - h;
-            let facing = clamp(0.5 - dh * 60.0 * dot(side, sun_flat), 0.0, 1.0);
-            // Gullies run down the faces, so light and snow come in streaks.
-            let az = atan2(flat.y, flat.x);
-            let gully = vnoise2(vec2(az * 90.0 + near * 13.0, e * 25.0)) * 0.6 + vnoise2(vec2(az * 260.0, e * 60.0)) * 0.4;
-            let lit = clamp(facing * 0.8 + (gully - 0.5) * 0.6, 0.0, 1.0);
-            let rock = lin(vec3(0.26, 0.30, 0.42)) * (0.2 + 0.6 * lit) * light * 0.3;
-            // Snow caps the high crests and reaches down the gullies.
-            let base = mix(0.035, 0.02, near);
-            let snow_top = base + mix(0.16, 0.12, near) * 0.35;
-            let snow_depth = (h - snow_top) * 0.8 + 0.012;
-            let snow_line = h - snow_depth * (0.4 + 0.9 * gully);
-            let snow = smoothstep(snow_line - 0.003, snow_line + 0.003, e) * step(snow_top, h);
+            // The face's slope is the ridge's own gradient along the skyline,
+            // taken over a span that widens below the crest, where the faces
+            // are broader. Ribs and gullies break it into facets.
+            let w = 0.006 + (h - e) * 0.5;
+            let hl = range_height(normalize(flat - side * w), scale, seed, base, top);
+            let hr = range_height(normalize(flat + side * w), scale, seed, base, top);
+            let dh = (hr - hl) / (2.0 * w);
+            let rib = vnoise2(vec2(az * 110.0 + e * 40.0 + near * 13.0, e * 7.0));
+            let facet = vnoise2(vec2(az * 260.0, e * 70.0));
+            let crest = 1.0 - smoothstep(0.0, 0.02, h - e);
+            let steep = abs(dh) * (0.3 + 1.4 * rib) + 0.3 * crest * abs(dh) + (facet - 0.5) * 0.35 + 0.08;
+            // Lit where the face turns towards the sun, and on the ribs.
+            let facing = clamp(0.5 - dh * 0.6 * dot(side, sun_flat), 0.0, 1.0);
+            let lit = clamp(facing * 0.8 + (rib - 0.5) * 0.5 + (facet - 0.5) * 0.2, 0.0, 1.0);
+            // Snow by altitude above a ragged line, lower on gentle faces, and
+            // none on steep ones.
+            let ragged = vnoise2(vec2(az * 24.0 + near * 5.0, near)) * 0.7 + vnoise2(vec2(az * 90.0, 3.0 + near)) * 0.3;
+            let gentle = 1.0 - smoothstep(0.25, 0.6, steep);
+            let line = base + top * (0.5 + 0.3 * (ragged - 0.5) - 0.12 * gentle);
+            let snow = smoothstep(line - 0.0025, line + 0.0025, e) * (1.0 - smoothstep(0.33, 0.5, steep));
             let snow_col = lin(vec3(0.95, 0.93, 0.98)) * (0.3 + 0.8 * lit) * light * 0.5;
+            // Bare rock, with the air between tinting it blue-grey: more for
+            // the far range and towards the foot, where the air is thicker.
+            let rock_lit = lin(vec3(0.30, 0.30, 0.34)) * (0.2 + 0.6 * lit) * light * 0.3;
+            let air = mix(0.45, 0.3, near) + 0.2 * (1.0 - smoothstep(0.0, top, e - base));
+            let rock = mix(rock_lit, haze * lin(vec3(0.62, 0.70, 0.90)), air);
             let body = mix(rock, snow_col, snow);
-            // The far range sinks further into the haze, and both fade towards their feet.
+            // Both ranges sink into the haze towards their feet.
             let fade = mix(0.5, 0.3, near) * (1.0 - smoothstep(0.0, 0.08, e - base) * 0.4);
             col = mix(body, haze, fade);
             cover = 1.0;

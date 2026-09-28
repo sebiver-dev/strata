@@ -195,7 +195,7 @@ fn build_voxels(world: &World, cpos: IVec3) -> MeshData {
                     continue;
                 }
                 if b == LANTERN {
-                    lantern(&mut out, origin, p, pad.get(p - IVec3::Y) == POST);
+                    lantern(&mut out, origin, p, pad.get(p - IVec3::Y));
                     continue;
                 }
                 if is_smooth(b) {
@@ -585,9 +585,10 @@ const ARM_HEIGHT: f32 = 0.2;
 
 /// A lantern: six tapering panes of warm glass in an iron frame, an iron cup
 /// below and a flared iron roof above with a ring on top. Standing on a post
-/// it gets a collar that grips the post; otherwise it hangs by a rod from the
-/// arm above.
-fn lantern(out: &mut MeshData, origin: IVec3, p: IVec3, on_post: bool) {
+/// it gets a collar that grips the post, and on solid ground or masonry (the
+/// bridge's piers) it simply stands; otherwise it hangs by a rod from the arm
+/// above. `below` is the block under it.
+fn lantern(out: &mut MeshData, origin: IVec3, p: IVec3, below: Block) {
     let floor = (origin + p).as_vec3() * VOXEL_SIZE + Vec3::new(VOXEL_SIZE * 0.5, 0.0, VOXEL_SIZE * 0.5);
     let at = |y: f32| floor + Vec3::Y * y;
     let (b0, b1) = LANTERN_BODY;
@@ -620,11 +621,11 @@ fn lantern(out: &mut MeshData, origin: IVec3, p: IVec3, on_post: bool) {
     flat(out, &eave, at(b1 + 0.1), IRON);
     loft(out, &eave, &neck, IRON);
     cone(out, &neck, at(b1 + 0.14), IRON);
-    if on_post {
+    if below == POST {
         // Collar: slightly wider than the post and overlapping its top.
         let r = POST_RADIUS + 0.03;
         loft(out, &ring(at(-0.04), r, 8, 0.0), &ring(at(b0), r, 8, 0.0), IRON);
-    } else {
+    } else if !is_smooth(below) {
         // Hanging ring and rod up to the hook on the arm above.
         let top = at(b1 + 0.14);
         let ring_pts: Vec<Vec3> = (0..=10)
@@ -828,6 +829,29 @@ mod tests {
             let r = (v.pos[0] - centre).hypot(v.pos[2] - centre);
             assert!(r <= POST_RADIUS + 1e-4, "{r}");
         }
+    }
+
+    #[test]
+    fn lantern_on_masonry_stands_without_a_hook() {
+        // The bridge's pier lanterns have no arm above them, so no rod or hook
+        // may rise from their roofs.
+        let mut w = World::new(1, 1);
+        let mut c = Chunk::default();
+        for y in 0..=4 {
+            c.set(5, y, 5, MASONRY);
+        }
+        c.set(5, 5, 5, LANTERN);
+        w.chunks.insert(IVec3::ZERO, c);
+        let m = build(&w, IVec3::ZERO);
+        let roof = 5.0 * VOXEL_SIZE + LANTERN_BODY.1 + 0.14;
+        let mat = |v: &Vertex| (v.data >> 3) & 255;
+        let top = m
+            .vertices
+            .iter()
+            .filter(|v| mat(v) == IRON as u32)
+            .map(|v| v.pos[1])
+            .fold(f32::MIN, f32::max);
+        assert!(top <= roof + 1e-4, "iron rises to {top}, roof at {roof}");
     }
 
     #[test]

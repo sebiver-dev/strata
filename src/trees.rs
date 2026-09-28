@@ -108,7 +108,13 @@ impl Tree {
         let h = self.height;
         let r0 = self.trunk_radius();
         let lean = self.lean();
-        let fork = h * (0.26 + 0.08 * self.rand(3));
+        // The great oak forks higher, so its crown frames the sky rather than
+        // hanging low over the view.
+        let fork = h * if self.hero.is_some() {
+            0.36
+        } else {
+            0.26 + 0.08 * self.rand(3)
+        };
         // The trunk: a gentle curve up to the fork, with a slight kink.
         let side = Vec3::new(-lean.z, 0.0, lean.x).normalize_or_zero();
         let wig = (self.rand(4) - 0.5) * 0.3 * r0;
@@ -148,11 +154,11 @@ impl Tree {
             let mut rise = 0.25 + 0.4 * self.rand(30 + k as u32);
             if self.hero.is_some() {
                 // The great oak spreads wide and low.
-                length *= 1.3;
-                rise *= 0.6;
+                length *= 1.1;
+                rise *= 0.7;
             }
             if hero_bough {
-                length = h * 0.72;
+                length = h * 0.6;
                 rise = 0.3;
             }
             let at = 0.72 + 0.28 * self.rand(40 + k as u32);

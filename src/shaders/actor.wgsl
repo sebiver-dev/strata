@@ -70,10 +70,8 @@ fn fs_actor(i: ActorOut) -> @location(0) vec4<f32> {
     let own = select(0.0, 0.8, (i.flags & 1u) != 0u);
     let sh = sun_shadow(i.world + sun * own, n);
     let light = sun_light();
-    let sky = 0.5 + 0.5 * n.y;
-    let skylight = sky_dome(vec3(0.0, 1.0, 0.0)) * 0.8 + sky_dome(normalize(vec3(-sun.z, 0.02, sun.x))) * 0.3;
-    let bounce = light * lin(vec3(0.52, 0.47, 0.36)) * 0.16 * max(sun.y, 0.0);
-    let ambient = (skylight * sky + bounce * (1.0 - sky) * 0.4) * ao;
+    let skylight = sky_fill();
+    let ambient = fill_light(n, sh, sss) * ao;
 
     var c = albedo * (light * ndl * sh + ambient);
     c += light * sh * ggx_spec(n, v, sun, rough, f0);

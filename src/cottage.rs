@@ -352,6 +352,20 @@ impl Cottage {
         }
     }
 
+    /// Just the outside: footings, walls, roof, chimney and deck, for the far field.
+    pub fn exterior(&self, t: &Terrain, out: &mut MeshData) {
+        self.plinth(t, out);
+        for side in [-1.0f32, 1.0] {
+            self.long_wall(out, side);
+            self.end_wall(out, side);
+        }
+        self.roof(out);
+        self.chimney(out);
+        if self.deck > 0.0 {
+            self.deck_model(t, out);
+        }
+    }
+
     /// A light stand-in for far away: body, timber bands, roof and lit windows.
     pub fn far(&self, out: &mut MeshData) {
         let (l, w) = (self.half_len, self.half_wid);

@@ -18,6 +18,7 @@ use crate::model;
 use crate::noise::{hash2, unit};
 use crate::terrain::Terrain;
 use crate::vista;
+use crate::watchtower::Watchtower;
 use glam::{IVec3, Vec2, Vec3};
 use std::collections::HashMap;
 
@@ -415,7 +416,7 @@ impl Fence {
 pub enum Structure {
     Bridge(Bridge),
     Cottage(Cottage),
-    Tower(Tower),
+    Watchtower(Watchtower),
     Castle(Castle),
     Fence(Fence),
 }
@@ -503,21 +504,13 @@ impl Structures {
 
         // The watchtower and the castle stand on the knoll and the bluff composed
         // for the view on arrival (see `vista`).
-        {
-            let c = Vec2::new(vista::TOWER_KNOLL.0, vista::TOWER_KNOLL.2);
-            let c = Vec2::new(snap(c.x, 0.25), snap(c.y, 0.25));
-            let (lo, hi) = ground_range(t, c - 3.0, c + 3.0);
-            s.add(Structure::Tower(Tower {
-                c,
-                r: 2.6,
-                base: lo - 1.0,
-                top: hi + 11.0,
-                room: 3.0,
-                cone_r: 4.0,
-                cone_h: 5.0,
-                seed: seed ^ 20,
-            }));
-        }
+        let (tx, _, tz) = vista::TOWER_KNOLL;
+        s.add(Structure::Watchtower(Watchtower::plan(
+            t,
+            Vec2::new(tx, tz),
+            Vec2::new(spawn.x, spawn.z),
+            seed ^ 20,
+        )));
         let (cx, _, cz) = vista::CASTLE_TOP;
         s.add(Structure::Castle(Castle::plan(t, cx, cz, seed ^ 40)));
         s.build_models(t);
@@ -537,6 +530,7 @@ impl Structures {
             match st {
                 Structure::Cottage(c) => c.model(t, &mut all),
                 Structure::Fence(f) => f.model(t, &mut all),
+                Structure::Watchtower(w) => w.model(t, &mut all),
                 Structure::Bridge(b) => b.model(t, &mut all),
                 _ => {}
             }
@@ -576,7 +570,7 @@ impl Structures {
         let (lo, hi) = match &st {
             Structure::Bridge(b) => b.bounds(),
             Structure::Cottage(c) => c.bounds(),
-            Structure::Tower(t) => t.bounds(),
+            Structure::Watchtower(w) => w.bounds(),
             Structure::Castle(c) => c.bounds(),
             Structure::Fence(f) => (f.lo, f.hi),
         };
@@ -634,7 +628,7 @@ impl Structures {
                         let b = match st {
                             Structure::Bridge(b) => b.block(p, g),
                             Structure::Cottage(c) => c.block(p, g),
-                            Structure::Tower(t) => t.block(p),
+                            Structure::Watchtower(w) => w.block(p, g),
                             Structure::Castle(c) => c.block(p),
                             Structure::Fence(f) => f.block(p, g),
                         };
@@ -693,7 +687,7 @@ impl Structures {
                     Some(m) => model::append(out, m),
                     None => c.far(out),
                 },
-                Structure::Tower(t) => t.far(out),
+                Structure::Watchtower(w) => w.far(out),
                 Structure::Castle(c) => c.far(out),
                 Structure::Fence(_) => {}
             }
@@ -737,7 +731,7 @@ fn polygon(out: &mut MeshData, pts: &[Vec3], mat: Block) {
 }
 
 /// All six faces of an axis-aligned box.
-fn boxed(out: &mut MeshData, lo: Vec3, hi: Vec3, mat: Block) {
+pub(crate) fn boxed(out: &mut MeshData, lo: Vec3, hi: Vec3, mat: Block) {
     for fi in 0..6 {
         face(&mut out.vertices, &mut out.indices, lo, hi, fi, mat);
     }
@@ -759,7 +753,7 @@ mod tests {
         assert_eq!(count(|x| matches!(x, Structure::Bridge(_))), 1);
         assert!(count(|x| matches!(x, Structure::Cottage(_))) >= 5);
         assert!(count(|x| matches!(x, Structure::Fence(_))) >= 2);
-        assert_eq!(count(|x| matches!(x, Structure::Tower(_))), 1);
+        assert_eq!(count(|x| matches!(x, Structure::Watchtower(_))), 1);
         assert_eq!(count(|x| matches!(x, Structure::Castle(_))), 1);
     }
 

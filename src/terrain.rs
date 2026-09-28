@@ -377,7 +377,7 @@ impl Terrain {
         // and gather round the watchtower.
         let slope_line = 50.0 + 14.0 * fbm2(self.seed.wrapping_add(25), xm / 90.0, zm / 90.0, 2);
         let by_tower = self.structures.iter().any(|st| match st {
-            crate::structures::Structure::Tower(t) => t.c.distance(Vec2::new(xm, zm)) < 70.0,
+            crate::structures::Structure::Watchtower(t) => t.c.distance(Vec2::new(xm, zm)) < 70.0,
             _ => false,
         });
         let conifer =

@@ -189,6 +189,14 @@ pub struct Game {
 
 impl Game {
     pub fn new(settings: Settings) -> Self {
+        #[allow(unused_mut)]
+        let mut settings = settings;
+        // `?work=ms` gives background loading a bigger slice of each frame, so
+        // screenshots in slow (software) browsers get the far field in time.
+        #[cfg(target_arch = "wasm32")]
+        if let Some(ms) = crate::web::url_param("work").and_then(|v| v.parse::<f64>().ok()) {
+            settings.work_budget_ms = ms.clamp(1.0, 500.0);
+        }
         let world = World::new(settings.seed, settings.view_radius);
         #[allow(unused_mut)]
         let mut player = Player::new(world.terrain.spawn_point());

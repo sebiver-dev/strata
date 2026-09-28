@@ -122,10 +122,12 @@ const SIGHT_CLEAR_M: f32 = 170.0;
 /// The path from the spawn rise down to the bridge's east end: its Z range,
 /// the X it starts from at the bridge, the X it ends at on the rise and the
 /// sideways swing of its curve.
-const PATH_Z: (f32, f32) = (BRIDGE_Z + 1.0, SPAWN.2 - RISE_TOP_R);
+/// It starts at the player's feet and bows left towards the river, so from the
+/// arrival spot it leads down through the lower middle of the view.
+const PATH_Z: (f32, f32) = (BRIDGE_Z + 1.0, ARRIVAL.1 - 2.5);
 const PATH_X0: f32 = 903.5;
-const PATH_X1: f32 = 898.5;
-const PATH_SWING: f32 = 7.0;
+const PATH_X1: f32 = ARRIVAL.0;
+const PATH_SWING: f32 = -4.0;
 /// Half the width of the path's packed surface.
 pub const PATH_HALF_WIDTH_M: f32 = 1.2;
 /// Lanterns stand this far apart along the path, alternating sides.

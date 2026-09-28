@@ -24,6 +24,9 @@ pub struct Spot {
     pub field: f32,
     /// Along a road or a river bank: lush grass, lupins and daisies.
     pub verge: f32,
+    /// Hard against a rock, a trunk or a wall: grass only, kept short, so
+    /// nothing grows up through or stands on top of them.
+    pub sheltered: bool,
 }
 
 impl Spot {
@@ -33,6 +36,7 @@ impl Spot {
             meadow: crate::terrain::meadow(terrain.seed, xm, zm),
             field: crate::terrain::tall_meadow(terrain.seed, xm, zm),
             verge: verge(terrain, xm, zm),
+            sheltered: false,
         }
     }
 }
@@ -162,17 +166,21 @@ fn blade(out: &mut MeshData, base: Vec3, toward: Vec3, len: f32, lean: f32, arc:
 /// A clump of grass blades fanning out from one root in the air voxel `w`,
 /// standing on `floor`.
 fn grass(out: &mut MeshData, rng: &mut Rng, w: IVec3, floor: Vec3, spot: &Spot, crowded: bool) {
-    // Heights vary in soft patches: ankle- to thigh-high on open ground,
-    // knee- to hip-high and lush along verges, chest- to head-high in fields.
+    // Heights vary in soft patches: ankle- to knee-high on open ground and
+    // along verges, thigh- to waist-high in the tall fields.
     let patch = fbm2(97, w.x as f32 / 9.0, w.z as f32 / 9.0, 2);
-    let open = 0.35 + 0.75 * patch * patch;
-    let lush = 0.55 + 0.55 * patch;
-    let tall = 1.1 + 0.6 * patch;
+    let open = 0.25 + 0.4 * patch * patch;
+    let lush = 0.38 + 0.25 * patch;
+    let tall = 0.7 + 0.35 * patch;
     let mut height = open + (lush - open).max(0.0) * spot.verge;
     height += (tall - height) * spot.field;
 
     let vista = vista_meadow(floor.x, floor.z);
-    height += (lush * 1.1 - height).max(0.0) * vista;
+    // The meadow in front of the arrival view stays knee-high, thick rather than tall.
+    height += (lush - height) * vista;
+    if spot.sheltered {
+        height = height.min(0.3);
+    }
 
     let thick = spot.meadow.max(spot.verge).max(spot.field);
     let mut n = 4 + (thick * 1.5 + rng.f() * 0.9).floor() as u32 + (spot.field > 0.5) as u32;
@@ -182,7 +190,7 @@ fn grass(out: &mut MeshData, rng: &mut Rng, w: IVec3, floor: Vec3, spot: &Spot, 
     }
     // Dry, golden blades stand in the tall fields and on open ground, fresh
     // yellow-green ones along the verges and water.
-    let dry = 0.08 + 0.3 * spot.field * (1.0 - spot.verge) + 0.1 * (1.0 - thick);
+    let dry = 0.14 + 0.3 * spot.field * (1.0 - spot.verge) + 0.1 * (1.0 - thick);
     let fresh = 0.2 + 0.4 * spot.verge;
 
     let root = floor + Vec3::new(rng.range(0.1, 0.4), 0.0, rng.range(0.1, 0.4));
@@ -444,7 +452,9 @@ pub fn tuft(out: &mut MeshData, seed: u32, w: IVec3, spot: &Spot) {
     let spot_at = |rng: &mut Rng| floor + Vec3::new(rng.range(0.08, 0.42), 0.02, rng.range(0.08, 0.42));
     let mut crowded = false;
     // Drifts: sparse at their edges, crowded in the middle.
-    if lupins > 0.6 && roll < 0.06 + 1.4 * (lupins - 0.6) {
+    if spot.sheltered {
+        crowded = true;
+    } else if lupins > 0.6 && roll < 0.06 + 1.4 * (lupins - 0.6) {
         let at = spot_at(&mut rng);
         // Mostly violet, with pink and white spires mixed in; some drifts
         // run pinker or paler than others.
@@ -548,6 +558,7 @@ mod tests {
             meadow: 1.0,
             field: 1.0,
             verge: 1.0,
+            sheltered: false,
         };
         for x in 0..32 {
             tuft(&mut out, 3, IVec3::new(x, 10, 0), &spot);

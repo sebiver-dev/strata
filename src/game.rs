@@ -194,6 +194,8 @@ pub struct Game {
     ready: bool,
     /// Whether the camera follows behind the player instead of looking from their eyes.
     pub third_person: bool,
+    /// Set by `?player=0`: no body or held tool, for screenshots of the view.
+    hide_player: bool,
     /// Current distance of the third-person camera; shortened where terrain is in the way.
     camera_dist: f32,
     rig: Rig,
@@ -228,6 +230,10 @@ impl Game {
         let night = crate::web::url_param("night").is_some_and(|v| v != "0");
         #[cfg(not(target_arch = "wasm32"))]
         let night = false;
+        #[cfg(target_arch = "wasm32")]
+        let hide_player = crate::web::url_param("player").as_deref() == Some("0");
+        #[cfg(not(target_arch = "wasm32"))]
+        let hide_player = false;
         Self {
             world,
             player,
@@ -254,6 +260,7 @@ impl Game {
             target: None,
             ready: false,
             third_person,
+            hide_player,
             camera_dist: 0.0,
             rig: Rig::default(),
         }
@@ -461,7 +468,13 @@ impl Game {
 
         let pose = self.pose();
         self.rig.update(&pose, dt);
-        renderer.set_actors(&self.rig.build(&pose, self.player.eye(), self.third_person));
+        #[allow(unused_mut)]
+        let mut actors = self.rig.build(&pose, self.player.eye(), self.third_person);
+        if self.hide_player {
+            actors.scene = 0..0;
+            actors.shadow = 0..0;
+        }
+        renderer.set_actors(&actors);
     }
 
     fn pose(&self) -> PoseInput {

@@ -998,8 +998,10 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.albedo = mix(vec3(0.16, 0.11, 0.07), vec3(0.95, 0.72, 0.42), pane);
             s.rough = mix(0.7, 0.1, pane);
             s.f0 = 0.04;
-            // Lit all day but only bright once the light goes; each room its own warmth.
-            let room = 0.75 + 0.5 * hash3(floor(p / 2.0));
+            // Lit all day but only bright once the light goes. How bright each
+            // window burns, or whether it is dark, comes with the mesh (see
+            // shade_terrain); here only a little warmth varies from pane to pane.
+            let room = 0.9 + 0.2 * hash3(floor(p / VOXEL));
             let flicker = 0.93 + 0.07 * vnoise(vec3(g.sun_dir.w * 3.0, floor(p.x / 2.0), floor(p.z / 2.0)));
             s.emit = LAMP_COLOR * pane * (1.2 + 2.8 * lamp_on()) * room * flicker * (1.0 + 1.5 * far);
             wettable = false;
@@ -1249,6 +1251,26 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.albedo = c;
             s.rough = 0.9;
             s.height = streak * 0.006 * d_cm - crack * 0.004 * d_dm;
+        }
+        case 57u: { // roof tile: warm red-brown clay in lapped rows (weathered shingle in shade_terrain)
+            let row = floor(p.y / 0.26);
+            let along = p.x + p.z;
+            let tile = floor(along / 0.3 + row * 0.5);
+            let fv = fract(p.y / 0.26);
+            let fu = fract(along / 0.3 + row * 0.5);
+            let edge = (1.0 - smoothstep(0.0, 0.14, fv)) * d_dm;
+            let gap = (1.0 - smoothstep(0.0, 0.08, min(fu, 1.0 - fu))) * d_dm;
+            var base = mix(vec3(0.46, 0.20, 0.12), vec3(0.58, 0.31, 0.18), broad);
+            base *= 0.8 + 0.4 * hash2(vec2(tile, row)) * (1.0 - calm);
+            // Some tiles burnt darker, some bleached, lichen in patches.
+            base = mix(base, vec3(0.33, 0.17, 0.11), step(0.86, hash2(vec2(row, tile + 3.0))) * 0.6 * (1.0 - calm));
+            let lichen = smoothstep(0.62, 0.82, fbm(q * 1.1)) * 0.3;
+            var c = mix(base, vec3(0.45, 0.43, 0.28), lichen);
+            c *= 1.0 - 0.45 * max(edge, gap);
+            s.albedo = c;
+            s.rough = 0.7;
+            s.f0 = 0.04;
+            s.height = fv * 0.025 * d_dm - gap * 0.012;
             wettable = false;
         }
         default: {}
@@ -1563,6 +1585,25 @@ fn shade_terrain(i: VOut) -> vec4<f32> {
         surf.albedo = mix(surf.albedo, surf.albedo * tint, smoothstep(0.6, 0.9, n.y));
     }
     var ao_in = i.ao;
+    if (mat == 21u) {
+        // Authored windows carry their lamp in the AO bits: 3 as lit as the
+        // castle's, 2 a dim back room, 1 a bright hearth, 0 an unlit room
+        // whose glass stays dark.
+        let lvl = u32(round(i.ao * 3.0));
+        surf.emit *= select(select(select(0.0, 1.9, lvl == 1u), 0.5, lvl == 2u), 1.0, lvl == 3u);
+        if (lvl == 0u) {
+            surf.albedo = min(surf.albedo, vec3(0.05, 0.055, 0.07));
+        }
+        ao_in = 1.0;
+    }
+    if (mat == 57u) {
+        // AO bits 2: weathered brown shingle instead of clay tile.
+        if (i.ao < 0.9) {
+            let l = dot(surf.albedo, vec3(0.3, 0.59, 0.11));
+            surf.albedo = l * vec3(1.35, 1.0, 0.72) * 0.95;
+        }
+        ao_in = 1.0;
+    }
     if (mat == 53u) {
         // Gold trim down the sides and across the top, and a ring on the cloth.
         let fu = fract(i.world.x / BANNER_W);

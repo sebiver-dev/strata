@@ -51,6 +51,10 @@ pub const TREE_CELL_M: f32 = 9.0;
 /// How far a trunk can lean away from its foot, in metres.
 const TREE_REACH_M: f32 = 2.5;
 const TREE_MAX_HEIGHT_M: f32 = 26.0;
+/// How far (metres) the great oak stands from the arrival spot, and its
+/// bearing (radians) left of the arrival view.
+const HERO_REACH_M: f32 = 7.5;
+const HERO_BEARING: f32 = 0.8;
 /// Height of the rock bands where mountain slopes break into cliffs.
 const CLIFF_STEP_M: f32 = 10.0;
 
@@ -454,19 +458,22 @@ impl Terrain {
         let (ax, az) = crate::vista::ARRIVAL;
         let yaw = crate::vista::SPAWN_YAW;
         let fwd = Vec2::new(yaw.cos(), yaw.sin());
-        // Ahead and to the right of the arrival spot, just below the rise's top,
-        // so the trunk stands in view and the crown frames the sky above it.
-        let foot = Vec2::new(ax, az) + fwd * 11.0 + fwd.perp() * 5.0;
+        // Ahead and to the left of the arrival spot, near enough that the
+        // crown hangs above the top of the view: the trunk frames the left
+        // edge like the reference's tree, and the valley, the castle crag and
+        // the peaks to the right stay open.
+        let left = -fwd.perp();
+        let (ahead, aside) = (HERO_REACH_M * HERO_BEARING.cos(), HERO_REACH_M * HERO_BEARING.sin());
+        let foot = Vec2::new(ax, az) + fwd * ahead + left * aside;
         let (x, z) = (foot.x, foot.y);
-        let to_arrival = (Vec2::new(ax, az) - foot).normalize_or_zero();
         Some(Tree {
             base: Vec3::new(x, self.height_at(x, z).0, z),
-            height: 18.0,
+            height: 14.0,
             kind: TreeKind::Broadleaf,
             seed: self.seed ^ 0x0a4_7ee,
-            // Its long bough reaches out to the right, framing the valley view
-            // from that side without closing off the sky over it.
-            hero: Some((fwd.perp() * 0.8 + to_arrival * 0.2).normalize()),
+            // Its long bough reaches forward and left, so the heaviest leaves
+            // hang in the top-left corner of the first view.
+            hero: Some((fwd * 0.3 + left * 0.95).normalize()),
         })
     }
 

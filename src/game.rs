@@ -197,6 +197,9 @@ pub struct Game {
     /// Current distance of the third-person camera; shortened where terrain is in the way.
     camera_dist: f32,
     rig: Rig,
+    /// Whether the player's own body and tool are drawn (`?hands=0` hides
+    /// them, for screenshots compared against the reference).
+    show_self: bool,
 }
 
 impl Game {
@@ -224,6 +227,10 @@ impl Game {
         let third_person = crate::web::url_param("view").as_deref() == Some("third");
         #[cfg(not(target_arch = "wasm32"))]
         let third_person = false;
+        #[cfg(target_arch = "wasm32")]
+        let show_self = crate::web::url_param("hands").as_deref() != Some("0");
+        #[cfg(not(target_arch = "wasm32"))]
+        let show_self = true;
         #[cfg(target_arch = "wasm32")]
         let night = crate::web::url_param("night").is_some_and(|v| v != "0");
         #[cfg(not(target_arch = "wasm32"))]
@@ -256,6 +263,7 @@ impl Game {
             third_person,
             camera_dist: 0.0,
             rig: Rig::default(),
+            show_self,
         }
     }
 
@@ -461,7 +469,11 @@ impl Game {
 
         let pose = self.pose();
         self.rig.update(&pose, dt);
-        renderer.set_actors(&self.rig.build(&pose, self.player.eye(), self.third_person));
+        if self.show_self {
+            renderer.set_actors(&self.rig.build(&pose, self.player.eye(), self.third_person));
+        } else {
+            renderer.set_actors(&Default::default());
+        }
     }
 
     fn pose(&self) -> PoseInput {

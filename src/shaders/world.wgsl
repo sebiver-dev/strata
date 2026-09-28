@@ -835,14 +835,17 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             let edge = min(min(a.x, 1.0 - a.x), min(a.y, 1.0 - a.y));
             let glass = smoothstep(0.08, 0.12, edge);
             let bars = 1.0 - smoothstep(0.02, 0.04, min(abs(a.x - 0.5), abs(a.y - 0.5)));
-            let pane = glass * (1.0 - bars) * step(abs(n.y), 0.5);
+            // Far off, where a window is a pixel or two, the frame and bars blur
+            // into the glow and it burns a little brighter so it still reads.
+            let far = smoothstep(0.03, 0.15, pix);
+            let pane = mix(glass * (1.0 - bars), 0.9, far) * step(abs(n.y), 0.5);
             s.albedo = mix(vec3(0.16, 0.11, 0.07), vec3(0.95, 0.72, 0.42), pane);
             s.rough = mix(0.7, 0.1, pane);
             s.f0 = 0.04;
             // Lit all day but only bright once the light goes; each room its own warmth.
             let room = 0.75 + 0.5 * hash3(floor(p / 2.0));
             let flicker = 0.93 + 0.07 * vnoise(vec3(g.sun_dir.w * 3.0, floor(p.x / 2.0), floor(p.z / 2.0)));
-            s.emit = LAMP_COLOR * pane * (0.6 + 3.4 * lamp_on()) * room * flicker;
+            s.emit = LAMP_COLOR * pane * (1.2 + 2.8 * lamp_on()) * room * flicker * (1.0 + 1.5 * far);
             wettable = false;
         }
         case 22u: { // oak: dark planed timber with fine streaky grain

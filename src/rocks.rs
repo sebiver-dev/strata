@@ -99,6 +99,9 @@ fn site_where(t: &Terrain, gx: i32, gz: i32, keep: impl Fn(Vec3) -> bool) -> Opt
     } else if (2.2..5.5).contains(&road) && above_water > 0.5 && info.height_m < 80.0 {
         // Now and then a rock sits at the edge of the cobbled road.
         (0.14, 1.2)
+    } else if info.height_m > 36.0 && info.height_m < 120.0 && (0.4..0.8).contains(&slope(t, x, z)) {
+        // Outcrops break through the grass where the valley walls steepen.
+        (0.35, 1.9)
     } else if info.surface == GRASS && info.height_m < 60.0 {
         (0.05, MAX_R_M)
     } else {
@@ -116,6 +119,14 @@ fn site_where(t: &Terrain, gx: i32, gz: i32, keep: impl Fn(Vec3) -> bool) -> Opt
         hash: h,
         composed,
     })
+}
+
+/// Rise per metre of the ground at (x, z), measured over a few metres.
+fn slope(t: &Terrain, x: f32, z: f32) -> f32 {
+    let d = 2.0;
+    let dx = t.height_at(x + d, z).0 - t.height_at(x - d, z).0;
+    let dz = t.height_at(x, z + d).0 - t.height_at(x, z - d).0;
+    Vec2::new(dx, dz).length() / (2.0 * d)
 }
 
 /// Where the composed boulder group by the arrival spot stands (x, z metres).
@@ -242,7 +253,7 @@ impl Shape {
     /// Distance from the centre to the surface along unit direction `d`.
     fn radius(&self, d: Vec3) -> f32 {
         // A smooth minimum over the distances to each plane rounds every edge.
-        const K: f32 = 0.055;
+        const K: f32 = 0.035;
         let mut sum = (-1.1f32 / K).exp();
         for &(n, off) in &self.planes {
             let dn = d.dot(n);
@@ -381,6 +392,27 @@ pub fn append(t: &Terrain, cpos: IVec3, out: &mut MeshData) {
             }
         }
     }
+}
+
+/// The footprints of every boulder that could stand within `margin` metres
+/// of the chunk column at `cpos`: centre (x, z), horizontal radius, and top height.
+pub fn footprints(t: &Terrain, cpos: IVec3, margin: f32) -> Vec<(Vec2, f32, f32)> {
+    let side = CHUNK as f32 * VOXEL_SIZE;
+    let (ox, oz) = (cpos.x as f32 * side, cpos.z as f32 * side);
+    let cell = |m: f32| (m / CELL_M).floor() as i32;
+    let reach = CLUSTER_REACH_M + margin;
+    let mut out = Vec::new();
+    for gz in cell(oz - reach)..=cell(oz + side + reach) {
+        for gx in cell(ox - reach)..=cell(ox + side + reach) {
+            if let Some(s) = site(t, gx, gz) {
+                for b in cluster(t, &s) {
+                    let r = b.radii.x.max(b.radii.z);
+                    out.push((Vec2::new(b.centre.x, b.centre.z), r, b.centre.y + b.radii.y));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Stamps the collision of every cluster that reaches into the chunk at `origin` (voxels).
@@ -584,7 +616,11 @@ mod tests {
                 let c = s.chunk();
                 let chunk = t.generate(c);
                 let rocks = cluster(&t, &s);
-                let Some(b) = rocks.first().filter(|b| b.radii.min_element() >= 0.8) else {
+                // Outcrops sink into steep slopes; this checks rocks bedded on gentle ground.
+                let Some(b) = rocks
+                    .first()
+                    .filter(|b| b.radii.min_element() >= 0.8 && b.slope.length() < 0.35)
+                else {
                     continue;
                 };
                 // The column under the rock's middle turns solid just above

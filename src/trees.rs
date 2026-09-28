@@ -117,13 +117,22 @@ impl Tree {
         };
         // The trunk: a gentle curve up to the fork, with a slight kink.
         let side = Vec3::new(-lean.z, 0.0, lean.x).normalize_or_zero();
-        let wig = (self.rand(4) - 0.5) * 0.3 * r0;
+        // Old broadleaf trunks bend one way and back again on their way up.
+        let wig = (self.rand(4) - 0.5) * if self.hero.is_some() { 0.3 } else { 1.1 } * r0;
+        let bend = (self.rand(7) - 0.5) * if self.hero.is_some() { 0.0 } else { 0.9 } * r0;
+        let fwd = lean.normalize_or_zero();
         let n = 6;
         let mut spine = Vec::new();
         let mut radii = Vec::new();
         for i in 0..=n {
             let t = i as f32 / n as f32;
-            spine.push(self.base + Vec3::Y * (fork * t) + lean * t.powf(1.5) + side * (wig * (t * PI).sin()));
+            spine.push(
+                self.base
+                    + Vec3::Y * (fork * t)
+                    + lean * t.powf(1.5)
+                    + side * (wig * (t * PI).sin())
+                    + fwd * (bend * (t * TAU).sin()),
+            );
             radii.push(r0 * (1.0 - 0.38 * t));
         }
         let top = *spine.last().unwrap();
@@ -133,13 +142,14 @@ impl Tree {
         let mut limbs = Vec::new();
         let mut clumps = Vec::new();
         let count = if self.hero.is_some() {
-            6
+            8
         } else {
             3 + (self.rand(5) * 3.99) as usize
         };
         let phase = self.rand(6) * TAU;
         let lean_dir = Vec2::new(lean.x, lean.z).normalize_or_zero();
-        let cr = h * 0.25;
+        // The great oak's crown is many smaller clumps with sky between them.
+        let cr = h * if self.hero.is_some() { 0.19 } else { 0.25 };
         let mut ends = Vec::new();
         for k in 0..count {
             let hero_bough = self.hero.is_some() && k == 0;
@@ -207,7 +217,8 @@ impl Tree {
         let mid = ends.iter().copied().sum::<Vec3>() / ends.len() as f32;
         for k in 0..ends.len() {
             let (a, b) = (ends[k], ends[(k + 1) % ends.len()]);
-            if a.distance(b) > cr * 1.5 {
+            let gap = if self.hero.is_some() { 3.2 } else { 1.5 };
+            if a.distance(b) > cr * gap {
                 let m = (a + b) * 0.5;
                 clumps.push(Clump {
                     centre: m + (m - mid) * 0.1 - Vec3::Y * cr * 0.05,
@@ -319,9 +330,22 @@ impl Tree {
             5,
             2,
         );
+        if level == 0 {
+            // Boughs show through the gaps between clumps, so the crown
+            // does not read as a ball on a stick.
+            for l in &s.limbs {
+                let spine: Vec<Vec3> = l.spine.iter().step_by(2).copied().collect();
+                let radii: Vec<f32> = l.radii.iter().step_by(2).copied().collect();
+                if spine.len() > 1 {
+                    tube(out, &Limb { spine, radii }, 4, 2);
+                }
+            }
+        }
         for (i, c) in s.clumps.iter().enumerate() {
             let puff = c.radii.x < self.height * 0.2;
-            if level > 0 && puff {
+            // Further out keep every other puff, so crowns still break into
+            // lobes rather than reading as balls.
+            if level > 1 && puff || level == 1 && puff && i % 2 == 1 {
                 continue;
             }
             let mesh = ico(if level == 0 && !puff { 1 } else { 0 });
@@ -385,6 +409,11 @@ fn bezier(a: Vec3, c: Vec3, b: Vec3, r0: f32, r1: f32, n: usize) -> (Vec<Vec3>, 
         r.push(r0 + (r1 - r0) * t.powf(0.8));
     }
     (s, r)
+}
+
+fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// Two unit vectors across a direction.
@@ -497,11 +526,17 @@ fn trunk(out: &mut MeshData, l: &Limb, flare: f32, sides: u32, seed: u32) {
             let u = (Vec3::X - d * d.x).normalize();
             (u, d.cross(u))
         };
+        // Above the foot the buttresses carry on up as ridges that twist
+        // around the trunk, like the fluted bole of an old oak.
+        let up = p.y - base.y;
+        let ridge = 0.13 * (1.0 - f) * (1.0 - smoothstep(4.0, 9.0, up));
         for k in 0..sides {
             let a = k as f32 / sides as f32 * TAU;
             let lobe = ((a * lobes + phase).cos().max(0.0)).powi(2);
-            let swell = 1.0 + flare * f * (0.25 + 0.8 * lobe);
+            let twist = a * lobes + phase + up * 0.45;
+            let swell = (1.0 + flare * f * (0.25 + 0.8 * lobe)) * (1.0 + ridge * twist.cos());
             let radial = u * a.cos() + v * a.sin();
+            let tangent = v * a.cos() - u * a.sin();
             // Roots dip into the ground as they spread.
             let dip = if p.y <= base.y + 0.01 {
                 0.0
@@ -510,7 +545,9 @@ fn trunk(out: &mut MeshData, l: &Limb, flare: f32, sides: u32, seed: u32) {
             };
             let pos = p + radial * r * swell + Vec3::Y * dip;
             // Normals tilt up where the foot spreads out.
-            let normal = (radial + Vec3::Y * (f * flare * (0.5 + lobe) * 0.8)).normalize();
+            let normal =
+                (radial + tangent * (ridge * lobes * twist.sin()) + Vec3::Y * (f * flare * (0.5 + lobe) * 0.8))
+                    .normalize();
             out.vertices.push(Vertex {
                 pos: pos.to_array(),
                 data: smooth_data(BARK, bark_ao(p.y), normal),
@@ -664,11 +701,15 @@ fn clump(out: &mut MeshData, all: &[Clump], index: usize, canopy: Vec3, mesh: &I
         let global = (p - canopy).normalize_or_zero();
         // A lift towards the sky lets undersides catch skylight instead of
         // going black, as in painted foliage.
-        let n = (own * 0.7 + global * 0.3 + Vec3::Y * 0.5).normalize_or_zero();
-        // Occlusion: undersides and the parts facing into the canopy are darker.
+        // Each clump keeps most of its own rounding, so the crown reads as
+        // separate masses rather than one smooth dome.
+        let n = (own + global * 0.15 + Vec3::Y * 0.3).normalize_or_zero();
+        // Occlusion: each clump's own underside and the parts facing into
+        // the canopy are darker, so shade gathers between the clumps.
         let depth = ((p - canopy).length() / (size * 1.6)).min(1.0);
-        let light = 0.5 + 0.5 * n.y;
-        let ao = ((light * 0.7 + depth * 0.5) * 3.0).round().clamp(1.0, 3.0) as u32;
+        let local = ((p.y - c.centre.y) / c.radii.y).clamp(-1.0, 1.0);
+        let light = 0.5 + 0.5 * local;
+        let ao = ((light * 0.75 + depth * 0.45) * 3.0).round().clamp(1.0, 3.0) as u32;
         out.vertices.push(Vertex {
             pos: p.to_array(),
             data: smooth_data(FOLIAGE, ao, n),

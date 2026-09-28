@@ -946,4 +946,57 @@ mod tests {
         }
         assert!(trees > 30, "{trees} trees around the hamlet");
     }
+
+    /// Where `p` lands in the first view, as fractions of the frame's width
+    /// and height from its top-left corner, or None behind the eye. This is
+    /// the camera Sebastian sees on opening (`?cam=893,33.5,1024,-1.5,-0.15`):
+    /// feet on the arrival spot, eye 1.6 m up, the game's 70 degree field of
+    /// view at the side-by-side's 1280 by 760.
+    fn first_view(p: glam::Vec3) -> Option<(f32, f32)> {
+        use glam::{Mat4, Vec3};
+        let (yaw, pitch) = (SPAWN_YAW, -0.15f32);
+        let eye = Vec3::new(ARRIVAL.0, 33.5 + 1.6, ARRIVAL.1);
+        let dir = Vec3::new(yaw.cos() * pitch.cos(), pitch.sin(), yaw.sin() * pitch.cos());
+        let vp = Mat4::perspective_infinite_reverse_rh(70f32.to_radians(), 1280.0 / 760.0, 0.05)
+            * Mat4::look_to_rh(eye, dir, Vec3::Y);
+        let c = vp * p.extend(1.0);
+        (c.w > 0.0).then(|| ((c.x / c.w + 1.0) * 0.5, (1.0 - c.y / c.w) * 0.5))
+    }
+
+    #[test]
+    fn great_oak_frames_the_left_of_the_first_view() {
+        let t = world();
+        let oak = t.hero_tree.expect("the arrival has a great oak");
+        // Nothing of the tree reaches right of 45% of the width, where the
+        // valley, the bridge, the castle crag (about yaw -1.16, pitch 0.17 to
+        // 0.35) and the peaks must stay open, and its crown stays in the
+        // top-left quarter.
+        let mut mesh = crate::mesh::MeshData::default();
+        oak.mesh(&mut mesh);
+        let mut crown = 0;
+        let (mut trunk, mut trunk_edge) = (0, 0f32);
+        for v in &mesh.vertices {
+            let p = glam::Vec3::from(v.pos);
+            let Some((x, y)) = first_view(p) else { continue };
+            if !(0.0..1.0).contains(&x) || !(0.0..1.0).contains(&y) {
+                continue;
+            }
+            assert!(x <= 0.45, "oak at {x:.2}, {y:.2} of the frame, over the valley");
+            if p.y - oak.base.y < 3.0 {
+                trunk += 1;
+                trunk_edge = trunk_edge.max(x);
+            }
+            if p.y - oak.base.y > 0.3 * oak.height {
+                assert!(
+                    y <= 0.5,
+                    "crown at {x:.2}, {y:.2} of the frame, below the top-left quarter"
+                );
+                crown += 1;
+            }
+        }
+        // The trunk's near side frames the left edge, and no wider than that.
+        assert!(trunk > 10, "trunk not in the view");
+        assert!(trunk_edge < 0.15, "trunk reaches {trunk_edge:.2} of the width");
+        assert!(crown > 50, "the crown should hang into the top-left corner");
+    }
 }

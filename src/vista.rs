@@ -122,10 +122,12 @@ const SIGHT_CLEAR_M: f32 = 170.0;
 /// The path from the spawn rise down to the bridge's east end: its Z range,
 /// the X it starts from at the bridge, the X it ends at on the rise and the
 /// sideways swing of its curve.
-const PATH_Z: (f32, f32) = (BRIDGE_Z + 1.0, SPAWN.2 - RISE_TOP_R);
+/// It starts at the player's feet and bows out around the east side of the
+/// cottage whose deck stands over the river, then back to the bridge.
+const PATH_Z: (f32, f32) = (BRIDGE_Z + 1.0, ARRIVAL.1 - 2.5);
 const PATH_X0: f32 = 903.5;
-const PATH_X1: f32 = 898.5;
-const PATH_SWING: f32 = 7.0;
+const PATH_X1: f32 = ARRIVAL.0;
+const PATH_SWING: f32 = 16.0;
 /// Half the width of the path's packed surface.
 pub const PATH_HALF_WIDTH_M: f32 = 1.2;
 /// Lanterns stand this far apart along the path, alternating sides.
@@ -350,8 +352,12 @@ fn ridge(seed: u32, x: f32, z: f32) -> Option<f32> {
 /// Whether a point is on the castle bluff, where no snow lies: its top is grass
 /// and its faces bare rock.
 pub fn snow_free(x: f32, z: f32) -> bool {
-    Vec2::new(x, z).distance(centre()) < 130.0
+    Vec2::new(x, z).distance(centre()) < SNOW_FREE_R
 }
+
+/// Radius (metres) around the castle bluff's centre where no snow lies. The
+/// shader's snow cover keeps the same rule (`SNOW_FREE` in world.wgsl).
+pub const SNOW_FREE_R: f32 = 130.0;
 
 /// Composed shaping applied after the river channel is cut: the castle bluff,
 /// whose river face drops straight into the water, its ridge and the plunge
@@ -739,6 +745,19 @@ mod tests {
     }
 
     #[test]
+    fn shader_keeps_snow_off_the_bluff() {
+        let wgsl = include_str!("shaders/world.wgsl");
+        let (x, _, z) = CASTLE_TOP;
+        assert!(wgsl.contains(&format!(
+            "const SNOW_FREE: vec3<f32> = vec3({x:.1}, {z:.1}, {SNOW_FREE_R:.1});"
+        )));
+        let t = world();
+        for (dx, dz) in [(0.0, 0.0), (20.0, -15.0), (-24.0, 18.0), (60.0, -40.0)] {
+            assert_ne!(t.column_info(x + dx, z + dz).surface, crate::block::SNOW);
+        }
+    }
+
+    #[test]
     fn landmarks_stand_on_their_anchors() {
         let t = world();
         let mut seen = 0;
@@ -780,6 +799,30 @@ mod tests {
     #[test]
     fn path_runs_from_the_rise_to_the_bridge() {
         let t = world();
+        // It never runs through a building, and stays west of the road's fence.
+        use crate::structures::Structure;
+        let buildings: Vec<(Vec3, Vec3)> = t
+            .structures
+            .iter()
+            .filter_map(|st| match st {
+                Structure::Cottage(c) => Some(c.bounds()),
+                Structure::Watchtower(w) => Some(w.bounds()),
+                Structure::Castle(c) => Some(c.bounds()),
+                _ => None,
+            })
+            .collect();
+        let mut z = PATH_Z.0 + 2.0;
+        while z < PATH_Z.1 {
+            let x = path_x(z).unwrap();
+            let (x0, x1) = (x - PATH_HALF_WIDTH_M, x + PATH_HALF_WIDTH_M);
+            for (lo, hi) in &buildings {
+                let inside = lo.x < x1 && hi.x > x0 && lo.z < z + 0.25 && hi.z > z - 0.25;
+                assert!(!inside, "path at {x},{z} runs into a building");
+            }
+            // The west fence stands 3.6 m off the road's centre line.
+            assert!(x1 < t.road_x(z) - 3.6 - 0.5, "path at {x},{z} crowds the fence");
+            z += 0.5;
+        }
         let (z0, z1) = PATH_Z;
         let mut z = z0;
         while z <= z1 - 1.0 {

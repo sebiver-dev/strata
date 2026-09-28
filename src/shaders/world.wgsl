@@ -66,6 +66,10 @@ fn fall(k: u32) -> vec2<f32> {
     return falls[k];
 }
 
+// Matches vista::CASTLE_TOP and vista::SNOW_FREE_R: x, z and radius (metres)
+// of the castle bluff, where no snow lies.
+const SNOW_FREE: vec3<f32> = vec3(1058.0, 642.0, 130.0);
+
 const CLIFF_FALL_COUNT: u32 = 3u;
 
 // Matches vista::CLIFF_FALLS: where each waterfall off the castle bluff lands
@@ -416,7 +420,8 @@ fn apply_fog(c: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
         return mix(c, underwater_color(), f);
     }
     // Density falls off exponentially above the water line; integrate it along the ray.
-    let falloff = 1.0 / 38.0;
+    // It thins fast enough with height that distant heights keep their shape.
+    let falloff = 1.0 / 26.0;
     let cam_water = water_level_at(g.camera_pos.xz);
     let h0 = g.camera_pos.y - cam_water;
     let dy = to.y * falloff;
@@ -430,20 +435,27 @@ fn apply_fog(c: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
     let horizon_dir = normalize(vec3(dir.x, max(dir.y, 0.0) * 0.5 + 0.02, dir.z));
     let sun = normalize(g.sun_dir.xyz);
     let light = sun_light();
-    // In-scattered light: the horizon sky, plus a forward glow when looking towards the sun.
-    let glow = light * hg(dot(dir, sun), 0.7) * mix(0.5, 0.18, golden_hour()) * vec3(1.0, 0.8, 0.55);
-    let air = sky_dome(horizon_dir) * 0.95 + glow;
+    let golden = golden_hour();
+    // In-scattered light. The painted golden-hour horizon towards the sun is far
+    // brighter than the light the air really sheds, so at dusk the haze takes the
+    // cooler colour of the sky off to the side of the sun, lavender and blue,
+    // plus a glow held tight around the sun itself. Distant hills stay legible:
+    // blue-violet in shade, with their own warm sunlit rims.
+    let side_dir = normalize(vec3(-sun.z, 0.06, sun.x));
+    let cool = mix(sky_dome(horizon_dir), sky_dome(side_dir) * vec3(0.66, 0.74, 1.2), golden * 0.85);
+    let glow = light * hg(dot(dir, sun), mix(0.7, 0.9, golden)) * mix(0.5, 0.1, golden) * vec3(1.0, 0.8, 0.55);
+    let air = cool * 0.95 + glow;
     var out = c * trans + air * (1.0 - trans);
 
     // Valley mist: a thin, patchy layer lying on the river and the low
     // meadows, thickest in the evening, lit warm on the side towards the sun.
-    let mist_fall = 1.0 / 6.0;
+    let mist_fall = 1.0 / 3.5;
     let hm = g.camera_pos.y - (cam_water + 1.5);
     let dym = to.y * mist_fall;
     let mist_integral = select((1.0 - exp(-dym)) / dym, 1.0 - 0.5 * dym, abs(dym) < 1e-3);
     let patchy = 0.3 + 1.4 * vnoise2((g.camera_pos.xz + to.xz * 0.6) / 70.0);
     let amount = mix(0.35, 1.0, golden_hour()) * (1.0 - 0.6 * g.sky.x);
-    let mist = 0.004 * exp(-max(hm, -8.0) * mist_fall) * dist * max(mist_integral, 0.0) * patchy * amount;
+    let mist = 0.0022 * exp(-max(hm, -8.0) * mist_fall) * dist * max(mist_integral, 0.0) * patchy * amount;
     let mist_col = mix(air, air * vec3(0.9, 0.85, 1.05), golden_hour()) + glow * 0.4;
     let mt = exp(-mist);
     out = out * mt + mist_col * (1.0 - mt);
@@ -1058,7 +1070,9 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
     if (mat == 1u || mat == 2u || mat == 3u || mat == 5u || mat == 6u) {
         let ragged = vnoise(p * 0.08) * 16.0 + vnoise(p * 0.6) * 3.0;
         let line = 100.0 + ragged - 10.0 * smoothstep(0.75, 0.95, n.y);
-        let cover = smoothstep(line - 3.0, line + 3.0, p.y) * smoothstep(0.5, 0.8, n.y);
+        // None on the castle bluff: grass on top, bare rock on its faces.
+        let bluff = 1.0 - smoothstep(SNOW_FREE.z - 20.0, SNOW_FREE.z, distance(p.xz, SNOW_FREE.xy));
+        let cover = smoothstep(line - 3.0, line + 3.0, p.y) * smoothstep(0.5, 0.8, n.y) * (1.0 - bluff);
         let snow = vec3(0.86, 0.89, 0.94) * (0.92 + 0.1 * vnoise(q * 3.0));
         s.albedo = mix(s.albedo, snow, cover);
         s.rough = mix(s.rough, 0.7, cover);
@@ -1293,6 +1307,9 @@ fn shade_terrain(i: VOut) -> vec4<f32> {
     var skylight = sky_dome(vec3(0.0, 1.0, 0.0)) * 0.8 + sky_dome(normalize(vec3(-sun.z, 0.02, sun.x))) * 0.3;
     // The painted golden-hour sky is more saturated than the light it really sheds.
     skylight = mix(skylight, vec3(dot(skylight, vec3(0.3, 0.5, 0.2))) * vec3(0.95, 0.95, 1.05), golden_hour() * 0.55);
+    // At dusk the shade is lit by the blue-violet sky away from the sun, so
+    // faces turned from it read cool against their warm sunlit rims.
+    skylight *= mix(vec3(1.0), vec3(0.82, 0.88, 1.22), golden_hour() * 0.7);
     let bounce = light * lin(vec3(0.52, 0.47, 0.36)) * 0.16 * max(sun.y, 0.0);
     let ambient = (skylight * (sky + (1.0 - sky) * surf.sss * 0.6) + bounce * (1.0 - sky) * under) * ao;
     // Sunlight scattered through leaves and grass, strongest when looking towards the sun.
@@ -1496,7 +1513,9 @@ fn shade_water(i: VOut) -> vec4<f32> {
 
     let fresnel = 0.02 + 0.98 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
     var c = mix(body, refl, fresnel * (1.0 - white * 0.8));
-    c += sun_light() * 1.15 * sh * ggx_spec(n, v, sun, 0.07, 0.02) * (1.0 - white);
+    // A tight highlight on each wave facet, so the sun's path sparkles instead of
+    // burning a white band across the water.
+    c += sun_light() * 0.7 * sh * min(ggx_spec(n, v, sun, 0.045, 0.02), 6.0) * (1.0 - white);
     return vec4(apply_fog(c, p), 1.0);
 }
 
@@ -1650,8 +1669,18 @@ fn downsample(uv: vec2<f32>, karis: bool) -> vec3<f32> {
 
 @fragment
 fn fs_bloom_first(i: SkyOut) -> @location(0) vec4<f32> {
-    return vec4(downsample(screen_uv(i.ndc), true), 1.0);
+    // Only what is brighter than a lit white surface blooms, with a soft knee.
+    let c = downsample(screen_uv(i.ndc), true);
+    let l = max(max(c.r, c.g), c.b);
+    let knee = 0.6;
+    let t = clamp(l - (BLOOM_THRESHOLD - knee), 0.0, 2.0 * knee);
+    let keep = max(t * t / (4.0 * knee), l - BLOOM_THRESHOLD) / max(l, 1e-4);
+    return vec4(c * keep, 1.0);
 }
+
+// Scene brightness (linear) above which light blooms, and how much bloom adds.
+const BLOOM_THRESHOLD: f32 = 1.6;
+const BLOOM_STRENGTH: f32 = 0.05;
 
 @fragment
 fn fs_bloom_down(i: SkyOut) -> @location(0) vec4<f32> {
@@ -1678,7 +1707,7 @@ fn fs_post(i: SkyOut) -> @location(0) vec4<f32> {
     // Bloom: a soft glow of everything, strongest around the brightest light.
     // The chain sums five blurred levels, hence the divide.
     let bloom = textureSampleLevel(bloom_tex, post_sampler, uv, 0.0).rgb / 5.0;
-    c = mix(c, bloom, 0.07);
+    c += bloom * BLOOM_STRENGTH;
     c *= mix(1.0, 2.6, g.sky.x);
     let q = i.ndc * 0.75;
     c *= 1.0 - 0.22 * dot(q, q);
@@ -1686,7 +1715,8 @@ fn fs_post(i: SkyOut) -> @location(0) vec4<f32> {
     // Grade: rich, painterly colour. More saturation, warm highlights and
     // shadows leaning violet-blue against the warm sun, and a gentle S-curve.
     let l = dot(m, vec3(0.2126, 0.7152, 0.0722));
-    m = mix(vec3(l), m, 1.18);
+    // Less extra saturation in the highlights, so they roll off rather than clip.
+    m = mix(vec3(l), m, mix(1.18, 1.0, smoothstep(0.55, 0.95, l)));
     // Painterly greens: yellow-greens pulled towards a deeper, cooler green.
     let green = max(m.g - max(m.r, m.b), 0.0);
     m -= vec3(0.30, 0.22, -0.04) * green;

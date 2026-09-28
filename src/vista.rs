@@ -747,12 +747,23 @@ mod tests {
         for st in t.structures.iter() {
             match st {
                 crate::structures::Structure::Bridge(b) => {
-                    assert_eq!(b.z, BRIDGE_Z);
+                    // The bridge centres on whole voxels, so it may sit a quarter metre off.
+                    assert!((b.z - BRIDGE_Z).abs() <= 0.25, "bridge z {}", b.z);
                     // Dry ground at both ends, above the water, and the path meets the east end.
                     for x in [b.x0 - 0.5, b.x1 + 0.5] {
                         assert!(t.height_at(x, b.z).0 > water_level(x, b.z) + 3.0, "bridge end {x}");
                     }
-                    assert!((path_x(PATH_Z.0).unwrap() - b.x1).abs() < 2.0);
+                    // The path meets the east end, or the paved approach bridges the gap.
+                    let px = path_x(PATH_Z.0).unwrap();
+                    assert!(px >= b.x1 - 2.0 && px - b.x1 < 8.0, "path {px}, bridge end {}", b.x1);
+                    let mut x = b.x1;
+                    while x < px {
+                        assert!(
+                            t.structures.path_at(&t, x, b.z) || path_distance(x, b.z) < 2.0,
+                            "unpaved at {x}"
+                        );
+                        x += 0.5;
+                    }
                     seen += 1;
                 }
                 crate::structures::Structure::Tower(tw) => {

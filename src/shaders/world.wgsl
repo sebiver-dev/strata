@@ -50,6 +50,8 @@ const CHUNK_M: f32 = 16.0;
 // Matches terrain::WATER_LEVEL_M: the water level along the home reach,
 // between the falls either side of HOME_Z (terrain::HOME_Z_M).
 const WATER_LEVEL: f32 = 24.5;
+// Matches bridge::BANNER_W: banner edges lie on multiples of it along X.
+const BANNER_W: f32 = 0.8;
 const HOME_Z: f32 = 1024.0;
 const FALL_COUNT: u32 = 13u;
 
@@ -826,6 +828,41 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.sss = 0.2;
             wettable = false;
         }
+        case 53u: { // banner: deep blue-violet wool with a soft weave (trim in shade_terrain)
+            let weave = 0.5 + 0.25 * (sin(p.x * 160.0) + sin(p.y * 160.0 + p.z * 160.0));
+            s.albedo = vec3(0.10, 0.10, 0.34) * (0.85 + 0.2 * weave * d_cm) * (0.9 + 0.15 * fine);
+            s.rough = 1.0;
+            s.sss = 0.35;
+            wettable = false;
+        }
+        case 54u: { // bridge stone: rough blocks, mottled, mossy on top, damp near the water
+            let mottle = vnoise(q * 1.9) * 0.7 + broad * 0.3;
+            var c = mix(vec3(0.44, 0.42, 0.39), vec3(0.62, 0.58, 0.52), mottle) * (0.84 + 0.28 * fine);
+            // Pitted faces and a little lichen.
+            let pit = smoothstep(0.62, 0.8, vnoise(q * 7.0)) * d_dm;
+            c *= 1.0 - 0.08 * pit;
+            let lichen = smoothstep(0.72, 0.85, vnoise(q * 3.3 + 11.0)) * d_dm;
+            c = mix(c, vec3(0.62, 0.62, 0.50), lichen * 0.2);
+            // Moss on the tops of stones and creeping into the lower courses.
+            let level = water_level_at(p.xz);
+            let low = 1.0 - smoothstep(level + 0.8, level + 3.5, p.y);
+            let moss_m = smoothstep(0.55, 0.95, n.y + (fbm(q * 1.3) - 0.5) * 0.9) * 0.8
+                + smoothstep(0.55, 0.75, fbm(q * 0.9)) * low * 0.7;
+            let moss = mix(vec3(0.17, 0.26, 0.09), vec3(0.33, 0.40, 0.14), vnoise(q * 9.0)) * (0.8 + 0.4 * fine);
+            c = mix(c, moss, clamp(moss_m, 0.0, 1.0) * 0.85);
+            // A dark, damp band above the waterline with a ragged top edge.
+            let edge = level + 0.9 + 0.5 * vnoise(vec3(q.x * 1.1, 0.0, q.z * 1.1));
+            let damp = 1.0 - smoothstep(edge - 0.4, edge + 0.3, p.y);
+            c = mix(c, c * vec3(0.42, 0.46, 0.40), damp);
+            // Rain streaks down the faces.
+            let streak = smoothstep(0.55, 0.9, vnoise(vec3(q.x * 5.0 + q.z * 5.0, q.y * 0.35, 0.5))) * (1.0 - abs(n.y));
+            c *= 1.0 - 0.14 * streak;
+            s.albedo = c;
+            s.sss = clamp(moss_m, 0.0, 1.0) * 0.12;
+            s.rough = mix(0.82, 0.45, damp);
+            s.f0 = 0.04;
+            s.height = fine * 0.03 - pit * 0.012 + vnoise(q * 17.0) * 0.006 * d_cm;
+        }
         case 30u: { // dry grass blades: straw gold
             s.albedo = mix(vec3(0.52, 0.42, 0.18), vec3(0.72, 0.60, 0.30), vnoise(p * 0.3));
             s.rough = 0.65;
@@ -1027,6 +1064,18 @@ fn sway(pos: vec3<f32>, data: u32) -> vec3<f32> {
         let bend = (0.12 + 0.35 * gust * wave + flutter * 0.1) * tip;
         return pos + vec3(wind.x * bend, -abs(bend) * 0.25, wind.y * bend);
     }
+    if (mat == 53u) {
+        // Banners flap about their rod: the AO bits hold how far down the cloth
+        // a vertex is. Both sides move the same way so the cloth stays whole.
+        let tip = f32((data >> 11u) & 3u) / 3.0;
+        var nn = vertex_normal(data);
+        if (nn.x + nn.z < 0.0) {
+            nn = -nn;
+        }
+        let ph = pos.x * 0.9 + pos.z * 0.7;
+        let flap = 0.6 * sin(t * 1.4 + ph) + 0.4 * sin(t * 3.3 + ph * 1.7 + tip * 2.5);
+        return pos + (nn * flap * 0.1 + vec3(0.06, 0.0, 0.03) * (0.5 + 0.5 * sin(t * 0.7 + ph))) * tip;
+    }
     if (mat != 8u && mat != 28u && mat != 29u) {
         return pos;
     }
@@ -1120,6 +1169,17 @@ fn shade_terrain(i: VOut) -> vec4<f32> {
         surf.albedo *= mix(0.45, 1.1, i.ao);
         surf.albedo = mix(surf.albedo, surf.albedo * vec3(1.25, 1.1, 0.7), i.ao * i.ao * 0.5);
     }
+    var ao_in = i.ao;
+    if (mat == 53u) {
+        // Gold trim down the sides and across the top, and a ring on the cloth.
+        let fu = fract(i.world.x / BANNER_W);
+        let side = 1.0 - smoothstep(0.05, 0.075, min(fu, 1.0 - fu));
+        let top_band = 1.0 - smoothstep(0.04, 0.06, i.ao);
+        let low_band = smoothstep(0.83, 0.85, i.ao) * (1.0 - smoothstep(0.87, 0.89, i.ao));
+        let ring = 1.0 - smoothstep(0.02, 0.03, abs(length(vec2((fu - 0.5) * BANNER_W, (i.ao - 0.42) * 1.7)) - 0.15));
+        surf.albedo = mix(surf.albedo, lin(vec3(0.85, 0.62, 0.20)), max(max(side, top_band), max(low_band, ring)));
+        ao_in = 1.0;
+    }
     let nb = bump_normal(n, i.world, surf.height);
 
     let sun = normalize(g.sun_dir.xyz);
@@ -1127,7 +1187,7 @@ fn shade_terrain(i: VOut) -> vec4<f32> {
     let v = normalize(to_cam);
     // Translucent materials (leaves most of all) get softer occlusion and a
     // light that wraps past the terminator instead of cutting off hard.
-    let ao = mix(mix(0.35, 0.6, surf.sss), 1.0, i.ao);
+    let ao = mix(mix(0.35, 0.6, surf.sss), 1.0, ao_in);
     let facing = step(0.0, dot(n, sun));
     let sh = sun_shadow(i.world, n) * facing;
     let wrap = surf.sss * 0.6;

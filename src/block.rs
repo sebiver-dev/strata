@@ -52,6 +52,10 @@ pub const CLOTH: Block = 24;
 pub const BUILT: Block = 25;
 /// Wrought iron: lantern frames, arms and chains (mesh only).
 pub const IRON: Block = 26;
+/// Deep blue-violet woollen banner with a gold trim; sways in the wind (mesh only).
+pub const BANNER: Block = 53;
+/// Rough bridge stone: mottled, mossy on top, dark and damp near the water (mesh only).
+pub const BRIDGE_STONE: Block = 54;
 /// Mossy granite boulders (mesh only; their voxels are `BUILT`).
 pub const BOULDER: Block = 35;
 /// Pink and white lupin florets (mesh only); LUPIN is the purple kind.
@@ -104,6 +108,8 @@ pub fn name(b: Block) -> &'static str {
         BUILT => "building",
         POST => "post",
         IRON => "iron",
+        BANNER => "banner",
+        BRIDGE_STONE => "bridge stone",
         BOULDER => "boulder",
         BARK => "bark",
         FOLIAGE => "foliage",

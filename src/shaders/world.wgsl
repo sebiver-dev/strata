@@ -1061,7 +1061,7 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
         }
         case 35u: { // boulder: speckled grey granite with hairline cracks and patches of moss on top
             let tone = vnoise(q * 0.35);
-            var c = mix(vec3(0.42, 0.42, 0.43), vec3(0.57, 0.55, 0.51), tone) * (0.85 + 0.25 * fine);
+            var c = mix(vec3(0.46, 0.43, 0.39), vec3(0.61, 0.57, 0.50), tone) * (0.85 + 0.25 * fine);
             // Dark mica and pale feldspar grains.
             let grain = hash3(floor(q * 38.0));
             c *= 1.0 + (0.28 * step(0.9, grain) - 0.3 * step(grain, 0.08)) * d_cm;
@@ -1076,10 +1076,10 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             let ragged = fbm(q * 1.7) - 0.5 + (vnoise(q * 11.0) - 0.5) * 0.35;
             let dry = smoothstep(water_level_at(p.xz), water_level_at(p.xz) + 0.3, p.y);
             // Moss only in patches on the upper faces, so grey stone shows around it.
-            let mossy = smoothstep(0.38, 0.62, vnoise(q * 0.9 + 11.0));
-            let moss_m = smoothstep(0.55, 0.85, n.y + ragged * 0.9) * dry * mossy;
+            let mossy = smoothstep(0.3, 0.7, vnoise(q * 0.9 + 11.0) + ragged * 0.5);
+            let moss_m = smoothstep(0.45, 0.95, n.y + ragged * 0.9) * dry * mossy;
             let tuft = vnoise(q * 23.0);
-            let moss = mix(vec3(0.26, 0.40, 0.10), vec3(0.50, 0.60, 0.20), vnoise(q * 5.0)) * (0.85 + 0.3 * tuft);
+            let moss = mix(vec3(0.28, 0.35, 0.12), vec3(0.46, 0.50, 0.21), vnoise(q * 5.0)) * (0.85 + 0.3 * tuft);
             c = mix(c, moss, moss_m);
             s.albedo = c;
             s.sss = moss_m * 0.6;

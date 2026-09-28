@@ -269,7 +269,30 @@ impl Shape {
     }
 }
 
+impl Shape {
+    /// The surface normal along unit direction `d`, in the rock's unit
+    /// space: the facing plane's normal, blended across rounded edges.
+    fn facet_normal(&self, d: Vec3) -> Vec3 {
+        const K: f32 = 0.035;
+        let mut n = d * (-1.1f32 / K).exp();
+        for &(pn, off) in &self.planes {
+            let dn = d.dot(pn);
+            if dn > 1e-3 {
+                n += pn * (-(off / dn) / K).exp();
+            }
+        }
+        n.normalize_or(d)
+    }
+}
+
 impl Boulder {
+    /// A normal from the rock's unit space into the world.
+    fn normal_to_world(&self, n: Vec3) -> Vec3 {
+        let v = n / self.radii;
+        let (s, c) = self.yaw.sin_cos();
+        Vec3::new(v.x * c - v.z * s, v.y, v.x * s + v.z * c).normalize_or_zero()
+    }
+
     fn local_to_world(&self, l: Vec3) -> Vec3 {
         let v = l * self.radii;
         let (s, c) = self.yaw.sin_cos();
@@ -304,6 +327,12 @@ impl Boulder {
             .iter()
             .map(|&d| self.local_to_world(d * shape.radius(d)))
             .collect();
+        // Flat-faced facets with rounded edges, rather than one smooth dome.
+        let facets: Vec<Vec3> = sphere
+            .dirs
+            .iter()
+            .map(|&d| self.normal_to_world(shape.facet_normal(d)))
+            .collect();
         let mut normals = vec![Vec3::ZERO; pos.len()];
         for t in sphere.tris.chunks(3) {
             let [a, b, c] = [0, 1, 2].map(|k| t[k] as usize);
@@ -324,7 +353,7 @@ impl Boulder {
                 if remap[i] == u32::MAX {
                     remap[i] = out.vertices.len() as u32;
                     // Darker where the rock meets the ground, and a touch on the underside.
-                    let n = normals[i].normalize_or_zero();
+                    let n = (normals[i].normalize_or_zero() * 0.25 + facets[i] * 0.75).normalize_or_zero();
                     let lift = -depth(pos[i]);
                     let ao = ((lift / 0.45 + 0.4) * 3.0).clamp(0.0, 3.0) as u32;
                     let ao = if n.y < -0.4 { ao.min(2) } else { ao };

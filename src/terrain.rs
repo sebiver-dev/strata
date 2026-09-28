@@ -86,6 +86,16 @@ pub fn smooth_water_level(z_m: f32) -> f32 {
 }
 
 /// Height of still water (river and lakes) at a point, in metres.
+/// Where the big tree on the spawn rise stands: ahead and to the right of the
+/// arrival spot, just below the rise's top, so the trunk stands in view and
+/// the crown frames the sky above it.
+pub fn hero_tree_foot() -> Vec2 {
+    let (ax, az) = crate::vista::ARRIVAL;
+    let yaw = crate::vista::SPAWN_YAW;
+    let fwd = Vec2::new(yaw.cos(), yaw.sin());
+    Vec2::new(ax, az) + fwd * 11.0 + fwd.perp() * 5.0
+}
+
 pub fn water_level(x_m: f32, z_m: f32) -> f32 {
     WATER_LEVEL_M - drop_below_home()
         + FALLS
@@ -454,9 +464,7 @@ impl Terrain {
         let (ax, az) = crate::vista::ARRIVAL;
         let yaw = crate::vista::SPAWN_YAW;
         let fwd = Vec2::new(yaw.cos(), yaw.sin());
-        // Ahead and to the right of the arrival spot, just below the rise's top,
-        // so the trunk stands in view and the crown frames the sky above it.
-        let foot = Vec2::new(ax, az) + fwd * 11.0 + fwd.perp() * 5.0;
+        let foot = hero_tree_foot();
         let (x, z) = (foot.x, foot.y);
         let to_arrival = (Vec2::new(ax, az) - foot).normalize_or_zero();
         Some(Tree {

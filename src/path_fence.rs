@@ -11,7 +11,7 @@ use crate::block::*;
 use crate::mesh::MeshData;
 use crate::model::{self, soft_box};
 use crate::noise::{hash2, unit};
-use crate::terrain::{water_level, Terrain};
+use crate::terrain::{hero_tree_foot, water_level, Terrain};
 use crate::vista;
 use glam::{Vec2, Vec3};
 
@@ -25,7 +25,7 @@ pub const LANTERN_CLEAR_M: f32 = 1.2;
 const SPACING_M: f32 = 2.3;
 /// The fence stops this far short of where the path ends on the rise, leaving
 /// the arrival spot open.
-const RISE_CLEAR_M: f32 = 5.0;
+const RISE_CLEAR_M: f32 = 2.0;
 /// And starts this far from the bridge's side, off its deck and abutments.
 const BRIDGE_CLEAR_M: f32 = 2.5;
 /// How much of a post is sunk into the ground.
@@ -99,9 +99,14 @@ fn path_span() -> Option<(f32, f32)> {
     Some((z0, z1))
 }
 
-/// Whether a post at `p` would stand on or crowd the path or one of its lanterns.
+/// No post or rail comes closer than this to the trunk of the big tree on the rise.
+pub const TREE_CLEAR_M: f32 = 2.5;
+
+/// Whether a post at `p` would stand on or crowd the path, one of its
+/// lanterns or the big tree on the rise.
 pub fn clear_of_path(p: Vec2) -> bool {
     vista::path_distance(p.x, p.y) >= CLEARANCE_M
+        && p.distance(hero_tree_foot()) >= TREE_CLEAR_M
         && vista::path_lanterns().all(|(x, z, _)| Vec2::new(x, z).distance(p) >= LANTERN_CLEAR_M)
 }
 
@@ -160,6 +165,7 @@ impl PathFence {
                             let (a, b) = (Vec2::new(last.foot.x, last.foot.z), p);
                             let mid = (a + b) * 0.5;
                             lanterns.iter().all(|&l| segment_distance(l, a, b) >= LANTERN_CLEAR_M)
+                                && segment_distance(hero_tree_foot(), a, b) >= TREE_CLEAR_M
                                 && vista::path_distance(mid.x, mid.y) >= CLEARANCE_M
                                 && a.distance(b) < SPACING_M * 1.6
                                 && !blocked(mid)
@@ -391,6 +397,35 @@ mod tests {
                 for (lx, lz, _) in vista::path_lanterns() {
                     assert!(segment_distance(Vec2::new(lx, lz), a, b) >= LANTERN_CLEAR_M);
                 }
+                // Nor through the big tree on the rise.
+                assert!(segment_distance(hero_tree_foot(), a, b) >= TREE_CLEAR_M);
+            }
+        }
+    }
+
+    #[test]
+    fn the_fence_keeps_off_the_cottages_and_their_doors() {
+        let t = world();
+        let cottages: Vec<_> = t
+            .structures
+            .iter()
+            .filter_map(|s| match s {
+                Structure::Cottage(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        for f in fences(&t) {
+            for w in f.posts.windows(2) {
+                for k in 0..=4 {
+                    let p = w[0].foot.lerp(w[1].foot, k as f32 / 4.0);
+                    let p = Vec2::new(p.x, p.z);
+                    for c in &cottages {
+                        let (lo, hi) = c.footprint();
+                        let inside = p.cmpgt(lo - 0.5).all() && p.cmplt(hi + 0.5).all();
+                        assert!(!inside, "fence at {p} crosses a cottage");
+                        assert!(c.front_door().distance(p) > 4.0, "fence at {p} blocks a door");
+                    }
+                }
             }
         }
     }
@@ -407,39 +442,5 @@ mod tests {
         let z = mid.z;
         let x = vista::path_x(z).unwrap();
         assert_ne!(t.structures.block_at(Vec3::new(x, g + 0.5, z), g), Some(BUILT));
-    }
-
-    #[test]
-    fn dbg_dump() {
-        let t = world();
-        for f in fences(&t) {
-            let v: Vec<String> = f
-                .posts
-                .iter()
-                .map(|p| format!("({:.1},{:.1},{:.1})", p.foot.x, p.foot.y, p.foot.z))
-                .collect();
-            println!("RUN {}", v.join(" "));
-        }
-        for l in vista::path_lanterns() {
-            println!("LANTERN {:?}", l);
-        }
-        let mut z = 950.0;
-        while z < 1024.0 {
-            println!(
-                "PATH z={z} x={:?} road={:.1} river={:.1}",
-                vista::path_x(z),
-                t.road_x(z),
-                t.river_x(z)
-            );
-            z += 6.0;
-        }
-        for s in t.structures.iter() {
-            if let Structure::Cottage(c) = s {
-                println!("COTTAGE {:?}", c.bounds());
-            }
-            if let Structure::Bridge(c) = s {
-                println!("BRIDGE {:?}", c.bounds());
-            }
-        }
     }
 }

@@ -158,43 +158,17 @@ impl Structures {
         let (bx0, bx1) = (bridge.x0, bridge.x1);
         s.add(Structure::Bridge(bridge));
 
-        let river = |z: f32| t.river_x(z);
         let road = |z: f32| t.road_x(z);
-        let mut cottages = Vec::new();
-        // A cottage on the east bank with a deck on stilts over the water.
-        let z = spawn.z - 40.0;
-        cottages.push(Cottage::plan(t, river(z) + 17.5, z, false, 2, 1.0, 7.0, seed ^ 1));
-        // Cottages along the east side of the road, doors facing it.
-        for (k, dz) in [-55.0f32, -86.0, -104.0].iter().enumerate() {
-            let z = spawn.z + dz;
-            let storeys = if k == 0 { 2 } else { 1 };
-            cottages.push(Cottage::plan(
-                t,
-                road(z) + 9.5,
-                z,
-                false,
-                storeys,
-                -1.0,
-                0.0,
-                seed ^ (2 + k as u32),
-            ));
-        }
-        // Across the bridge, on the west bank.
-        for (k, dz) in [-12.0f32, 14.0].iter().enumerate() {
-            let z = zb + dz;
-            cottages.push(Cottage::plan(
-                t,
-                bx0 - 5.0,
-                z,
-                true,
-                1,
-                -dz.signum(),
-                0.0,
-                seed ^ (8 + k as u32),
-            ));
-        }
-        for c in cottages {
-            s.add(Structure::Cottage(c));
+        let bridge_box = (s.list[0].0, s.list[0].1);
+        let mut decked = false;
+        for c in hamlet(t, zb, bx0, seed) {
+            if c.deck > 0.0 && decked {
+                continue;
+            }
+            if cottage_site_ok(t, &c, bridge_box, &s) {
+                decked |= c.deck > 0.0;
+                s.add(Structure::Cottage(c));
+            }
         }
         // Fences line the road through the hamlet, broken where paths leave it.
         let (zlo, zhi) = (spawn.z - 120.0, spawn.z - 8.0);
@@ -459,12 +433,155 @@ fn cottage_door_near(s: &Structures, x: f32, z: f32) -> bool {
 fn cottage_approach(s: &Structures, p: Vec2) -> bool {
     s.list.iter().any(|(_, _, st)| match st {
         Structure::Cottage(c) => {
-            let door = c.world(0.0, c.front * c.half_wid);
+            let door = c.front_door();
             let out = (c.world(0.0, c.front * (c.half_wid + 1.0)) - door).normalize_or_zero();
             let along = (p - door).dot(out);
             (0.0..15.0).contains(&along) && out.perp_dot(p - door).abs() < 2.2
         }
         _ => false,
+    })
+}
+
+/// The hamlet's houses, clustered along both banks of the river around the
+/// bridge at `zb` (whose west end is at `bx0`): a riverside house with a deck
+/// on stilts over the water below the spawn rise, a row facing the path on its
+/// right, houses on the east bank upstream of the bridge facing the river, and
+/// a cluster on the west bank around the bridge's far end. Sites are measured
+/// from the river, the path and the bridge so they follow the terrain.
+fn hamlet(t: &Terrain, zb: f32, bx0: f32, seed: u32) -> Vec<Cottage> {
+    use crate::cottage::Style;
+    let river = |z: f32| t.river_x(z);
+    let path = |z: f32| vista::path_x(z).unwrap_or(river(z) + 22.0);
+    let cottage = Style::cottage();
+    let house = Style::house();
+    // (x, z, ridge along X, front side, deck, style)
+    let mut sites: Vec<(f32, f32, bool, f32, f32, Style)> = Vec::new();
+    let mut at = |x: f32, z: f32, along_x: bool, front: f32, deck: f32, style: Style| {
+        sites.push((x, z, along_x, front, deck, style));
+    };
+    // On the near bank below the rise, between the path and the water: door
+    // to the path, a deck on stilts out over the river. It stands where the
+    // gap between the sight lines to the bridge and to the castle is widest.
+    // The path is still being tuned, so try spots nearest the old one first;
+    // the first that passes `cottage_site_ok` is built and the rest dropped.
+    for dz in [
+        21.0f32, 18.0, 24.0, 15.0, 27.0, 30.0, 12.0, 33.0, 36.0, 40.0, 44.0, 48.0, -14.0, -20.0, -26.0,
+    ] {
+        let z = zb + dz;
+        for dx in [0.0f32, -2.0, 2.0, -4.0, -6.0, -8.0, -10.0, -12.0] {
+            let x = (path(z) - 7.0 + dx).max(river(z) + 13.0);
+            let deck = ((x - 3.0 - (river(z) + 8.0)) / VOXEL_SIZE).round() * VOXEL_SIZE;
+            if deck >= 2.0 {
+                at(x, z, false, 1.0, deck, house.size(4.5, 3.0).pitch(1.4));
+            }
+        }
+    }
+    // East bank upstream of the bridge, facing the river, and one by the road.
+    let z = zb - 11.0;
+    at(
+        river(z) + 19.0,
+        z,
+        false,
+        -1.0,
+        0.0,
+        house.jettied().size(4.5, 3.25).pitch(1.3),
+    );
+    let z = zb - 27.0;
+    at(
+        river(z) + 20.0,
+        z,
+        false,
+        -1.0,
+        0.0,
+        cottage.size(4.5, 3.0).pitch(1.45).with_dormers(),
+    );
+    let z = zb - 44.0;
+    at(river(z) + 18.5, z, false, -1.0, 0.0, house.size(5.0, 3.5).pitch(1.15));
+    let z = zb - 30.0;
+    at(river(z) + 29.0, z, true, -1.0, 0.0, cottage.pitch(1.25));
+    let z = zb - 8.0;
+    at(t.road_x(z) + 11.0, z, false, -1.0, 0.0, house.pitch(1.3));
+    // West bank: flanking the bridge's far end, then along the river.
+    let z = zb - 11.0;
+    at(bx0 - 7.0, z, true, 1.0, 0.0, house.jettied().size(4.5, 3.25).pitch(1.3));
+    let z = zb + 13.0;
+    at(
+        bx0 - 8.0,
+        z,
+        true,
+        -1.0,
+        0.0,
+        cottage.size(4.5, 3.0).pitch(1.4).with_dormers(),
+    );
+    let z = zb + 1.0;
+    at(bx0 - 21.0, z, false, 1.0, 0.0, house.size(4.0, 3.5).pitch(1.5));
+    let z = zb + 24.0;
+    at(river(z) - 18.0, z, false, 1.0, 0.0, cottage.size(4.0, 3.0).pitch(1.3));
+    let z = zb + 36.0;
+    at(
+        river(z) - 19.0,
+        z,
+        false,
+        1.0,
+        0.0,
+        house.jettied().pitch(1.35).with_dormers(),
+    );
+    let z = zb - 30.0;
+    at(river(z) - 20.0, z, false, 1.0, 0.0, house.size(4.5, 3.25).pitch(1.2));
+    let z = zb - 50.0;
+    at(river(z) - 19.0, z, false, 1.0, 0.0, cottage.pitch(1.2).with_dormers());
+    sites
+        .into_iter()
+        .enumerate()
+        .map(|(k, (x, z, along_x, front, deck, style))| {
+            Cottage::plan(t, x, z, along_x, front, deck, style, seed ^ (1 + k as u32))
+        })
+        .collect()
+}
+
+/// Whether a planned cottage keeps off everything it must not crowd: its walls
+/// stay out of the sight lines from the rise (`vista::keeps_clear`, whose
+/// verge along the path is for trees; walls keep a smaller one), and its walls,
+/// steps and deck stay off the path, the bridge, the road and its fences, and
+/// the other houses. A low deck may reach into a sight line.
+fn cottage_site_ok(t: &Terrain, c: &Cottage, bridge: (Vec3, Vec3), s: &Structures) -> bool {
+    let (lo, hi) = c.footprint();
+    let w = c.upper_wid();
+    let (p, q) = (c.world(-c.half_len, -w), c.world(c.half_len, w));
+    let (wlo, whi) = (p.min(q), p.max(q));
+    let mut ok = true;
+    let mut z = lo.y;
+    while z <= hi.y && ok {
+        let mut x = lo.x;
+        while x <= hi.x && ok {
+            let walls = x >= wlo.x && x <= whi.x && z >= wlo.y && z <= whi.y;
+            let path = vista::path_distance(x, z);
+            let sight = vista::keeps_clear(x, z) && path >= 3.5;
+            ok = !(walls && (sight || path < vista::PATH_HALF_WIDTH_M + 1.3))
+                && path > vista::PATH_HALF_WIDTH_M + 0.5
+                && (t.road_x(z) - x).abs() > crate::terrain::ROAD_HALF_WIDTH_M + 3.5
+                && !(x > bridge.0.x - 1.0 && x < bridge.1.x + 1.0 && z > bridge.0.z - 1.0 && z < bridge.1.z + 1.0);
+            x += 0.5;
+        }
+        z += 0.5;
+    }
+    // The path also keeps clear of the house's whole bounding box, which
+    // `vista`'s path test checks against.
+    let (blo, bhi) = c.bounds();
+    let mut z = blo.z;
+    while z <= bhi.z && ok {
+        if let Some(px) = vista::path_x(z) {
+            let (x0, x1) = (px - vista::PATH_HALF_WIDTH_M, px + vista::PATH_HALF_WIDTH_M);
+            ok = !(blo.x < x1 && bhi.x > x0);
+        }
+        z += 0.5;
+    }
+    ok && s.list.iter().all(|(_, _, st)| match st {
+        Structure::Cottage(o) => {
+            let (a, b) = o.footprint();
+            a.x > hi.x + 1.5 || b.x < lo.x - 1.5 || a.y > hi.y + 1.5 || b.y < lo.y - 1.5
+        }
+        _ => true,
     })
 }
 
@@ -493,6 +610,140 @@ mod tests {
         assert!(count(|x| matches!(x, Structure::Fence(_))) >= 2);
         assert_eq!(count(|x| matches!(x, Structure::Watchtower(_))), 1);
         assert_eq!(count(|x| matches!(x, Structure::Castle(_))), 1);
+    }
+
+    fn cottages(t: &Terrain) -> Vec<&Cottage> {
+        t.structures
+            .iter()
+            .filter_map(|s| match s {
+                Structure::Cottage(c) => Some(c),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_hamlet_clusters_on_both_banks_off_the_path_and_the_bridge() {
+        let t = world();
+        let houses = cottages(&t);
+        assert!(houses.len() >= 12, "{} houses", houses.len());
+        let bridge = t
+            .structures
+            .iter()
+            .find_map(|s| match s {
+                Structure::Bridge(b) => Some(b.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let (mut east, mut west, mut upstream) = (0, 0, 0);
+        for c in &houses {
+            let rx = t.river_x(c.c.y);
+            if c.c.x > rx {
+                east += 1;
+            } else {
+                west += 1;
+            }
+            upstream += (c.c.y < bridge.z - 10.0) as i32;
+            // Clustered around the bridge.
+            assert!((c.c.y - bridge.z).abs() < 70.0, "{:?} strays from the bridge", c.c);
+            // Walls, steps and deck stay off the path and the bridge.
+            let (lo, hi) = c.footprint();
+            let mut z = lo.y;
+            while z <= hi.y {
+                let mut x = lo.x;
+                while x <= hi.x {
+                    assert!(
+                        vista::path_distance(x, z) > vista::PATH_HALF_WIDTH_M,
+                        "{:?} on the path at {x},{z}",
+                        c.c
+                    );
+                    let on_bridge =
+                        x > bridge.x0 - 0.5 && x < bridge.x1 + 0.5 && (z - bridge.z).abs() < BRIDGE_HALF_W + 0.5;
+                    assert!(!on_bridge, "{:?} on the bridge at {x},{z}", c.c);
+                    x += 0.5;
+                }
+                z += 0.5;
+            }
+            // Houses don't overlap each other.
+            for o in &houses {
+                if std::ptr::eq(*c, *o) {
+                    continue;
+                }
+                let (a, b) = o.footprint();
+                assert!(
+                    a.x >= hi.x || b.x <= lo.x || a.y >= hi.y || b.y <= lo.y,
+                    "{:?} overlaps {:?}",
+                    c.c,
+                    o.c
+                );
+            }
+            // The floor stands a step or so above the ground at every corner,
+            // neither buried nor floating, and the steps come down to the ground.
+            for (a, b) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+                let q = c.world(a * c.half_len, b * c.half_wid);
+                let g = t.height_at(q.x, q.y).0;
+                assert!(
+                    c.floor > g && c.floor - g < 3.5,
+                    "{:?} floor {} ground {g}",
+                    c.c,
+                    c.floor
+                );
+            }
+            let foot = c.floor - c.steps as f32 * VOXEL_SIZE;
+            assert!(
+                foot - c.step_ground(&t, c.steps) <= VOXEL_SIZE + 0.1,
+                "{:?} steps stop {} above the ground",
+                c.c,
+                foot - c.step_ground(&t, c.steps)
+            );
+        }
+        assert!(
+            east >= 4 && west >= 4 && upstream >= 4,
+            "{east} east, {west} west, {upstream} upstream"
+        );
+    }
+
+    #[test]
+    fn the_riverside_deck_stands_on_posts_over_the_water() {
+        let t = world();
+        let houses = cottages(&t);
+        let c = houses.iter().find(|c| c.deck > 0.0).expect("a house with a deck");
+        // It stands on the spawn side of the river near the bridge, out of the
+        // sight lines from the rise (checked when it is sited).
+        assert!(
+            c.c.x > t.river_x(c.c.y) && (c.c.y - vista::BRIDGE_Z).abs() < 50.0,
+            "{:?}",
+            c.c
+        );
+        // Every post runs from below the ground or river bed up to the deck.
+        let posts = c.deck_posts(&t);
+        assert!(posts.len() >= 6);
+        let mut wet = 0;
+        for &(foot, head) in &posts {
+            let g = t.height_at(foot.x, foot.z).0;
+            assert!(foot.y < g && head.y > g + 0.5, "post {foot} to {head}, ground {g}");
+            assert!((head.y - (c.floor - 0.2)).abs() < 0.01);
+            wet += (g < crate::terrain::water_level(foot.x, foot.z)) as i32;
+        }
+        assert!(wet >= 2, "only {wet} posts stand in the water");
+        // The deck is walkable: boards underfoot, headroom above, a way out
+        // through the back door, and a rail along its outer edge.
+        let s = &t.structures;
+        let at = |a: f32, dy: f32, bb: f32| {
+            let q = c.world(a, -c.front * bb);
+            let p = Vec3::new(q.x, c.floor + dy, q.y);
+            let p = ((p / VOXEL_SIZE).floor() + 0.5) * VOXEL_SIZE;
+            s.block_at(p, t.height_at(p.x, p.z).0)
+        };
+        let mid = c.half_wid + c.deck * 0.5;
+        for a in [-2.0f32, 0.0, 2.0] {
+            assert_eq!(at(a, -0.25, mid), Some(BUILT), "boards at {a}");
+            for dy in [0.25, 1.25, 1.75] {
+                assert_ne!(at(a, dy, mid), Some(BUILT), "headroom at {a}, {dy}");
+            }
+        }
+        assert_eq!(at(1.5, 1.0, c.half_wid - 0.25), Some(AIR), "back door");
+        assert_eq!(at(0.0, 0.25, c.half_wid + c.deck - 0.25), Some(BUILT), "rail");
     }
 
     #[test]

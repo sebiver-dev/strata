@@ -985,7 +985,7 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             let cl = leaf_cells(q * 1.5);
             let dome = max(1.0 - cl.x * cl.x * 1.3, 0.0);
             let hue = vnoise(p * 0.11 + 3.0) * 0.6 + cl.y * 0.4 * d_cl;
-            var c = mix(vec3(0.10, 0.24, 0.06), vec3(0.26, 0.42, 0.10), hue);
+            var c = mix(vec3(0.12, 0.28, 0.07), vec3(0.30, 0.48, 0.12), hue);
             c = mix(c, vec3(0.38, 0.46, 0.14), smoothstep(0.62, 0.85, broad) * 0.45);
             // The gaps between clusters are deep green shade, not brown.
             let gap = mix(vec3(0.46, 0.68, 0.52), vec3(1.1), sqrt(dome));
@@ -994,7 +994,7 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             s.albedo = c;
             s.rough = 0.55;
             s.f0 = 0.04;
-            s.sss = 0.8;
+            s.sss = 1.0;
             s.height = dome * 0.16 * d_cl + shape * 0.02 * d_dm + leaves * 0.01;
             wettable = false;
         }

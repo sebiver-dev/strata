@@ -36,6 +36,9 @@ pub struct Globals {
     pub screen: [f32; 4],
     /// x: night (0 day, 1 night), y: number of lights in use.
     pub sky: [f32; 4],
+    /// The wind (see `weather::Wind`): xy direction it blows towards in XZ,
+    /// z strength 0..1, w gust phase in metres.
+    pub wind: [f32; 4],
     /// Point lights (lanterns): xyz position in metres, w strength.
     pub lights: [[f32; 4]; MAX_LIGHTS],
 }

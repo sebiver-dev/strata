@@ -142,13 +142,14 @@ impl Tree {
         let mut limbs = Vec::new();
         let mut clumps = Vec::new();
         let count = if self.hero.is_some() {
-            6
+            8
         } else {
             3 + (self.rand(5) * 3.99) as usize
         };
         let phase = self.rand(6) * TAU;
         let lean_dir = Vec2::new(lean.x, lean.z).normalize_or_zero();
-        let cr = h * 0.25;
+        // The great oak's crown is many smaller clumps with sky between them.
+        let cr = h * if self.hero.is_some() { 0.19 } else { 0.25 };
         let mut ends = Vec::new();
         for k in 0..count {
             let hero_bough = self.hero.is_some() && k == 0;
@@ -216,7 +217,8 @@ impl Tree {
         let mid = ends.iter().copied().sum::<Vec3>() / ends.len() as f32;
         for k in 0..ends.len() {
             let (a, b) = (ends[k], ends[(k + 1) % ends.len()]);
-            if a.distance(b) > cr * 1.5 {
+            let gap = if self.hero.is_some() { 3.2 } else { 1.5 };
+            if a.distance(b) > cr * gap {
                 let m = (a + b) * 0.5;
                 clumps.push(Clump {
                     centre: m + (m - mid) * 0.1 - Vec3::Y * cr * 0.05,
@@ -697,11 +699,15 @@ fn clump(out: &mut MeshData, all: &[Clump], index: usize, canopy: Vec3, mesh: &I
         let global = (p - canopy).normalize_or_zero();
         // A lift towards the sky lets undersides catch skylight instead of
         // going black, as in painted foliage.
-        let n = (own * 0.7 + global * 0.3 + Vec3::Y * 0.5).normalize_or_zero();
-        // Occlusion: undersides and the parts facing into the canopy are darker.
+        // Each clump keeps most of its own rounding, so the crown reads as
+        // separate masses rather than one smooth dome.
+        let n = (own + global * 0.15 + Vec3::Y * 0.3).normalize_or_zero();
+        // Occlusion: each clump's own underside and the parts facing into
+        // the canopy are darker, so shade gathers between the clumps.
         let depth = ((p - canopy).length() / (size * 1.6)).min(1.0);
-        let light = 0.5 + 0.5 * n.y;
-        let ao = ((light * 0.7 + depth * 0.5) * 3.0).round().clamp(1.0, 3.0) as u32;
+        let local = ((p.y - c.centre.y) / c.radii.y).clamp(-1.0, 1.0);
+        let light = 0.5 + 0.5 * local;
+        let ao = ((light * 0.75 + depth * 0.45) * 3.0).round().clamp(1.0, 3.0) as u32;
         out.vertices.push(Vertex {
             pos: p.to_array(),
             data: smooth_data(FOLIAGE, ao, n),

@@ -38,41 +38,41 @@ const MERLON_H: f32 = 1.35;
 const MERLON_PITCH: f32 = 1.5;
 /// Corners of the curtain wall, going round; a tower stands on each.
 const RING: [Vec2; 7] = [
-    Vec2::new(-16.5, 8.5),
-    Vec2::new(0.0, 12.0),
-    Vec2::new(16.5, 8.5),
-    Vec2::new(16.5, -11.5),
-    Vec2::new(12.0, -15.0),
-    Vec2::new(3.5, -15.0),
-    Vec2::new(-16.5, -11.5),
+    Vec2::new(-21.5, 10.0),
+    Vec2::new(0.0, 14.0),
+    Vec2::new(21.5, 10.0),
+    Vec2::new(21.5, -13.0),
+    Vec2::new(12.5, -16.5),
+    Vec2::new(3.5, -16.5),
+    Vec2::new(-21.5, -13.0),
 ];
 /// The ring edge the gatehouse replaces.
 const GATE_EDGE: usize = 4;
 /// Centre of the gate passage across the castle, and its half width.
-const GATE_X: f32 = 7.75;
+const GATE_X: f32 = 8.0;
 const GATE_HALF: f32 = 1.5;
 /// Where the gate's pointed arch springs, and its apex.
 const GATE_SPRING: f32 = 3.0;
 const GATE_APEX: f32 = 5.2;
 /// The gatehouse block (local corners) and its height.
-const GATEHOUSE_LO: Vec2 = Vec2::new(3.5, -17.0);
-const GATEHOUSE_HI: Vec2 = Vec2::new(12.0, -13.0);
+const GATEHOUSE_LO: Vec2 = Vec2::new(3.5, -18.5);
+const GATEHOUSE_HI: Vec2 = Vec2::new(12.5, -14.5);
 const GATEHOUSE_TOP: f32 = 12.0;
 /// The stair up to the east wall walk: across range, where it starts, and
 /// how far each half-metre step runs.
-const STAIR_X: (f32, f32) = (14.0, 15.5);
-const STAIR_Z0: f32 = -8.5;
+const STAIR_X: (f32, f32) = (19.0, 20.5);
+const STAIR_Z0: f32 = -9.5;
 const STEP: f32 = 0.5;
 /// The approach outside the gate: half width, and run of each step.
 const APPROACH_HALF: f32 = 2.5;
 const APPROACH_RUN: f32 = 1.0;
 /// The land the castle claims, as local corners (approach steps extra).
-const CLAIM_LO: Vec2 = Vec2::new(-19.5, -17.5);
-const CLAIM_HI: Vec2 = Vec2::new(19.5, 15.5);
+const CLAIM_LO: Vec2 = Vec2::new(-25.0, -19.0);
+const CLAIM_HI: Vec2 = Vec2::new(25.0, 18.0);
 /// Terrain inside the walls is cleared up to this height above the floor.
 const COURT_AIR: f32 = 12.0;
 /// The courtyard well: local centre and outer radius.
-const WELL: Vec2 = Vec2::new(9.5, 3.0);
+const WELL: Vec2 = Vec2::new(12.0, 4.0);
 const WELL_R: f32 = 1.0;
 
 /// A round tower as laid out: local centre, radius, where its shaft starts
@@ -106,39 +106,39 @@ const fn spec(x: f32, z: f32, r: f32, top: f32, spire: f32, perimeter: bool) -> 
 
 const TOWERS: [TowerSpec; 13] = [
     // On the ring, in RING order.
-    spec(-16.5, 8.5, 2.7, 15.0, 14.5, true),
+    spec(-21.5, 10.0, 3.0, 16.0, 16.0, true),
     TowerSpec {
         dormers: 3,
-        ..spec(0.0, 12.0, 3.1, 19.0, 17.0, true)
+        ..spec(0.0, 14.0, 3.4, 20.0, 18.5, true)
     },
-    spec(16.5, 8.5, 2.7, 15.0, 14.5, true),
-    spec(16.5, -11.5, 2.5, 13.0, 12.5, true),
-    spec(12.0, -15.0, 2.4, 14.0, 10.5, true),
-    spec(3.5, -15.0, 2.4, 14.0, 10.5, true),
-    spec(-16.5, -11.5, 2.5, 13.0, 12.5, true),
+    spec(21.5, 10.0, 3.0, 16.0, 16.0, true),
+    spec(21.5, -13.0, 2.7, 14.0, 13.5, true),
+    spec(12.5, -16.5, 2.5, 14.5, 11.0, true),
+    spec(3.5, -16.5, 2.5, 14.5, 11.0, true),
+    spec(-21.5, -13.0, 2.7, 14.0, 13.5, true),
     // The great tower, its stair turret, and the tower at the keep's west end.
     TowerSpec {
         dormers: 4,
         pennant: true,
-        ..spec(-4.0, -1.5, 4.0, 34.0, 23.0, false)
+        ..spec(-4.5, -2.0, 4.3, 35.0, 24.0, false)
     },
-    spec(0.2, 1.2, 1.4, 37.0, 7.0, false),
+    spec(0.0, 1.0, 1.5, 38.0, 7.5, false),
     TowerSpec {
         dormers: 2,
-        ..spec(-12.0, -5.8, 2.8, 24.0, 14.0, false)
+        ..spec(-14.5, -6.5, 3.0, 25.0, 15.0, false)
     },
     // Turrets corbelled out of the keep's corners.
     TowerSpec {
-        foot: 10.0,
-        ..spec(2.7, -9.7, 1.0, 16.5, 4.5, false)
+        foot: 10.5,
+        ..spec(3.7, -10.7, 1.1, 17.0, 4.8, false)
     },
     TowerSpec {
-        foot: 10.0,
-        ..spec(-11.0, -9.9, 1.0, 16.5, 4.5, false)
+        foot: 10.5,
+        ..spec(-13.2, -11.0, 1.1, 17.0, 4.8, false)
     },
     TowerSpec {
         foot: 11.0,
-        ..spec(2.7, -2.2, 1.0, 17.0, 4.5, false)
+        ..spec(3.7, -2.7, 1.1, 17.5, 4.8, false)
     },
 ];
 
@@ -154,16 +154,16 @@ struct Hall {
 }
 
 const KEEP: Hall = Hall {
-    lo: Vec2::new(-11.0, -9.5),
-    hi: Vec2::new(2.5, -2.0),
-    eave: 16.0,
+    lo: Vec2::new(-13.5, -11.0),
+    hi: Vec2::new(3.5, -2.5),
+    eave: 16.5,
     along_x: true,
     pitch: 1.9,
 };
 const CHAPEL: Hall = Hall {
-    lo: Vec2::new(-15.5, 0.0),
-    hi: Vec2::new(-10.0, 5.5),
-    eave: 9.0,
+    lo: Vec2::new(-20.5, 0.5),
+    hi: Vec2::new(-14.0, 7.0),
+    eave: 9.5,
     along_x: false,
     pitch: 1.9,
 };
@@ -1118,7 +1118,7 @@ impl Castle {
         let f = self.floor;
         let (half_w, _) = h.halves();
         let mid = h.mid();
-        for (s, xs) in [(1.0f32, &[-8.5f32, 1.0][..]), (-1.0, &[-8.0, -3.5, 1.0][..])] {
+        for (s, xs) in [(1.0f32, &[-10.5f32, 1.5][..]), (-1.0, &[-10.0, -4.5, 1.0][..])] {
             for &x in xs {
                 let b = half_w - 1.3;
                 let q = Vec2::new(x, mid.y + s * b);
@@ -1129,7 +1129,7 @@ impl Castle {
                 dormer(out, foot, self.dir(Vec2::Y * s), 0.6, 1.5, 2.2, near);
             }
         }
-        for (x, z) in [(-9.2f32, -7.5f32), (1.4, -8.2)] {
+        for (x, z) in [(-11.0f32, -8.5f32), (1.8, -9.2)] {
             let q = Vec2::new(x, z);
             let y0 = f + h.roof_at(q) - 0.6;
             let y1 = f + h.ridge() + 1.8;

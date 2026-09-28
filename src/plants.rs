@@ -53,8 +53,10 @@ pub fn vista_lupins(xm: f32, zm: f32) -> f32 {
     let yaw = crate::vista::SPAWN_YAW;
     let fwd = Vec2::new(yaw.cos(), yaw.sin());
     let rocks = Vec2::new(ax, az) + fwd * 7.0 - fwd.perp() * 3.5;
-    let centre = rocks - fwd * 4.2 + fwd.perp() * 0.4;
-    0.55 * (1.0 - smoothstep(1.0, 2.4, Vec2::new(xm, zm).distance(centre)))
+    // Close in front of the rocks, but far enough ahead to sit in the
+    // first view rather than below its lower edge.
+    let centre = rocks - fwd * 2.2 + fwd.perp() * 0.6;
+    0.7 * (1.0 - smoothstep(1.0, 2.4, Vec2::new(xm, zm).distance(centre)))
 }
 
 /// How much a spot (metres) is the verge of a road or a river bank, 0..1.
@@ -195,13 +197,14 @@ fn grass(out: &mut MeshData, rng: &mut Rng, w: IVec3, floor: Vec3, spot: &Spot, 
 
     let thick = spot.meadow.max(spot.verge).max(spot.field);
     let mut n = 4 + (thick * 1.5 + rng.f() * 0.9).floor() as u32 + (spot.field > 0.5) as u32;
-    n += (vista * 2.0).round() as u32;
+    // The near meadow of the first view is thick, full tufts.
+    n += (vista * 4.0).round() as u32;
     if crowded {
         n = n.saturating_sub(2).max(2);
     }
     // Dry, golden blades stand in the tall fields and on open ground, fresh
     // yellow-green ones along the verges and water.
-    let dry = 0.14 + 0.3 * spot.field * (1.0 - spot.verge) + 0.1 * (1.0 - thick);
+    let dry = (0.14 + 0.3 * spot.field * (1.0 - spot.verge) + 0.1 * (1.0 - thick)) * (1.0 - 0.6 * vista);
     let fresh = 0.2 + 0.4 * spot.verge;
 
     let root = floor + Vec3::new(rng.range(0.1, 0.4), 0.0, rng.range(0.1, 0.4));
@@ -226,7 +229,7 @@ fn grass(out: &mut MeshData, rng: &mut Rng, w: IVec3, floor: Vec3, spot: &Spot, 
         // Long blades arc over further, so tall grass droops at the tips.
         let arc = rng.range(0.2, 0.8) + 0.6 * smoothstep(0.4, 1.4, len);
         // Broad, painterly blades rather than hair-thin ones.
-        let half = (0.034 + 0.024 * len.min(1.4)) * rng.range(0.8, 1.25);
+        let half = (0.034 + 0.024 * len.min(1.4)) * rng.range(0.8, 1.25) * (1.0 + 0.3 * vista);
         let pick = rng.f();
         let mat = if pick < dry {
             DRY_GRASS
@@ -486,7 +489,12 @@ pub fn tuft(out: &mut MeshData, seed: u32, w: IVec3, spot: &Spot) {
         } else {
             LUPIN_WHITE
         };
-        let height = rng.range(0.5, 0.9);
+        // The composed group stands a little taller so it reads from the first view.
+        let height = if cluster > 0.0 {
+            rng.range(0.7, 1.0)
+        } else {
+            rng.range(0.5, 0.9)
+        };
         lupin(out, &mut rng, at, height, mat);
         crowded = true;
     } else if roll < daisies * 2.0 {

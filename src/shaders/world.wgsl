@@ -1107,14 +1107,14 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
         }
         case 35u: { // boulder: speckled grey granite with hairline cracks and patches of moss on top
             let tone = vnoise(q * 0.35);
-            var c = mix(vec3(0.46, 0.43, 0.39), vec3(0.61, 0.57, 0.50), tone) * (0.85 + 0.25 * fine);
+            var c = mix(vec3(0.44, 0.43, 0.40), vec3(0.58, 0.57, 0.52), tone) * (0.85 + 0.25 * fine);
             // Dark mica and pale feldspar grains.
             let grain = hash3(floor(q * 38.0));
             c *= 1.0 + (0.28 * step(0.9, grain) - 0.3 * step(grain, 0.08)) * d_cm;
             // Hairline cracks and pale lichen rosettes.
             let cr = 1.0 - abs(2.0 * vnoise(q * vec3(2.2, 3.1, 2.2)) - 1.0);
-            let crack = smoothstep(0.955, 0.99, cr) * smoothstep(0.45, 0.6, vnoise(q * 0.8 + 3.0)) * d_dm;
-            c *= 1.0 - 0.5 * crack;
+            let crack = smoothstep(0.93, 0.985, cr) * smoothstep(0.4, 0.6, vnoise(q * 0.8 + 3.0)) * d_dm;
+            c *= 1.0 - 0.55 * crack;
             let lichen = smoothstep(0.72, 0.8, vnoise(q * 4.0 + 7.0)) * d_dm;
             c = mix(c, vec3(0.70, 0.70, 0.60), lichen * 0.35);
             // Moss grows on whatever faces the sky, with a fuzzy, ragged edge,
@@ -1122,10 +1122,13 @@ fn material(mat: u32, p: vec3<f32>, n: vec3<f32>, pix: f32) -> Surface {
             let ragged = fbm(q * 1.7) - 0.5 + (vnoise(q * 11.0) - 0.5) * 0.35;
             let dry = smoothstep(water_level_at(p.xz), water_level_at(p.xz) + 0.3, p.y);
             // Moss only in patches on the upper faces, so grey stone shows around it.
-            let mossy = smoothstep(0.3, 0.7, vnoise(q * 0.9 + 11.0) + ragged * 0.5);
-            let moss_m = smoothstep(0.45, 0.95, n.y + ragged * 0.9) * dry * mossy;
+            // Moss in scattered patches over the upper and side faces, and
+            // lining the cracks, never one cap over the top.
+            let mossy = smoothstep(0.5, 0.8, vnoise(q * 1.3 + 11.0) + ragged * 0.6);
+            let in_crack = smoothstep(0.88, 0.97, cr) * smoothstep(-0.3, 0.3, n.y);
+            let moss_m = max(smoothstep(0.0, 0.6, n.y + ragged * 0.9) * mossy, in_crack * 0.9) * dry;
             let tuft = vnoise(q * 23.0);
-            let moss = mix(vec3(0.28, 0.35, 0.12), vec3(0.46, 0.50, 0.21), vnoise(q * 5.0)) * (0.85 + 0.3 * tuft);
+            let moss = mix(vec3(0.24, 0.30, 0.11), vec3(0.38, 0.42, 0.18), vnoise(q * 5.0)) * (0.85 + 0.3 * tuft);
             c = mix(c, moss, moss_m);
             s.albedo = c;
             s.sss = moss_m * 0.6;

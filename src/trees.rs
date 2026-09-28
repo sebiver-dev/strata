@@ -143,14 +143,14 @@ impl Tree {
         let mut limbs = Vec::new();
         let mut clumps = Vec::new();
         let count = if self.hero.is_some() {
-            8
+            6
         } else {
             3 + (self.rand(5) * 3.99) as usize
         };
         let phase = self.rand(6) * TAU;
         let lean_dir = Vec2::new(lean.x, lean.z).normalize_or_zero();
         // The great oak's crown is many smaller clumps with sky between them.
-        let cr = h * if self.hero.is_some() { 0.17 } else { 0.25 };
+        let cr = h * if self.hero.is_some() { 0.14 } else { 0.25 };
         let mut ends = Vec::new();
         for k in 0..count {
             let hero_bough = self.hero.is_some() && k == 0;
@@ -195,7 +195,7 @@ impl Tree {
             if self.hero.is_some() {
                 // Clumps along every bough, each a separate rounded mass, so
                 // the crown breaks into many lobes with sky between them.
-                let along: &[f32] = if hero_bough { &[0.45, 0.72] } else { &[0.6] };
+                let along: &[f32] = if hero_bough { &[0.5] } else { &[] };
                 for (i, &f) in along.iter().enumerate() {
                     let p = spine[(f * 5.0) as usize];
                     let size = if hero_bough { 0.85 } else { 0.7 };
@@ -235,8 +235,8 @@ impl Tree {
         let mid = ends.iter().copied().sum::<Vec3>() / ends.len() as f32;
         for k in 0..ends.len() {
             let (a, b) = (ends[k], ends[(k + 1) % ends.len()]);
-            let gap = if self.hero.is_some() { 3.2 } else { 2.1 };
-            if a.distance(b) > cr * gap {
+            // The great oak has no fillers: sky shows between its bough ends.
+            if self.hero.is_none() && a.distance(b) > cr * 2.1 {
                 let m = (a + b) * 0.5;
                 clumps.push(Clump {
                     centre: m + (m - mid) * 0.1 - Vec3::Y * cr * 0.05,

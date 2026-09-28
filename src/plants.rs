@@ -46,6 +46,17 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// Chance (0..0.55) of a lupin in the drift just in front of the mossy
+/// rocks of the arrival view, as in the reference's bottom-left corner.
+pub fn vista_lupins(xm: f32, zm: f32) -> f32 {
+    let (ax, az) = crate::vista::ARRIVAL;
+    let yaw = crate::vista::SPAWN_YAW;
+    let fwd = Vec2::new(yaw.cos(), yaw.sin());
+    let rocks = Vec2::new(ax, az) + fwd * 7.0 - fwd.perp() * 3.5;
+    let centre = rocks - fwd * 4.2 + fwd.perp() * 0.4;
+    0.55 * (1.0 - smoothstep(1.0, 2.4, Vec2::new(xm, zm).distance(centre)))
+}
+
 /// How much a spot (metres) is the verge of a road or a river bank, 0..1.
 pub fn verge(terrain: &Terrain, xm: f32, zm: f32) -> f32 {
     let road = 1.0 - smoothstep(2.6, 9.0, terrain.road_distance(xm, zm));
@@ -448,28 +459,34 @@ pub fn tuft(out: &mut MeshData, seed: u32, w: IVec3, spot: &Spot) {
     let lupins = fbm2(seed.wrapping_add(50), xm / 14.0, zm / 14.0, 2) + 0.05 * spot.verge;
     let drifts = fbm2(seed.wrapping_add(51), xm / 6.0, zm / 6.0, 2);
     let daisies = (0.01 + 0.05 * spot.meadow + 0.12 * spot.verge) * smoothstep(0.42, 0.62, drifts) * (1.0 - spot.field);
+    // One composed drift in front of the mossy rocks of the arrival view.
+    let cluster = vista_lupins(xm, zm);
     let roll = rng.f();
     let spot_at = |rng: &mut Rng| floor + Vec3::new(rng.range(0.08, 0.42), 0.02, rng.range(0.08, 0.42));
     let mut crowded = false;
     // Drifts: sparse at their edges, crowded in the middle.
     if spot.sheltered {
         crowded = true;
-    } else if lupins > 0.66 && roll < 0.04 + 1.6 * (lupins - 0.66) {
+    } else if roll < cluster || lupins > 0.68 && roll < 0.03 + 1.0 * (lupins - 0.68) {
         let at = spot_at(&mut rng);
         // Mostly violet, with pink and white spires mixed in; some drifts
         // run pinker or paler than others.
         let drift = fbm2(seed.wrapping_add(52), xm / 9.0, zm / 9.0, 2);
-        let pick = rng.f() * 0.75 + drift * 0.35;
+        let pick = if cluster > 0.0 {
+            rng.f()
+        } else {
+            rng.f() * 0.75 + drift * 0.35
+        };
         let mat = if pick < 0.25 {
             LUPIN_DEEP
-        } else if pick < 0.5 {
+        } else if pick < 0.62 {
             LUPIN
-        } else if pick < 0.75 {
+        } else if pick < 0.82 {
             LUPIN_PINK
         } else {
             LUPIN_WHITE
         };
-        let height = rng.range(0.6, 1.3);
+        let height = rng.range(0.5, 0.9);
         lupin(out, &mut rng, at, height, mat);
         crowded = true;
     } else if roll < daisies * 2.0 {

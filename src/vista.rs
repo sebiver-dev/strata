@@ -940,8 +940,9 @@ mod tests {
                 Structure::Fence(_) => "fence",
                 Structure::Watchtower(_) => "watchtower",
                 Structure::Castle(_) => "castle",
-                // The path meets the bridge on purpose.
-                Structure::Bridge(_) => continue,
+                // The path meets the bridge, and its fence runs beside it
+                // (`path_fence` keeps it clear), on purpose.
+                Structure::Bridge(_) | Structure::PathFence(_) => continue,
             };
             let (lo2, hi2) = (Vec2::new(lo.x, lo.z), Vec2::new(hi.x, hi.z));
             // Off the spawn rise.

@@ -28,7 +28,7 @@ const TOP_HALF: f32 = 2.15;
 const PLINTH_HALF: f32 = 2.75;
 const PLINTH_OUT: f32 = 3.0;
 /// Height of the lookout floor above the ground floor (a whole number of voxels).
-const SHAFT: f32 = 11.0;
+const SHAFT: f32 = 19.0;
 /// Half width of the lookout floor.
 const LOOK: f32 = 3.0;
 /// Height of the lookout's wall plate above its floor.
@@ -51,7 +51,7 @@ const STONE_W: f32 = 0.7;
 const TURN: i32 = 16;
 const STEPS: i32 = (SHAFT / VOXEL_SIZE) as i32 - 1;
 /// Mid-height string course.
-const STRING_Y: f32 = 13.0 * COURSE;
+const STRING_Y: f32 = 22.0 * COURSE;
 
 /// The rings of 2x2-voxel blocks the stair climbs through, starting inside the
 /// door and turning to the right: (block u, block v, travel along u, along v).
@@ -121,7 +121,7 @@ fn cell(a: f32, b: f32) -> Option<(i32, i32)> {
 /// steps just below the floor and the one beside them, so there is headroom.
 fn hatch_cell(i: i32, j: i32) -> bool {
     let top = STEPS - 6..STEPS;
-    step_base(i, j).is_some_and(|n0| top.contains(&n0) || top.contains(&(n0 + TURN)))
+    step_base(i, j).is_some_and(|n0| (n0..STEPS).step_by(TURN as usize).any(|n| top.contains(&n)))
 }
 
 fn in_voxel(p: Vec3, target: Vec3) -> bool {
@@ -761,7 +761,9 @@ impl Watchtower {
     fn windows(&self, out: &mut MeshData) {
         for k in 0..4 {
             self.opening(out, k, 7.95, 0.72, 0.27, true);
+            self.opening(out, k, SHAFT - 3.05, 0.72, 0.27, true);
             self.opening(out, k, 6.15, 0.95, 0.075, false);
+            self.opening(out, k, 11.95, 0.95, 0.075, false);
             if k != 0 {
                 self.opening(out, k, 2.45, 0.95, 0.075, false);
             }
@@ -1176,14 +1178,16 @@ impl Watchtower {
                 ROOF,
             );
             // The arched windows, which glow at dusk.
-            let hw = Self::hw(8.3);
-            let w = [
-                self.fp(k, hw, -0.25, 7.97, 0.002),
-                self.fp(k, hw, 0.25, 7.97, 0.002),
-                self.fp(k, hw, 0.25, 8.9, 0.002),
-                self.fp(k, hw, -0.25, 8.9, 0.002),
-            ];
-            panel(out, &w, GLOW);
+            for y in [7.95, SHAFT - 3.05] {
+                let hw = Self::hw(y + 0.35);
+                let w = [
+                    self.fp(k, hw, -0.25, y + 0.02, 0.002),
+                    self.fp(k, hw, 0.25, y + 0.02, 0.002),
+                    self.fp(k, hw, 0.25, y + 0.95, 0.002),
+                    self.fp(k, hw, -0.25, y + 0.95, 0.002),
+                ];
+                panel(out, &w, GLOW);
+            }
         }
         // The lookout's lantern, as a small glowing cross.
         let l = self.lanterns()[0];
@@ -1371,7 +1375,7 @@ mod tests {
     #[test]
     fn proportions_match_the_reference() {
         let height = apex() + 1.25;
-        assert!((16.0..=20.5).contains(&height), "{height} m tall");
+        assert!((24.0..=28.5).contains(&height), "{height} m tall");
         const { assert!(LOOK > FOOT_HALF, "the lookout is wider than the shaft") };
         assert!((4.0..=5.0).contains(&(2.0 * FOOT_HALF)));
     }

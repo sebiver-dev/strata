@@ -17,6 +17,7 @@ use crate::far::face;
 use crate::mesh::MeshData;
 use crate::model;
 use crate::noise::{hash2, unit};
+use crate::path_fence::PathFence;
 use crate::terrain::Terrain;
 use crate::vista;
 use crate::watchtower::Watchtower;
@@ -129,6 +130,8 @@ pub enum Structure {
     Watchtower(Watchtower),
     Castle(Castle),
     Fence(Fence),
+    /// The rustic fence along the path from the spawn rise to the bridge.
+    PathFence(PathFence),
 }
 
 /// Everything built in the world, with the boxes (metres) each one occupies.
@@ -198,6 +201,26 @@ impl Structures {
         if let Some(c) = Castle::plan(t, spawn) {
             s.add(Structure::Castle(c));
         }
+        // A rustic fence along the path down to the bridge, broken wherever
+        // something else stands: buildings, doorways, the road and its fences.
+        let taken: Vec<(Vec3, Vec3)> = s
+            .list
+            .iter()
+            .filter(|(_, _, st)| !matches!(st, Structure::Fence(_)))
+            .map(|(lo, hi, _)| (*lo, *hi))
+            .collect();
+        let blocked = |p: Vec2| {
+            taken
+                .iter()
+                .any(|(lo, hi)| p.x > lo.x - 0.6 && p.x < hi.x + 0.6 && p.y > lo.z - 0.6 && p.y < hi.z + 0.6)
+                || cottage_door_near(&s, p.x, p.y)
+                || cottage_approach(&s, p)
+                || t.road_distance(p.x, p.y) < FENCE_OFFSET_M + 1.2
+        };
+        let path_fences = PathFence::plan(t, zb, seed ^ 70, blocked);
+        for f in path_fences {
+            s.add(Structure::PathFence(f));
+        }
         s.build_models(t);
         s
     }
@@ -215,6 +238,7 @@ impl Structures {
             match st {
                 Structure::Cottage(c) => c.model(t, &mut all),
                 Structure::Fence(f) => f.model(t, &mut all),
+                Structure::PathFence(f) => f.model(t, &mut all),
                 Structure::Watchtower(w) => w.model(t, &mut all),
                 Structure::Bridge(b) => b.model(t, &mut all),
                 Structure::Castle(c) => c.model(&mut all),
@@ -258,6 +282,7 @@ impl Structures {
             Structure::Watchtower(w) => w.bounds(),
             Structure::Castle(c) => c.bounds(),
             Structure::Fence(f) => (f.lo, f.hi),
+            Structure::PathFence(f) => f.bounds(),
         };
         self.list.push((lo, hi, st));
     }
@@ -274,7 +299,11 @@ impl Structures {
     /// Whether a tree trunk at this point would stand in or crowd a structure.
     pub fn blocks_tree(&self, x: f32, z: f32) -> bool {
         self.list.iter().any(|(lo, hi, st)| {
-            !matches!(st, Structure::Fence(_)) && x > lo.x - 4.0 && x < hi.x + 4.0 && z > lo.z - 4.0 && z < hi.z + 4.0
+            !matches!(st, Structure::Fence(_) | Structure::PathFence(_))
+                && x > lo.x - 4.0
+                && x < hi.x + 4.0
+                && z > lo.z - 4.0
+                && z < hi.z + 4.0
         })
     }
 
@@ -321,6 +350,7 @@ impl Structures {
                             Structure::Watchtower(w) => w.block(p, g),
                             Structure::Castle(c) => c.block(p, g),
                             Structure::Fence(f) => f.block(p, g),
+                            Structure::PathFence(f) => f.block(p, g),
                         };
                         let Some(b) = b else { continue };
                         let i = local_index(x, y, z);
@@ -368,7 +398,12 @@ impl Structures {
     pub fn far(&self, out: &mut MeshData, lo: Vec2, hi: Vec2) {
         for (k, (a, b, st)) in self.list.iter().enumerate() {
             let c = Vec2::new(a.x + b.x, a.z + b.z) * 0.5;
-            if matches!(st, Structure::Fence(_)) || c.x < lo.x || c.y < lo.y || c.x >= hi.x || c.y >= hi.y {
+            if matches!(st, Structure::Fence(_) | Structure::PathFence(_))
+                || c.x < lo.x
+                || c.y < lo.y
+                || c.x >= hi.x
+                || c.y >= hi.y
+            {
                 continue;
             }
             match st {
@@ -379,7 +414,7 @@ impl Structures {
                 },
                 Structure::Watchtower(w) => w.far(out),
                 Structure::Castle(c) => c.far(out),
-                Structure::Fence(_) => {}
+                Structure::Fence(_) | Structure::PathFence(_) => {}
             }
         }
     }
@@ -393,6 +428,20 @@ fn cottage_door_near(s: &Structures, x: f32, z: f32) -> bool {
         Structure::Cottage(c) => {
             let door = c.world(0.0, c.front * c.half_wid);
             (door - Vec2::new(x, z)).length() < 5.0
+        }
+        _ => false,
+    })
+}
+
+/// Whether a point lies on the way out from a cottage's front door: the
+/// strip of ground straight out from the door for fifteen metres.
+fn cottage_approach(s: &Structures, p: Vec2) -> bool {
+    s.list.iter().any(|(_, _, st)| match st {
+        Structure::Cottage(c) => {
+            let door = c.front_door();
+            let out = (c.world(0.0, c.front * (c.half_wid + 1.0)) - door).normalize_or_zero();
+            let along = (p - door).dot(out);
+            (0.0..15.0).contains(&along) && out.perp_dot(p - door).abs() < 2.2
         }
         _ => false,
     })
